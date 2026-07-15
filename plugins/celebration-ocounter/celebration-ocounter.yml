@@ -1,0 +1,8 @@
+name: Celebration O-Counter
+description: Replaces the default O-counter drops with a discreet celebration sparkles icon.
+version: 1.0.0
+url: https://github.com/mrx-31415/stash-plugins
+
+ui:
+  javascript:
+    - celebration-ocounter.js

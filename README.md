@@ -1,24 +1,29 @@
-# Template for creating Stash plugins source index
+# Stash plugins
 
-This template allows you to create a new repository with a few clicks with preconfigured GitHub action to publish your plugins source index. 
-_This assumes you already know how to create plugins for Stash. If you don't, first read [this](https://docs.stashapp.cc/in-app-manual/plugins/#creating-plugins)._
+Personal plugins for [Stash](https://github.com/stashapp/stash), published as
+a package source that can be installed from Stash's plugin settings.
 
-## How to use it?
+## Package source
 
-1. Click **Use this template** > **Create a new repository**. 
-1. Choose a repository name and click **Create repository**.
-1. Open **Settings** and head to **Pages**.
-1. Under Build and deployment select the Source as GitHub Actions.
+Add this URL under **Settings > Plugins > Available Plugins**:
 
-Now add your plugins to [plugins](/plugins) directory and they will be automatically published to the source index.
+```text
+https://mrx-31415.github.io/stash-plugins/main/index.yml
+```
 
-Source index URL: [`https://<your-username>.github.io/<repository-name>/main/index.yml`](https://<your-username>.github.io/<repository-name>/main/index.yml)
+## Plugins
 
-## Share your plugins
+### Celebration O-Counter
 
-- [Create a new topic](https://discourse.stashapp.cc/t/-/33) for your plugin on the community forum.
-- [Add your source index to the list](https://discourse.stashapp.cc/t/-/122) on the Stash community forum.
+Replaces the default O-counter drops with a discreet celebration sparkles
+icon. See the [plugin README](plugins/celebration-ocounter/README.md) for
+details.
+
+## Publishing
+
+Plugins placed in the [`plugins`](plugins) directory are packaged and published
+to the source index by the repository's GitHub Pages workflow.
 
 ## License
 
-The default license is set to [AGPL-3.0](/LICENCE). Before publishing any plugins you can change it.
+This repository is licensed under [AGPL-3.0](LICENCE).
