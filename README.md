@@ -19,6 +19,12 @@ Replaces the default O-counter drops with a discreet celebration sparkles
 icon. See the [plugin README](plugins/celebration-ocounter/README.md) for
 details.
 
+### Pull Remote Tags
+
+Adds matching local tags from linked metadata providers to scenes without
+removing existing tags. See the [plugin README](plugins/pull-tags/README.md)
+for details.
+
 ## Publishing
 
 Plugins placed in the [`plugins`](plugins) directory are packaged and published
