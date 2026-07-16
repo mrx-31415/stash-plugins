@@ -152,9 +152,11 @@ def run(payload):
     local_tags = tag_index(graphql(local_url, TAGS_QUERY, headers=local_headers)["findTags"]["tags"])
     summary = {"scanned": 0, "changed": 0, "tags_added": 0, "unknown_remote_tags": [], "failures": []}
     cache = {}
+    total = 0
 
     def process(scene):
         summary["scanned"] += 1
+        progress = f"[{summary['scanned']}/{total}]"
         try:
             added, failures, unknown_names = sync_scene(scene, local_url, local_headers, providers, local_tags, cache)
             summary["failures"].extend({"scene_id": scene["id"], **failure} for failure in failures)
@@ -162,20 +164,25 @@ def run(payload):
             if added:
                 summary["changed"] += 1
                 summary["tags_added"] += added
-                print(f"Updated scene {scene.get('title') or '(untitled)'} (ID {scene['id']}): added {added} tag(s)", file=sys.stderr)
+                print(f"{progress} Updated scene {scene.get('title') or '(untitled)'} (ID {scene['id']}): added {added} tag(s)", file=sys.stderr)
+            else:
+                print(f"{progress} Checked scene {scene.get('title') or '(untitled)'} (ID {scene['id']}): no new matching tags", file=sys.stderr)
         except RuntimeError as error:
             summary["failures"].append({"scene_id": scene["id"], "error": str(error)})
+            print(f"{progress} Failed scene {scene.get('title') or '(untitled)'} (ID {scene['id']}): {error}", file=sys.stderr)
 
     if target == "all":
         page = 1
         while True:
             result = graphql(local_url, SCENES_QUERY, {"filter": {"page": page, "per_page": PAGE_SIZE}}, local_headers)["findScenes"]
+            total = result["count"]
             for scene in result["scenes"]:
                 process(scene)
             if page * PAGE_SIZE >= result["count"]:
                 break
             page += 1
     else:
+        total = 1
         scene = graphql(local_url, SCENE_QUERY, {"id": target}, local_headers)["findScene"]
         if scene:
             process(scene)
