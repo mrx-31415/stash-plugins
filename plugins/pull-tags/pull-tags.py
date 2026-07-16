@@ -44,6 +44,10 @@ def stash_log(level, message):
     print(f"\x01{level}\x02{message}", file=sys.stderr)
 
 
+def stash_progress(current, total):
+    stash_log("p", current / total if total else 1)
+
+
 def graphql(url, query, variables=None, headers=None):
     body = json.dumps({"query": query, "variables": variables or {}}).encode()
     request = Request(url, data=body, headers={"Content-Type": "application/json", **(headers or {})})
@@ -174,12 +178,14 @@ def run(payload):
         except RuntimeError as error:
             summary["failures"].append({"scene_id": scene["id"], "error": str(error)})
             stash_log("e", f"{progress} Failed scene {scene.get('title') or '(untitled)'} (ID {scene['id']}): {error}")
+        stash_progress(summary["scanned"], total)
 
     if target == "all":
         page = 1
         while True:
             result = graphql(local_url, SCENES_QUERY, {"filter": {"page": page, "per_page": PAGE_SIZE}}, local_headers)["findScenes"]
             total = result["count"]
+            stash_progress(summary["scanned"], total)
             for scene in result["scenes"]:
                 process(scene)
             if page * PAGE_SIZE >= result["count"]:
@@ -190,6 +196,8 @@ def run(payload):
         scene = graphql(local_url, SCENE_QUERY, {"id": target}, local_headers)["findScene"]
         if scene:
             process(scene)
+        else:
+            stash_progress(1, 1)
     return summary
 
 
