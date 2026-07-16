@@ -1,6 +1,6 @@
 name: Pull Remote Tags
 description: Add matching local tags from linked metadata providers without removing existing scene tags.
-version: 1.0.0
+version: 1.0.1
 url: https://github.com/mrx-31415/stash-plugins
 exec:
   - python
