@@ -40,6 +40,10 @@ mutation UpdateScene($input: SceneUpdateInput!) { sceneUpdate(input: $input) { i
 """
 
 
+def stash_log(level, message):
+    print(f"\x01{level}\x02{message}", file=sys.stderr)
+
+
 def graphql(url, query, variables=None, headers=None):
     body = json.dumps({"query": query, "variables": variables or {}}).encode()
     request = Request(url, data=body, headers={"Content-Type": "application/json", **(headers or {})})
@@ -164,12 +168,12 @@ def run(payload):
             if added:
                 summary["changed"] += 1
                 summary["tags_added"] += added
-                print(f"{progress} Updated scene {scene.get('title') or '(untitled)'} (ID {scene['id']}): added {added} tag(s)", file=sys.stderr)
+                stash_log("i", f"{progress} Updated scene {scene.get('title') or '(untitled)'} (ID {scene['id']}): added {added} tag(s)")
             else:
-                print(f"{progress} Checked scene {scene.get('title') or '(untitled)'} (ID {scene['id']}): no new matching tags", file=sys.stderr)
+                stash_log("d", f"{progress} Checked scene {scene.get('title') or '(untitled)'} (ID {scene['id']}): no new matching tags")
         except RuntimeError as error:
             summary["failures"].append({"scene_id": scene["id"], "error": str(error)})
-            print(f"{progress} Failed scene {scene.get('title') or '(untitled)'} (ID {scene['id']}): {error}", file=sys.stderr)
+            stash_log("e", f"{progress} Failed scene {scene.get('title') or '(untitled)'} (ID {scene['id']}): {error}")
 
     if target == "all":
         page = 1
