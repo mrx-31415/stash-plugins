@@ -23,13 +23,13 @@ SCENES_QUERY = """
 query Scenes($filter: FindFilterType) {
   findScenes(filter: $filter) {
     count
-    scenes { id tags { id } stash_ids { endpoint stash_id } }
+    scenes { id title tags { id } stash_ids { endpoint stash_id } }
   }
 }
 """
 SCENE_QUERY = """
 query Scene($id: ID!) {
-  findScene(id: $id) { id tags { id } stash_ids { endpoint stash_id } }
+  findScene(id: $id) { id title tags { id } stash_ids { endpoint stash_id } }
 }
 """
 REMOTE_TAGS_QUERY = """
@@ -162,6 +162,7 @@ def run(payload):
             if added:
                 summary["changed"] += 1
                 summary["tags_added"] += added
+                print(f"Updated scene {scene.get('title') or '(untitled)'} (ID {scene['id']}): added {added} tag(s)", file=sys.stderr)
         except RuntimeError as error:
             summary["failures"].append({"scene_id": scene["id"], "error": str(error)})
 
