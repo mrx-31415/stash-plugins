@@ -1,0 +1,13 @@
+name: Cover Story
+description: Disguise Stash as a fictional workplace-safe film collection.
+version: 0.1.0
+url: https://github.com/mrx-31415/stash-plugins
+
+ui:
+  javascript:
+    - themes.js
+    - cover-story.js
+  css:
+    - cover-story.css
+  assets:
+    /: assets

@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cover Story prompt generator</title>
+  <style>
+    :root { color-scheme: dark; font: 16px/1.45 system-ui, sans-serif; }
+    body { background: #10131a; color: #eef1f6; margin: 0 auto; max-width: 1050px; padding: 2rem; }
+    h1 { margin-bottom: .25rem; }
+    p { color: #aeb8c8; }
+    .grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+    label { display: grid; font-weight: 650; gap: .35rem; }
+    input, select, textarea, button { border: 1px solid #3b4558; border-radius: .45rem; box-sizing: border-box; font: inherit; }
+    input, select, textarea { background: #171c26; color: inherit; padding: .65rem; width: 100%; }
+    textarea { min-height: 6rem; resize: vertical; }
+    #prompt { font-family: ui-monospace, monospace; min-height: 34rem; }
+    .theme-note { background: #171c26; border-left: .25rem solid #72e69b; margin: 1rem 0; padding: .8rem 1rem; }
+    .actions { display: flex; flex-wrap: wrap; gap: .65rem; margin: 1rem 0; }
+    button { background: #2c66d6; color: #fff; cursor: pointer; padding: .65rem 1rem; }
+    button.secondary { background: #273043; }
+    button:hover { filter: brightness(1.12); }
+    #status { align-self: center; color: #72e69b; min-height: 1.5rem; }
+    code { color: #d5a8ff; }
+  </style>
+</head>
+<body>
+  <h1>Cover Story prompt generator</h1>
+  <p>Attach the actor's approved portrait in ChatGPT, choose a theme, then copy the generated prompt.</p>
+
+  <div class="grid">
+    <label>Actor ID
+      <input id="actor" value="actor-01" autocomplete="off">
+    </label>
+    <label>Theme
+      <select id="theme"></select>
+    </label>
+    <label>Hairstyle
+      <select id="hair">
+        <option value="preserve">Preserve exact hairstyle</option>
+        <option value="role">Allow a role-appropriate hairstyle</option>
+      </select>
+    </label>
+  </div>
+
+  <div class="theme-note" id="theme-note"></div>
+
+  <label>Optional costume adjustment
+    <textarea id="extra" placeholder="Example: replace the fur mantle with a dark blue wool cloak. Leave empty to use the theme default."></textarea>
+  </label>
+
+  <label>Suggested filename
+    <input id="filename" readonly>
+  </label>
+
+  <div class="actions">
+    <button id="copy">Copy prompt</button>
+    <button id="copy-next">Copy and advance theme</button>
+    <button id="previous" class="secondary">Previous theme</button>
+    <span id="status" role="status" aria-live="polite"></span>
+  </div>
+
+  <label>Generated prompt
+    <textarea id="prompt" readonly></textarea>
+  </label>
+
+  <script>
+    "use strict";
+
+    const themes = [
+      ["viking", "Viking Saga", "Historically inspired Viking-era travel attire: layered indigo wool tunic, weathered brown leather vest, belts and bracers, restrained fur mantle, dark trousers, and wrapped leather boots. Detailed and cinematic, but practical rather than exaggerated fantasy armor."],
+      ["roman", "Roman Epic", "Historically inspired Roman-era screen costume: layered linen tunic, dark red or muted blue cloak, practical leather belt and sandals or boots, with restrained leather armor details suitable for a prestigious historical drama."],
+      ["space", "Space Expedition", "Original near-future expedition uniform: structured charcoal and midnight-blue utility suit, subtle technical seams, practical boots, and small unbranded equipment details. Do not resemble any existing science-fiction franchise."],
+      ["victorian", "Victorian Mystery", "Late-Victorian mystery costume: tailored dark coat or jacket, waistcoat-inspired layers, high-quality period fabrics, restrained formal details, and practical period footwear. Cinematic and historically plausible."],
+      ["steampunk", "Steampunk Adventure", "Restrained original steampunk explorer costume: tailored leather and wool layers, subtle brass fasteners, practical boots, utility belt, and modest mechanical detailing. Sophisticated film costume, not cosplay."],
+      ["prehistoric", "Prehistoric Adventure", "Respectful fictional prehistoric-survival costume made from woven plant fibers, softened hide, simple ties, and handmade practical footwear. Natural earth tones, plausible construction, and no parody or cartoon stereotypes."],
+      ["courtroom", "Courtroom Drama", "Contemporary courtroom-drama attire: sharply tailored dark suit or formal separates, pale neutral shirt, understated professional shoes, and no visible branding. Authoritative but natural."],
+      ["school", "School Drama", "Contemporary teacher or university-lecturer attire: smart practical layers, cardigan or unstructured jacket, muted shirt or blouse, tailored trousers or modest skirt, and comfortable professional shoes."],
+      ["noir", "Noir Detective", "Elegant film-noir detective costume: charcoal period-inspired suit or tailored separates, dark trench coat, restrained 1940s influence, and polished practical shoes. No weapon or cigarette."],
+      ["archaeology", "Archaeological Adventure", "Cinematic archaeological field attire: weathered canvas field jacket, breathable neutral shirt, practical trousers, leather belt, and rugged boots. Believable expedition clothing without franchise references."],
+      ["medieval", "Medieval Court", "Prestige medieval-court costume: layered wool and linen garments, fitted dark cloak, subtle embroidery without writing, leather belt, and period boots. Historically inspired and free of fantasy excess."],
+      ["fantasy", "Fantasy Academy", "Original fantasy-academy costume: layered midnight-blue and charcoal robes or structured coat, subtle celestial embroidery without letters, leather satchel straps, and practical boots. Do not resemble an existing franchise."],
+      ["cyberpunk", "Cyberpunk Thriller", "Original understated cyberpunk attire: sharply structured technical jacket, layered dark fabrics, subtle reflective piping, practical urban boots, and restrained luminous accents. No logos or franchise references."],
+      ["medical", "Medical Drama", "Contemporary medical-drama wardrobe: clean navy scrubs with an optional plain white lab coat, practical closed shoes, and no hospital logo, name badge, text, or medical instrument."],
+      ["culinary", "Culinary Drama", "Prestige culinary-drama wardrobe: clean dark chef jacket, simple waist apron, practical trousers, and non-slip shoes. No restaurant branding, text, knife, or handheld utensil."],
+      ["spy", "Spy Thriller", "Understated contemporary spy-thriller attire: tailored dark eveningwear or a fitted field jacket over refined neutral layers, practical shoes, and no visible tactical equipment or weapon."],
+    ].map(([id, name, attire]) => ({ id, name, attire }));
+
+    const actor = document.querySelector("#actor");
+    const theme = document.querySelector("#theme");
+    const hair = document.querySelector("#hair");
+    const extra = document.querySelector("#extra");
+    const filename = document.querySelector("#filename");
+    const prompt = document.querySelector("#prompt");
+    const note = document.querySelector("#theme-note");
+    const status = document.querySelector("#status");
+
+    for (const item of themes) theme.add(new Option(item.name, item.id));
+
+    function currentTheme() {
+      return themes.find((item) => item.id === theme.value);
+    }
+
+    function buildPrompt() {
+      const item = currentTheme();
+      const hairRule = hair.value === "preserve"
+        ? "Preserve the exact hairstyle, hairline, hair color, length, texture, and outer silhouette from the reference portrait in all four poses."
+        : "A role-appropriate hairstyle is allowed, but it must remain identical across all four poses and must preserve the actor's facial identity, hair color, and recognizable appearance.";
+      const adjustment = extra.value.trim() ? `\nAdditional costume direction: ${extra.value.trim()}\n` : "";
+
+      return `Use the attached approved portrait as the exact identity reference for ${actor.value.trim() || "this fictional actor"}.
+
+Create a workplace-safe cinematic costume sheet for the fictional movie theme “${item.name}”. The actor must clearly remain the same fictional adult shown in the reference.
+
+Costume: ${item.attire}${adjustment}
+Preserve the actor's exact facial identity, apparent age, skin tone, facial proportions, body proportions, and recognizable appearance. ${hairRule} Keep the costume, grooming, lighting, and identity identical across all four poses.
+
+Generate exactly four full-body poses arranged as a strict 2×2 contact sheet:
+
+Top-left: front-facing neutral stance with both arms relaxed.
+Top-right: natural three-quarter pose facing image-left with one hand resting in a costume pocket or naturally at the hip.
+Bottom-left: natural three-quarter pose facing image-right with hands loosely clasped.
+Bottom-right: relaxed confident stance with arms crossed.
+
+Every figure must be fully visible from the top of the hair to the bottom of the footwear, centered within its cell, at the same scale, with generous clear space on every side. Figures must not overlap or cross cell boundaries.
+
+Style: highly realistic prestige-film costume photography with restrained cinematic grading, natural skin texture, realistic anatomy, and believable fabric and material detail. The result must look like a professional film wardrobe test, not cosplay.
+
+Camera: vertical 2:3 overall image, eye-level camera approximately 1.55 metres above the floor, 50 mm-equivalent lens, realistic perspective, minimal distortion. Use identical camera height and lighting for all four figures.
+
+Lighting: broad soft key light from camera-left at approximately 35 degrees, neutral 4800K color temperature, gentle fill, and moderate contrast.
+
+Use one perfectly flat, uniform solid #00ff00 chroma-key background across the entire sheet. It must contain exactly one color with no gradient, vignette, texture, floor plane, shadow, reflection, glow, or lighting variation. Do not use #00ff00 anywhere in the actor or costume.
+
+No cast shadows or contact shadows beneath the feet. No green reflected onto the actor. No handheld props, weapons, shields, readable writing, runes, symbols resembling text, logos, brands, additional people, cropped body parts, separators, labels, borders, collage frames, or watermark. Do not resemble any celebrity, public figure, copyrighted character, or recognizable film franchise.`;
+    }
+
+    function refresh() {
+      const item = currentTheme();
+      prompt.value = buildPrompt();
+      filename.value = `${actor.value.trim() || "actor"}-${item.id}-sheet.png`;
+      note.textContent = item.attire;
+      status.textContent = "";
+    }
+
+    async function copyPrompt() {
+      try {
+        await navigator.clipboard.writeText(prompt.value);
+      } catch (_) {
+        prompt.focus();
+        prompt.select();
+        document.execCommand("copy");
+      }
+      status.textContent = "Copied";
+    }
+
+    document.querySelector("#copy").addEventListener("click", copyPrompt);
+    document.querySelector("#copy-next").addEventListener("click", async () => {
+      await copyPrompt();
+      theme.selectedIndex = (theme.selectedIndex + 1) % theme.options.length;
+      refresh();
+      status.textContent = "Copied; advanced to next theme";
+    });
+    document.querySelector("#previous").addEventListener("click", () => {
+      theme.selectedIndex = (theme.selectedIndex - 1 + theme.options.length) % theme.options.length;
+      refresh();
+    });
+    [actor, theme, hair, extra].forEach((element) => element.addEventListener("input", refresh));
+    refresh();
+
+    console.assert(themes.length >= 8 && buildPrompt().includes("strict 2×2 contact sheet") && buildPrompt().includes("#00ff00"), "Prompt generator self-check failed");
+  </script>
+</body>
+</html>

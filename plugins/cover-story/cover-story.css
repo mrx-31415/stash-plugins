@@ -1,0 +1,153 @@
+.cover-story-toggle {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 1.15rem;
+  height: 100%;
+  justify-content: center;
+  min-width: 2.5rem;
+}
+
+.cover-story-toggle.active {
+  color: #72e69b;
+}
+
+.cover-story-poster {
+  align-items: flex-end;
+  aspect-ratio: 16 / 9;
+  background-position: center;
+  background-size: cover;
+  display: flex;
+  min-height: 100%;
+  overflow: hidden;
+  width: 100%;
+}
+
+.cover-story-poster.portrait {
+  aspect-ratio: 2 / 3;
+}
+
+.cover-story-poster > span {
+  background: linear-gradient(transparent, rgba(4, 8, 15, 0.88));
+  color: #fff;
+  font-size: clamp(0.78rem, 1.6vw, 1.15rem);
+  font-weight: 650;
+  padding: 2rem 0.8rem 0.65rem;
+  text-shadow: 0 1px 3px #000;
+  width: 100%;
+}
+
+.cover-story-player {
+  aspect-ratio: 16 / 9;
+  background: #080b12;
+  overflow: hidden;
+  position: relative;
+  width: 100%;
+}
+
+.cover-story-player .cover-story-poster {
+  animation: cover-story-pan 18s ease-in-out infinite alternate;
+}
+
+.cover-story-controls {
+  align-items: center;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.82));
+  bottom: 0;
+  color: #fff;
+  display: flex;
+  gap: 0.8rem;
+  left: 0;
+  padding: 2.2rem 1rem 0.8rem;
+  position: absolute;
+  right: 0;
+}
+
+.cover-story-controls i {
+  background: rgba(255, 255, 255, 0.32);
+  border-radius: 1rem;
+  height: 0.25rem;
+  position: relative;
+  flex: 1;
+}
+
+.cover-story-controls i::before {
+  background: #fff;
+  border-radius: inherit;
+  content: "";
+  inset: 0 62% 0 0;
+  position: absolute;
+}
+
+.cover-story-enabled .scene-toolbar,
+.cover-story-enabled .performer-toolbar,
+.cover-story-enabled .studio-toolbar,
+.cover-story-enabled .tag-toolbar,
+.cover-story-enabled .group-toolbar,
+.cover-story-enabled .gallery-toolbar,
+.cover-story-enabled .image-toolbar,
+.cover-story-enabled .details-edit,
+.cover-story-enabled .name-icons,
+.cover-story-enabled .file-path,
+.cover-story-enabled .scene-file-info-panel,
+.cover-story-enabled .external-links-button,
+.cover-story-enabled .stash-id-pill,
+.cover-story-enabled .alias-head,
+.cover-story-enabled .performer-disambiguation,
+.cover-story-enabled .scene-header-container .studio-logo,
+.cover-story-enabled video,
+.cover-story-enabled audio {
+  display: none !important;
+}
+
+.cover-story-enabled .favorite-button,
+.cover-story-enabled .organized,
+.cover-story-enabled .o-counter,
+.cover-story-enabled .detail-container .rating-stars,
+.cover-story-enabled .detail-container .rating-number {
+  pointer-events: none !important;
+}
+
+.cover-story-enabled .gallery-tabs .nav-tabs .nav-item:not(:first-child),
+.cover-story-enabled .image-tabs .nav-tabs .nav-item:not(:first-child),
+.cover-story-enabled .gallery-tabs .tab-content > .tab-pane:not(:first-child),
+.cover-story-enabled .image-tabs .tab-content > .tab-pane:not(:first-child),
+.cover-story-enabled .gallery-container .nav-tabs .nav-item:nth-child(2),
+.cover-story-enabled .gallery-container .tab-content > .tab-pane:nth-child(2) {
+  display: none !important;
+}
+
+.cover-story-enabled .gallery-tabs .tab-content > .tab-pane:first-child > :not(.cover-story-gallery-details) {
+  display: none !important;
+}
+
+.cover-story-gallery-details {
+  padding: 1rem 0;
+}
+
+.cover-story-enabled .gallery-header:not([data-cover-story-safe]),
+.cover-story-enabled .image-header:not([data-cover-story-safe]),
+.cover-story-enabled .scene-header:not([data-cover-story-safe]),
+.cover-story-enabled .scene-subheader .date:not([data-cover-story-safe]),
+.cover-story-enabled .scene-details:not([data-cover-story-safe]),
+.cover-story-enabled .scene-tabs p.pre:not([data-cover-story-safe]),
+.cover-story-enabled #queue-content li:not([data-cover-story-safe]),
+.cover-story-enabled .performer-name:not([data-cover-story-safe]),
+.cover-story-enabled .curator-external-card:not([data-cover-story-safe]),
+.cover-story-enabled .curator-source-reference:not([data-cover-story-safe]),
+.cover-story-enabled .curator-similar-reference:not([data-cover-story-safe]),
+.cover-story-enabled img.gallery-image:not([data-cover-story-safe]),
+.cover-story-enabled img.image-image:not([data-cover-story-safe]) {
+  visibility: hidden !important;
+}
+
+@keyframes cover-story-pan {
+  from { transform: scale(1.01) translateX(-0.4%); }
+  to { transform: scale(1.06) translateX(0.7%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cover-story-player .cover-story-poster { animation: none; }
+}

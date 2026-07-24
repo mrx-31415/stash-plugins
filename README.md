@@ -13,6 +13,11 @@ https://mrx-31415.github.io/stash-plugins/main/index.yml
 
 ## Plugins
 
+### Cover Story
+
+Disguises Stash as a deterministic, workplace-safe fictional film collection.
+See the [plugin README](plugins/cover-story/README.md) for details and limits.
+
 ### Celebration O-Counter
 
 Replaces the default O-counter drops with a discreet celebration sparkles
