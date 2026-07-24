@@ -292,6 +292,7 @@
   }
   const cover = makeCover(seed);
   const { React, patch, libraries } = root.PluginApi;
+  const { Button } = libraries.Bootstrap;
   const { FontAwesomeIcon } = libraries.ReactFontAwesome;
   const { faTheaterMasks } = libraries.FontAwesomeSolid;
   document.documentElement.classList.toggle("cover-story-enabled", enabled);
@@ -303,8 +304,8 @@
   }
 
   patch.before("MainNavBar.UtilityItems", function (props) {
-    const button = React.createElement("button", {
-      type: "button", className: `minimal cover-story-toggle${enabled ? " active" : ""}`,
+    const button = React.createElement(Button, {
+      type: "button", className: `nav-utility minimal d-flex align-items-center h-100 cover-story-toggle${enabled ? " cover-story-active" : ""}`,
       title: enabled ? "Cover Story is active — reveal library" : "Enable Cover Story",
       "aria-label": enabled ? "Disable Cover Story" : "Enable Cover Story",
       "aria-pressed": enabled, onClick: toggle,
@@ -350,7 +351,7 @@
   }
 
   [
-    "SceneCard", "SceneRecommendationRow", "PerformerCard", "PerformerDetailsPanel",
+    "SceneList", "SceneCard", "SceneRecommendationRow", "PerformerCard", "PerformerDetailsPanel",
     "StudioCard", "StudioPage", "StudioDetailsPanel", "TagCard", "TagList", "TagPage", "TagLink", "GroupCard", "GroupPage",
     "GalleryCard", "GalleryRecommendationRow", "GalleryImagesPanel", "ImageCard", "ImageDetailPanel", "ImageRecommendationRow",
     "PerformerRecommendationRow", "StudioRecommendationRow", "TagRecommendationRow", "GroupRecommendationRow",

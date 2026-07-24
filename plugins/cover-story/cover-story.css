@@ -11,7 +11,7 @@
   min-width: 2.5rem;
 }
 
-.cover-story-toggle.active {
+.cover-story-toggle.cover-story-active {
   color: #72e69b;
 }
 
