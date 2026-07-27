@@ -1,10 +1,26 @@
-# Cover Story production asset pack
+# Cover Story assets
+
+The performer UI uses 439 curated 600×900 WebP portraits from
+`tools/cover-story/personas.json`. Rebuild the browser manifest and images with:
+
+```sh
+tools/cover-story/build_assets.sh
+```
+
+The source PNGs remain outside the repository; the run manifest records their
+paths and SHA-256 hashes. The following compositing assets are still planned.
+
+New portrait runs avoid age wording in image prompts. Reviewers record an
+apparent age from the finished portrait; curation uses that value for the fake
+birthdate while retaining the original intended age in generation provenance.
+
+## Future production asset pack
 
 Open [`prompt-generator.html`](prompt-generator.html) in a browser to create and
 copy complete themed 2×2 actor-sheet prompts.
 
-The runtime currently uses procedural SVG stand-ins. Generate and curate the
-following WebP assets before wiring the production pack into the manifest.
+Generate and curate the following WebP assets before wiring cinematic scene
+composition into the plugin.
 
 ## Shared direction
 
@@ -16,11 +32,11 @@ following WebP assets before wiring the production pack into the manifest.
 
 ## Actor packs (20)
 
-For each `actor-01` through `actor-20`, first approve an 800×1200 portrait.
-Use that portrait as the identity reference for two 1200×1800 three-quarter or
-full-body poses: one facing slightly left and one slightly right. Generate poses
-on a flat chroma-key background with no cast shadow, reflection, loose props, or
-cropped limbs. Export alpha WebP after edge, hair, and color-spill inspection.
+Select 20 identities from the approved performer pool. Use each portrait as the
+identity reference for two 1200×1800 three-quarter or full-body poses: one
+facing slightly left and one slightly right. Generate poses on a flat chroma-key
+background with no cast shadow, reflection, loose props, or cropped limbs.
+Export alpha WebP after edge, hair, and color-spill inspection.
 
 Prompt skeleton:
 

@@ -1,0 +1,302 @@
+{
+    "8": {
+        "inputs": {
+            "samples": [
+                "274",
+                0
+            ],
+            "vae": [
+                "210",
+                0
+            ]
+        },
+        "class_type": "VAEDecode",
+        "_meta": {
+            "title": "VAE Decode"
+        }
+    },
+    "210": {
+        "inputs": {
+            "vae_name": "Wan2_1_VAE_fp32.safetensors"
+        },
+        "class_type": "VAELoader",
+        "_meta": {
+            "title": "Load VAE"
+        }
+    },
+    "213": {
+        "inputs": {
+            "filename_prefix": "z_krea_2026-07-25_16-09-10",
+            "images": [
+                "8",
+                0
+            ]
+        },
+        "class_type": "SaveImage",
+        "_meta": {
+            "title": "Save Image"
+        }
+    },
+    "230": {
+        "inputs": {
+            "width": 912,
+            "height": 1216,
+            "batch_size": 1
+        },
+        "class_type": "EmptyLatentImage",
+        "_meta": {
+            "title": "Empty Latent Image"
+        }
+    },
+    "232": {
+        "inputs": {
+            "width": 768,
+            "height": 1024,
+            "batch_size": 1
+        },
+        "class_type": "EmptyLatentImage",
+        "_meta": {
+            "title": "Empty Latent Image"
+        }
+    },
+    "265": {
+        "inputs": {
+            "eta": 0.5,
+            "sampler_name": "exponential/res_2s",
+            "scheduler": "beta",
+            "steps": 6,
+            "steps_to_run": -1,
+            "denoise": 1,
+            "cfg": [
+                "282",
+                0
+            ],
+            "seed": [
+                "276",
+                0
+            ],
+            "sampler_mode": "standard",
+            "bongmath": true,
+            "model": [
+                "327",
+                0
+            ],
+            "positive": [
+                "326",
+                0
+            ],
+            "negative": [
+                "272",
+                0
+            ],
+            "latent_image": [
+                "232",
+                0
+            ]
+        },
+        "class_type": "ClownsharKSampler_Beta",
+        "_meta": {
+            "title": "ClownsharKSampler"
+        }
+    },
+    "271": {
+        "inputs": {
+            "value": ""
+        },
+        "class_type": "PrimitiveStringMultiline",
+        "_meta": {
+            "title": "Negative"
+        }
+    },
+    "272": {
+        "inputs": {
+            "text": [
+                "271",
+                0
+            ],
+            "clip": [
+                "317",
+                0
+            ]
+        },
+        "class_type": "CLIPTextEncode",
+        "_meta": {
+            "title": "CLIP Text Encode (Prompt)"
+        }
+    },
+    "274": {
+        "inputs": {
+            "eta": 0.5,
+            "sampler_name": "multistep/deis_3m",
+            "scheduler": "bong_tangent",
+            "steps": 2,
+            "steps_to_run": -1,
+            "denoise": 0.2,
+            "cfg": [
+                "282",
+                0
+            ],
+            "seed": [
+                "276",
+                0
+            ],
+            "sampler_mode": "standard",
+            "bongmath": true,
+            "model": [
+                "327",
+                0
+            ],
+            "positive": [
+                "326",
+                0
+            ],
+            "negative": [
+                "272",
+                0
+            ],
+            "latent_image": [
+                "265",
+                0
+            ]
+        },
+        "class_type": "ClownsharKSampler_Beta",
+        "_meta": {
+            "title": "ClownsharKSampler"
+        }
+    },
+    "276": {
+        "inputs": {
+            "seed": -1
+        },
+        "class_type": "Seed (rgthree)",
+        "_meta": {
+            "title": "Seed (rgthree)"
+        }
+    },
+    "282": {
+        "inputs": {
+            "value": 1
+        },
+        "class_type": "PrimitiveFloat",
+        "_meta": {
+            "title": "CFG"
+        }
+    },
+    "316": {
+        "inputs": {
+            "unet_name": "Krea-2-Base-Q5_K_M.gguf"
+        },
+        "class_type": "UnetLoaderGGUF",
+        "_meta": {
+            "title": "Krea 2 RAW GGUF"
+        }
+    },
+    "317": {
+        "inputs": {
+            "clip_name": "qwen3vl_4b_bf16.safetensors",
+            "type": "krea2",
+            "device": "default"
+        },
+        "class_type": "CLIPLoader",
+        "_meta": {
+            "title": "Load CLIP"
+        }
+    },
+    "323": {
+        "inputs": {
+            "lora_name": "krea2_identity_edit_v1_2_r64.safetensors",
+            "strength_model": 1,
+            "model": [
+                "329",
+                0
+            ]
+        },
+        "class_type": "LoraLoaderModelOnly",
+        "_meta": {
+            "title": "Identity Edit LoRA"
+        }
+    },
+    "324": {
+        "inputs": {
+            "image": "17-clara-beaulieu-c01-cool-gray-ribbed__00001_.png"
+        },
+        "class_type": "LoadImage",
+        "_meta": {
+            "title": "Identity reference image"
+        }
+    },
+    "326": {
+        "inputs": {
+            "prompt": "Add a cowboy hat",
+            "grounding_px": 768,
+            "system_prompt": "",
+            "clip": [
+                "317",
+                0
+            ],
+            "image": [
+                "324",
+                0
+            ]
+        },
+        "class_type": "Krea2EditGroundedEncode",
+        "_meta": {
+            "title": "Identity edit prompt"
+        }
+    },
+    "327": {
+        "inputs": {
+            "ref_boost": 2,
+            "ref_boost_a": 1,
+            "fit_mode": "fit",
+            "model": [
+                "323",
+                0
+            ],
+            "source_latent": [
+                "230",
+                0
+            ],
+            "vae": [
+                "210",
+                0
+            ],
+            "source_image": [
+                "324",
+                0
+            ]
+        },
+        "class_type": "Krea2EditModelPatch",
+        "_meta": {
+            "title": "Krea 2 identity model patch"
+        }
+    },
+    "328": {
+        "inputs": {
+            "lora_name": "krea2_turbo_lora_rank_64_bf16.safetensors",
+            "strength_model": 0.6,
+            "model": [
+                "316",
+                0
+            ]
+        },
+        "class_type": "LoraLoaderModelOnly",
+        "_meta": {
+            "title": "Turbo LoRA"
+        }
+    },
+    "329": {
+        "inputs": {
+            "lora_name": "krea2filterbypass.safetensors",
+            "strength_model": 1,
+            "model": [
+                "328",
+                0
+            ]
+        },
+        "class_type": "LoraLoaderModelOnly",
+        "_meta": {
+            "title": "Filter Bypass LoRA"
+        }
+    }
+}

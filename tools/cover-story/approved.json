@@ -1,0 +1,24 @@
+{
+  "assets": [
+    {
+      "id": "actor-01",
+      "name": "Maya Vale",
+      "kind": "identity",
+      "source": "candidates/actor-01/actor-01__00004_.png",
+      "source_sha256": "23d2ce3b36e68c71eeceafb65bffff00171ec3aeb60db87c02ac9c1e39e0f370",
+      "workflow": "workflows/krea2-text2img.json",
+      "executed_prompt_sha256": "8e03696b43834a72b761219f6e6d4fd26d1970243103864edb4ba1f1ea95c862",
+      "prompt": "Relaxed cinematic screen-test portrait of an exceptionally beautiful fictional 32-year-old adult leading actress, glamorous and highly photogenic, harmonious feminine facial features, large expressive brown eyes, defined cheekbones, full natural lips, medium-brown skin, dark naturally curly shoulder-length hair, curvy feminine figure suggested in a waist-up composition, casual fitted ribbed knit top in muted terracotta, tasteful crew neckline, no blazer, no button-down shirt, no uniform, no businesswear, warm confident expression, realistic skin texture, soft directional studio lighting, softly textured warm neutral background, eye-level 85mm portrait lens, waist-up 2:3 composition, cinematic editorial casting photography, fully clothed, workplace-safe, non-provocative pose, no text, no logo, no watermark, no resemblance to any real person or public figure",
+      "seed": 2026072414,
+      "steps": 8,
+      "archive": "approved/actors/actor-01-maya-vale.webp",
+      "export": {
+        "format": "WebP",
+        "quality": 95,
+        "method": 6,
+        "width": 1024,
+        "height": 1536
+      }
+    }
+  ]
+}

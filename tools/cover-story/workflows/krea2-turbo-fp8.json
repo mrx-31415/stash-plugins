@@ -1,0 +1,11 @@
+{
+  "3": {"inputs": {"unet_name": "krea2_turbo_fp8_scaled.safetensors", "weight_dtype": "default"}, "class_type": "UNETLoader"},
+  "4": {"inputs": {"clip_name": "qwen3vl_4b_fp8_scaled.safetensors", "type": "krea2", "device": "default"}, "class_type": "CLIPLoader"},
+  "5": {"inputs": {"vae_name": "qwen_image_vae.safetensors"}, "class_type": "VAELoader"},
+  "6": {"inputs": {"text": "", "clip": ["4", 0]}, "class_type": "CLIPTextEncode"},
+  "7": {"inputs": {"text": "", "clip": ["4", 0]}, "class_type": "CLIPTextEncode"},
+  "8": {"inputs": {"seed": 0, "steps": 8, "cfg": 1, "sampler_name": "er_sde", "scheduler": "simple", "denoise": 1, "model": ["3", 0], "positive": ["6", 0], "negative": ["7", 0], "latent_image": ["9", 0]}, "class_type": "KSampler"},
+  "9": {"inputs": {"width": 1024, "height": 1536, "batch_size": 1}, "class_type": "EmptyLatentImage"},
+  "10": {"inputs": {"samples": ["8", 0], "vae": ["5", 0]}, "class_type": "VAEDecode"},
+  "11": {"inputs": {"filename_prefix": "cover-story/experiments/performers-v7-turbo-fp8/headshot_", "images": ["10", 0]}, "class_type": "SaveImage"}
+}

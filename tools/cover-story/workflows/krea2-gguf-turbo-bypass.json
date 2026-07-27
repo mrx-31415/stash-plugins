@@ -1,0 +1,51 @@
+{
+  "6": {"inputs": {"text": ["48", 0], "clip": ["317", 0]}, "class_type": "CLIPTextEncode"},
+  "8": {"inputs": {"samples": ["274", 0], "vae": ["210", 0]}, "class_type": "VAEDecode"},
+  "48": {"inputs": {"value": ""}, "class_type": "PrimitiveStringMultiline"},
+  "210": {"inputs": {"vae_name": "Wan2_1_VAE_fp32.safetensors"}, "class_type": "VAELoader"},
+  "213": {"inputs": {"filename_prefix": "cover-story", "images": ["8", 0]}, "class_type": "SaveImage"},
+  "231": {"inputs": {"width": 1200, "height": 1600, "batch_size": 1}, "class_type": "EmptyLatentImage"},
+  "265": {
+    "inputs": {
+      "eta": 0.5, "sampler_name": "exponential/res_2s", "scheduler": "beta",
+      "steps": 6, "steps_to_run": -1, "denoise": 1, "cfg": ["282", 0],
+      "seed": ["276", 0], "sampler_mode": "standard", "bongmath": true,
+      "model": ["322", 0], "positive": ["6", 0], "negative": ["272", 0],
+      "latent_image": ["231", 0]
+    },
+    "class_type": "ClownsharKSampler_Beta"
+  },
+  "271": {"inputs": {"value": ""}, "class_type": "PrimitiveStringMultiline"},
+  "272": {"inputs": {"text": ["271", 0], "clip": ["317", 0]}, "class_type": "CLIPTextEncode"},
+  "274": {
+    "inputs": {
+      "eta": 0.5, "sampler_name": "multistep/deis_3m", "scheduler": "bong_tangent",
+      "steps": 2, "steps_to_run": -1, "denoise": 0.2, "cfg": ["282", 0],
+      "seed": ["276", 0], "sampler_mode": "standard", "bongmath": true,
+      "model": ["322", 0], "positive": ["6", 0], "negative": ["272", 0],
+      "latent_image": ["265", 0]
+    },
+    "class_type": "ClownsharKSampler_Beta"
+  },
+  "276": {"inputs": {"seed": -1}, "class_type": "Seed (rgthree)"},
+  "282": {"inputs": {"value": 1}, "class_type": "PrimitiveFloat"},
+  "315": {
+    "inputs": {
+      "lora_name": "krea2_turbo_lora_rank_64_bf16.safetensors",
+      "strength_model": 0.6, "model": ["316", 0]
+    },
+    "class_type": "LoraLoaderModelOnly"
+  },
+  "316": {"inputs": {"unet_name": "Krea-2-Base-Q5_K_M.gguf"}, "class_type": "UnetLoaderGGUF"},
+  "317": {
+    "inputs": {"clip_name": "qwen3vl_4b_bf16.safetensors", "type": "krea2", "device": "cpu"},
+    "class_type": "CLIPLoader"
+  },
+  "322": {
+    "inputs": {
+      "lora_name": "krea2filterbypass.safetensors",
+      "strength_model": 5, "model": ["315", 0]
+    },
+    "class_type": "LoraLoaderModelOnly"
+  }
+}

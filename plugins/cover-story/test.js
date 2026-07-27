@@ -3,6 +3,7 @@
 const assert = require("node:assert/strict");
 const { hash, makeCover, sceneIDFromPath, externalIDFromURL } = require("./cover-story.js");
 const themes = require("./themes.js");
+const personas = require("./personas.js");
 
 const first = makeCover("library-seed");
 const second = makeCover("library-seed");
@@ -39,6 +40,8 @@ assert.equal(externalIDFromURL("https://stashdb.org/scenes/abc-123?source=curato
 assert.equal(externalIDFromURL("/scenes/42"), null);
 assert.deepEqual(first.scene(original), second.scene({ ...original, title: "something else" }));
 assert.equal(first.personName("7"), first.performer({ id: "7" }).name);
+assert.ok(personas.some((persona) => persona.name === first.personName("7")));
+assert.match(first.performer(originalPerformer).image_path, /^\/plugin\/cover-story\/assets\/performers\/actor-\d{3}\.webp$/);
 assert.match(first.scene(original).paths.screenshot, /^data:image\/svg\+xml/);
 assert.equal(JSON.stringify(first.scene(original)).includes("private"), false);
 assert.equal(first.performer(originalPerformer).measurements, "");
@@ -46,10 +49,11 @@ assert.deepEqual(first.performer(originalPerformer).custom_fields, {});
 assert.equal(JSON.stringify(first.marker(originalMarker)).includes("private"), false);
 assert.equal(first.marker(originalMarker).stream, "");
 assert.equal(JSON.stringify(first.curatorItem(originalCuratorItem, "scene")).includes("private"), false);
-assert.match(first.curatorItem(originalCuratorItem, "scene").payload.performers[0].performer.images[0].url, /^data:image\/svg\+xml/);
+assert.match(first.curatorItem(originalCuratorItem, "scene").payload.performers[0].performer.images[0].url, /\.webp$/);
 assert.equal(first.curatorItem(originalCuratorItem, "scene").payload.tags[0].name, first.labelName("external-tag"));
 assert.notEqual(first.sceneTitle("42"), makeCover("another-seed").sceneTitle("42"));
 assert.equal(themes.length, 8);
+assert.equal(personas.length, 439);
 for (const theme of themes) {
   for (const field of ["leads", "goals", "complications", "stakes", "places", "discoveries"]) {
     assert.ok(theme.descriptions[field].length >= 5, `${theme.id}.${field} needs at least five choices`);

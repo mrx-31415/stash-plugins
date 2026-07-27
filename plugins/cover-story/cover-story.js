@@ -35,6 +35,7 @@
     "Studio Production", "Summer", "Travel", "Urban", "Warm Palette", "Winter",
   ];
   const themes = root?.CoverStoryThemes || (typeof module !== "undefined" && module.exports ? require("./themes.js") : []);
+  const personas = root?.CoverStoryPersonas || (typeof module !== "undefined" && module.exports ? require("./personas.js") : []);
 
   function hash(value) {
     let result = 2166136261;
@@ -53,14 +54,25 @@
     return String(value || "").match(/stashdb\.org\/(?:scenes|performers)\/([^/?#]+)/)?.[1] || null;
   }
 
-  function makeCover(seed, themeDefinitions) {
+  function makeCover(seed, themeDefinitions, personaDefinitions) {
     const key = (type, id, field) => hash(`${seed}:${type}:${id ?? "0"}:${field}`);
     const pick = (items, type, id, field) => items[key(type, id, field) % items.length];
     const number = (type, id, field, minimum, range) => minimum + key(type, id, field) % range;
     const copy = (value, changes) => Object.assign({}, value || {}, changes);
 
+    function performerPersona(id) {
+      const available = personaDefinitions ?? root?.CoverStoryPersonas ?? personas;
+      return available.length ? pick(available, "performer", id, "persona") : null;
+    }
+
     function personName(id) {
+      const persona = performerPersona(id);
+      if (persona) return persona.name;
       return `${pick(firstNames, "performer", id, "first")} ${String.fromCharCode(65 + number("performer", id, "middle", 0, 26))}. ${pick(lastNames, "performer", id, "last")}`;
+    }
+
+    function performerImage(id, title) {
+      return performerPersona(id)?.image_path || poster(`actor-${id}`, title || personName(id), true);
     }
 
     function sceneTitle(id) {
@@ -131,7 +143,7 @@
     }
 
     const performerLite = (performer) => performer && copy(performer, {
-      name: personName(performer.id), disambiguation: "", image_path: poster(`actor-${performer.id}`, personName(performer.id), true),
+      name: personName(performer.id), disambiguation: "", image_path: performerImage(performer.id),
     });
     const studioLite = (studio) => studio && copy(studio, {
       name: studioName(studio.id), image_path: poster(`studio-${studio.id}`, studioName(studio.id), false),
@@ -150,15 +162,19 @@
 
     function performer(value) {
       if (!value) return value;
-      const name = personName(value.id);
+      const persona = performerPersona(value.id);
+      const name = persona?.name || personName(value.id);
       return copy(value, {
         name, disambiguation: "", alias_list: [], urls: [], stash_ids: [],
         details: `${name} is an independent screen actor known for thoughtful ensemble performances.`,
-        gender: null, birthdate: null, death_date: null, ethnicity: "", country: "",
-        eye_color: "", hair_color: "", height_cm: null, weight: null,
-        measurements: "", fake_tits: "", penis_length: null, circumcised: null,
-        tattoos: "", piercings: "", career_length: "", career_start: "", career_end: "",
-        image_path: poster(`actor-${value.id}`, name, true),
+        gender: persona?.gender || null, birthdate: persona?.birthdate || null, death_date: null,
+        ethnicity: persona?.ethnicity || "", country: persona?.country || "",
+        eye_color: persona?.eye_color || "", hair_color: persona?.hair_color || "",
+        height_cm: persona?.height_cm ?? null, weight: persona?.weight_kg ?? null,
+        measurements: persona?.measurements || "", fake_tits: "", penis_length: null, circumcised: null,
+        tattoos: persona?.tattoos || "", piercings: persona?.piercings || "",
+        career_length: "", career_start: "", career_end: "",
+        image_path: performerImage(value.id, name),
         tags: (value.tags || []).map(tagLite), custom_fields: {}, ...safeTimes("performer", value.id),
       });
     }
@@ -233,7 +249,7 @@
       const title = isPerformer ? personName(value.id) : sceneTitle(value.id);
       return copy(value, { payload: copy(value.payload, {
         title, name: title,
-        images: [{ url: poster(`${isPerformer ? "actor" : "scene"}-${value.id}`, title, isPerformer) }],
+        images: [{ url: isPerformer ? performerImage(value.id, title) : poster(`scene-${value.id}`, title, false) }],
         performers: (value.payload.performers || []).map((entry) => {
           const performer = performerLite(entry.performer);
           return copy(entry, { performer: copy(performer, { images: [{ url: performer.image_path }] }) });
@@ -241,7 +257,7 @@
         tags: (value.payload.tags || []).map(tagLite),
         studio: studioLite(value.payload.studio),
         why: [isPerformer ? "Independent screen actor." : sceneDescription(value.id)],
-        ...(isPerformer ? { birth_date: fakeDate("performer", value.id) } : { release_date: fakeDate("scene", value.id) }),
+        ...(isPerformer ? { birth_date: performerPersona(value.id)?.birthdate || fakeDate("performer", value.id) } : { release_date: fakeDate("scene", value.id) }),
       }) });
     }
 
@@ -273,7 +289,7 @@
       });
     }
 
-    return { hash, personName, sceneTitle, sceneTheme, sceneDescription, studioName, labelName, fakeDate, poster, performer, studio, tag, group, scene, marker, curatorItem, gallery, image };
+    return { hash, performerPersona, personName, performerImage, sceneTitle, sceneTheme, sceneDescription, studioName, labelName, fakeDate, poster, performer, studio, tag, group, scene, marker, curatorItem, gallery, image };
   }
 
   const exported = { hash, makeCover, sceneIDFromPath, externalIDFromURL };
@@ -400,10 +416,11 @@
   function Poster(props) {
     const entity = props.scene || props.performer || props.studio || props.tag || props.group || props.gallery || props.image || {};
     const type = props.performer ? "actor" : props.gallery ? "gallery" : props.image ? "image" : "film";
-    const title = props.performer ? cover.personName(entity.id) : props.gallery ? cover.gallery(entity).title : props.image ? cover.image(entity).title : cover.sceneTitle(entity.id);
+    const performer = props.performer && cover.performer(entity);
+    const title = performer ? performer.name : props.gallery ? cover.gallery(entity).title : props.image ? cover.image(entity).title : cover.sceneTitle(entity.id);
     return React.createElement("div", {
       className: `cover-story-poster ${type === "actor" ? "portrait" : ""}`,
-      style: { backgroundImage: `url("${cover.poster(`${type}-${entity.id}`, title, type === "actor")}")` },
+      style: { backgroundImage: `url("${performer ? performer.image_path : cover.poster(`${type}-${entity.id}`, title, false)}")` },
       role: "img", "aria-label": title,
     }, React.createElement("span", null, title));
   }
@@ -430,7 +447,7 @@
       if (!id) return;
       const title = performer ? cover.personName(id) : cover.sceneTitle(id);
       const image = card.querySelector(`img.${performer ? "performer" : "scene"}-card-image`);
-      const source = cover.poster(`${performer ? "actor" : "scene"}-${id}`, title, performer);
+      const source = performer ? cover.performerImage(id, title) : cover.poster(`scene-${id}`, title, false);
       if (image && image.getAttribute("src") !== source) image.setAttribute("src", source);
       if (image) image.setAttribute("alt", title);
       const heading = card.querySelector(".curator-card-body h3 a");
@@ -454,7 +471,7 @@
       if (!id) return;
       const title = performer ? cover.personName(id) : cover.sceneTitle(id);
       const image = reference.querySelector("img");
-      const source = cover.poster(`${performer ? "actor" : "scene"}-${id}`, title, performer);
+      const source = performer ? cover.performerImage(id, title) : cover.poster(`scene-${id}`, title, false);
       if (image && image.getAttribute("src") !== source) image.setAttribute("src", source);
       const heading = reference.querySelector("strong");
       if (heading && heading.textContent !== title) heading.textContent = title;

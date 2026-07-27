@@ -32,11 +32,10 @@ Reload available packages, install **Cover Story**, and reload Stash.
 
 ## Assets
 
-The initial implementation uses dependency-free procedural posters. See
-[`assets/README.md`](assets/README.md) for the production asset prompt and slot
-specification that will replace these stand-ins with curated cinematic layers.
-Theme titles, description fragments, tags, studio vocabulary, and planned asset
-paths live together in [`themes.js`](themes.js).
+Performer pages and cards use a deterministic pool of curated fictional
+portraits and matching fictional metadata. Other entity types still use
+dependency-free procedural posters. Theme titles, description fragments, tags,
+studio vocabulary, and planned scene asset paths live in [`themes.js`](themes.js).
 
 ## Development
 

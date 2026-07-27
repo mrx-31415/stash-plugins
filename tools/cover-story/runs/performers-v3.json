@@ -1,0 +1,2027 @@
+{
+  "version": 1,
+  "id": "performers-v3",
+  "source_root_hint": "/mnt/Misc/sd/cover-story/experiments",
+  "started_at": "2026-07-25T07:22:47.811730+00:00",
+  "completed_at": "2026-07-25T13:30:07.692372+00:00",
+  "generator": {
+    "path": "tools/cover-story/experiment_headshots.py",
+    "sha256": "afe7ba845a5a2c30c31f4aa273ff226838eb71d39b44ab217722fd9a1031a1db"
+  },
+  "workflow": {
+    "path": "tools/cover-story/workflows/krea2-gguf-turbo-bypass.json",
+    "sha256": "ddeedb3e838f06a63c986818d22807bdbff150c596d2fdae15ba27ef33407ecf",
+    "models": {
+      "unet": "Krea-2-Base-Q5_K_M.gguf",
+      "vae": "Wan2_1_VAE_fp32.safetensors",
+      "text_encoder": "qwen3vl_4b_bf16.safetensors",
+      "loras": [
+        {
+          "name": "krea2_turbo_lora_rank_64_bf16.safetensors",
+          "strength": 0.6
+        },
+        {
+          "name": "krea2filterbypass.safetensors",
+          "strength": 5
+        }
+      ]
+    },
+    "samplers": [
+      {
+        "sampler_name": "exponential/res_2s",
+        "scheduler": "beta",
+        "steps": 6,
+        "denoise": 1,
+        "eta": 0.5
+      },
+      {
+        "sampler_name": "multistep/deis_3m",
+        "scheduler": "bong_tangent",
+        "steps": 2,
+        "denoise": 0.2,
+        "eta": 0.5
+      }
+    ],
+    "resolution": {
+      "width": 1200,
+      "height": 1600,
+      "batch_size": 1
+    }
+  },
+  "counts": {
+    "keep": 49,
+    "maybe": 17,
+    "reject": 30
+  },
+  "entries": [
+    {
+      "number": 1,
+      "source": "performers-v3/01-orla-hart-c01-cool-gray-ribbed__00001_.png",
+      "source_sha256": "8dcb76bc65d60660d8965fb09cf1e949bb606b0472a0027a4ef16fa5802d15ae",
+      "bytes": 2905819,
+      "generated_at": "2026-07-25T07:22:47.811730+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "orla-hart",
+      "candidate": 1,
+      "portrait_style": "cool-gray-ribbed",
+      "prompt": "Studio portrait of Orla Hart, a strikingly beautiful, youthful-looking fictional 25-year-old Irish actress of Irish heritage, with fair freckled skin and green eyes, long copper waves, and a tiny gold nose stud. Square to camera with relaxed shoulders, her face fully visible, and a confident closed-lip smile. Waist-up composition, wearing a casual crew-neck ribbed knit top in a rich jewel tone, against a cool-gray seamless studio backdrop with soft diffused light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 3028822659,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "Nice smile, pretty face, good lively pose",
+        "updated_at": "2026-07-25T07:33:11.894367+00:00"
+      },
+      "persona_id": "actor-001"
+    },
+    {
+      "number": 2,
+      "source": "performers-v3/02-orla-hart-c02-warm-beige-jersey__00001_.png",
+      "source_sha256": "c0bdcdaaff416f58198696a78cb755a213ed78b7f9050934cd5f30a459417fb9",
+      "bytes": 2619451,
+      "generated_at": "2026-07-25T07:26:40.731325+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "orla-hart",
+      "candidate": 2,
+      "portrait_style": "warm-beige-jersey",
+      "prompt": "Studio portrait of Orla Hart, a strikingly beautiful, youthful-looking fictional 25-year-old Irish actress of Irish heritage, with fair freckled skin and green eyes, long copper waves, and a tiny gold nose stud. Subtle three-quarter angle with relaxed shoulders, her face fully toward the camera, and a soft natural smile. Waist-up composition, wearing a casual short-sleeve jersey top with a moderate scoop neckline in a muted earth tone, against a warm beige lightly textured studio backdrop with clean soft light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 3057488427,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "Pretty, nice wardrobe. A bit too neutral facial expression",
+        "updated_at": "2026-07-25T07:33:43.963983+00:00"
+      },
+      "persona_id": "actor-002"
+    },
+    {
+      "number": 3,
+      "source": "performers-v3/03-orla-hart-c03-pale-sage-boatneck__00001_.png",
+      "source_sha256": "e56d59ea7e128f24de6b7335a39c1cc80673ddd14febb7552ac6f4cf7d10c0fc",
+      "bytes": 2969136,
+      "generated_at": "2026-07-25T07:30:32.566891+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "orla-hart",
+      "candidate": 3,
+      "portrait_style": "pale-sage-boatneck",
+      "prompt": "Studio portrait of Orla Hart, a strikingly beautiful, youthful-looking fictional 25-year-old Irish actress of Irish heritage, with fair freckled skin and green eyes, long copper waves, and a tiny gold nose stud. Shoulders slightly angled, her face fully toward the camera, with a poised neutral expression. Waist-up composition, wearing a casual soft boat-neck knit top in a deep cool color, against a muted pale-sage studio backdrop with gentle directional light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 3100011633,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "maybe",
+        "notes": "Not the best face",
+        "updated_at": "2026-07-25T07:33:58.831466+00:00"
+      }
+    },
+    {
+      "number": 4,
+      "source": "performers-v3/04-orla-hart-c04-blue-gray-henley__00001_.png",
+      "source_sha256": "bd11c941009e98067545f9e4446872d9156a9bf10429a40fa566f1c18f4b292c",
+      "bytes": 2663110,
+      "generated_at": "2026-07-25T07:34:24.425430+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "orla-hart",
+      "candidate": 4,
+      "portrait_style": "blue-gray-henley",
+      "prompt": "Studio portrait of Orla Hart, a strikingly beautiful, youthful-looking fictional 25-year-old Irish actress of Irish heritage, with fair freckled skin and green eyes, long copper waves, and a tiny gold nose stud. Gentle head tilt with relaxed shoulders, her face fully toward the camera, and a warm confident expression. Waist-up composition, wearing a casual henley-style knit top in a warm muted color, against a desaturated blue-gray studio backdrop with soft window-like light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 3167493857,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "",
+        "updated_at": "2026-07-25T07:48:50.218169+00:00"
+      },
+      "persona_id": "actor-003"
+    },
+    {
+      "number": 5,
+      "source": "performers-v3/05-mara-bellini-c01-warm-beige-jersey__00001_.png",
+      "source_sha256": "24fc9ef00aa3d1f07828248d6387786385bd238a3f9f7f3381ba2b4422bcd346",
+      "bytes": 2677844,
+      "generated_at": "2026-07-25T07:38:16.776979+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "mara-bellini",
+      "candidate": 1,
+      "portrait_style": "warm-beige-jersey",
+      "prompt": "Studio portrait of Mara Bellini, a strikingly beautiful, youthful-looking fictional 31-year-old Italian actress of southern Italian heritage, with warm olive skin and hazel eyes, deep auburn curls, and a beauty mark above her lip. Subtle three-quarter angle with relaxed shoulders, her face fully toward the camera, and a soft natural smile. Waist-up composition, wearing a casual short-sleeve jersey top with a moderate scoop neckline in a muted earth tone, against a warm beige lightly textured studio backdrop with clean soft light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 4028822659,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "",
+        "updated_at": "2026-07-25T07:48:52.695746+00:00"
+      },
+      "persona_id": "actor-004"
+    },
+    {
+      "number": 6,
+      "source": "performers-v3/06-mara-bellini-c02-pale-sage-boatneck__00001_.png",
+      "source_sha256": "5efd8ca71fe3eab355bc752be0d5584f50e6d355c2fd5dc97aa5e61a384cb80b",
+      "bytes": 2952909,
+      "generated_at": "2026-07-25T07:42:07.975534+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "mara-bellini",
+      "candidate": 2,
+      "portrait_style": "pale-sage-boatneck",
+      "prompt": "Studio portrait of Mara Bellini, a strikingly beautiful, youthful-looking fictional 31-year-old Italian actress of southern Italian heritage, with warm olive skin and hazel eyes, deep auburn curls, and a beauty mark above her lip. Shoulders slightly angled, her face fully toward the camera, with a poised neutral expression. Waist-up composition, wearing a casual soft boat-neck knit top in a deep cool color, against a muted pale-sage studio backdrop with gentle directional light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 4057488427,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "",
+        "updated_at": "2026-07-25T07:48:58.103539+00:00"
+      },
+      "persona_id": "actor-005"
+    },
+    {
+      "number": 7,
+      "source": "performers-v3/07-mara-bellini-c03-blue-gray-henley__00001_.png",
+      "source_sha256": "1db6a4e8e67af4b118311604c0dc27aec0a267557f9d0fd1f8f1f548bd6773c6",
+      "bytes": 2927606,
+      "generated_at": "2026-07-25T07:46:00.375112+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "mara-bellini",
+      "candidate": 3,
+      "portrait_style": "blue-gray-henley",
+      "prompt": "Studio portrait of Mara Bellini, a strikingly beautiful, youthful-looking fictional 31-year-old Italian actress of southern Italian heritage, with warm olive skin and hazel eyes, deep auburn curls, and a beauty mark above her lip. Gentle head tilt with relaxed shoulders, her face fully toward the camera, and a warm confident expression. Waist-up composition, wearing a casual henley-style knit top in a warm muted color, against a desaturated blue-gray studio backdrop with soft window-like light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 4100011633,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "",
+        "updated_at": "2026-07-25T07:49:00.366548+00:00"
+      },
+      "persona_id": "actor-006"
+    },
+    {
+      "number": 8,
+      "source": "performers-v3/08-mara-bellini-c04-cool-gray-ribbed__00001_.png",
+      "source_sha256": "5d2c8457b5136eb67686ebe94d39c5824da3846dec7cf53194d3b2774c18262d",
+      "bytes": 2927941,
+      "generated_at": "2026-07-25T07:49:52.367681+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "mara-bellini",
+      "candidate": 4,
+      "portrait_style": "cool-gray-ribbed",
+      "prompt": "Studio portrait of Mara Bellini, a strikingly beautiful, youthful-looking fictional 31-year-old Italian actress of southern Italian heritage, with warm olive skin and hazel eyes, deep auburn curls, and a beauty mark above her lip. Square to camera with relaxed shoulders, her face fully visible, and a confident closed-lip smile. Waist-up composition, wearing a casual crew-neck ribbed knit top in a rich jewel tone, against a cool-gray seamless studio backdrop with soft diffused light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 4167493857,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "",
+        "updated_at": "2026-07-25T07:59:35.452633+00:00"
+      },
+      "persona_id": "actor-007"
+    },
+    {
+      "number": 9,
+      "source": "performers-v3/09-elin-nystrom-c01-pale-sage-boatneck__00001_.png",
+      "source_sha256": "15a83594a236daf76dddc1816d4608f17a2ce89744fd47382eab4aef4d6c6445",
+      "bytes": 2811378,
+      "generated_at": "2026-07-25T07:53:43.896240+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "elin-nystrom",
+      "candidate": 1,
+      "portrait_style": "pale-sage-boatneck",
+      "prompt": "Studio portrait of Elin Nyström, a strikingly beautiful, youthful-looking fictional 27-year-old Swedish actress of Scandinavian heritage, with fair skin and blue eyes, strawberry-blonde layers, and delicate stacked ear piercings. Shoulders slightly angled, her face fully toward the camera, with a poised neutral expression. Waist-up composition, wearing a casual soft boat-neck knit top in a deep cool color, against a muted pale-sage studio backdrop with gentle directional light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 5028822659,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "reject",
+        "notes": "Bad face",
+        "updated_at": "2026-07-25T08:04:05.760535+00:00"
+      }
+    },
+    {
+      "number": 10,
+      "source": "performers-v3/10-elin-nystrom-c02-blue-gray-henley__00001_.png",
+      "source_sha256": "9f7330958b074f1a49fb12e22ca3ca19562bc9e083ccf17a486a907762bd3c37",
+      "bytes": 2818276,
+      "generated_at": "2026-07-25T07:57:36.228815+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "elin-nystrom",
+      "candidate": 2,
+      "portrait_style": "blue-gray-henley",
+      "prompt": "Studio portrait of Elin Nyström, a strikingly beautiful, youthful-looking fictional 27-year-old Swedish actress of Scandinavian heritage, with fair skin and blue eyes, strawberry-blonde layers, and delicate stacked ear piercings. Gentle head tilt with relaxed shoulders, her face fully toward the camera, and a warm confident expression. Waist-up composition, wearing a casual henley-style knit top in a warm muted color, against a desaturated blue-gray studio backdrop with soft window-like light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 5057488427,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "",
+        "updated_at": "2026-07-25T07:59:40.549734+00:00"
+      },
+      "persona_id": "actor-008"
+    },
+    {
+      "number": 11,
+      "source": "performers-v3/11-elin-nystrom-c03-cool-gray-ribbed__00001_.png",
+      "source_sha256": "131d54ff59899437b158096d47d1280d2dd3671640310013de2158873c82b5fc",
+      "bytes": 2857980,
+      "generated_at": "2026-07-25T08:01:28.281385+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "elin-nystrom",
+      "candidate": 3,
+      "portrait_style": "cool-gray-ribbed",
+      "prompt": "Studio portrait of Elin Nyström, a strikingly beautiful, youthful-looking fictional 27-year-old Swedish actress of Scandinavian heritage, with fair skin and blue eyes, strawberry-blonde layers, and delicate stacked ear piercings. Square to camera with relaxed shoulders, her face fully visible, and a confident closed-lip smile. Waist-up composition, wearing a casual crew-neck ribbed knit top in a rich jewel tone, against a cool-gray seamless studio backdrop with soft diffused light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 5100011633,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "reject",
+        "notes": "Bad face",
+        "updated_at": "2026-07-25T08:04:14.052614+00:00"
+      }
+    },
+    {
+      "number": 12,
+      "source": "performers-v3/12-elin-nystrom-c04-warm-beige-jersey__00001_.png",
+      "source_sha256": "cdb7d4594f4680c04c1b0b66cf96475aa370f6b5e37ba4a95d7eb8cbcffc2adb",
+      "bytes": 2704497,
+      "generated_at": "2026-07-25T08:05:20.468960+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "elin-nystrom",
+      "candidate": 4,
+      "portrait_style": "warm-beige-jersey",
+      "prompt": "Studio portrait of Elin Nyström, a strikingly beautiful, youthful-looking fictional 27-year-old Swedish actress of Scandinavian heritage, with fair skin and blue eyes, strawberry-blonde layers, and delicate stacked ear piercings. Subtle three-quarter angle with relaxed shoulders, her face fully toward the camera, and a soft natural smile. Waist-up composition, wearing a casual short-sleeve jersey top with a moderate scoop neckline in a muted earth tone, against a warm beige lightly textured studio backdrop with clean soft light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 5167493857,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "Good face. A bit too much shadow on the face",
+        "updated_at": "2026-07-25T08:10:37.495169+00:00"
+      },
+      "persona_id": "actor-009"
+    },
+    {
+      "number": 13,
+      "source": "performers-v3/13-zuri-adebayo-c01-blue-gray-henley__00001_.png",
+      "source_sha256": "0a7b39ca7c6f24cdeed5ce7a3a846480922e50886394ff4e1dba88ee4cc7b1d7",
+      "bytes": 3043852,
+      "generated_at": "2026-07-25T08:09:12.806537+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "zuri-adebayo",
+      "candidate": 1,
+      "portrait_style": "blue-gray-henley",
+      "prompt": "Studio portrait of Zuri Adebayo, a strikingly beautiful, youthful-looking fictional 29-year-old British actress of Nigerian Yoruba heritage, with deep brown skin and amber eyes, burgundy-tinted natural coils, and a small eyebrow piercing. Gentle head tilt with relaxed shoulders, her face fully toward the camera, and a warm confident expression. Waist-up composition, wearing a casual henley-style knit top in a warm muted color, against a desaturated blue-gray studio backdrop with soft window-like light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 6028822659,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "maybe",
+        "notes": "",
+        "updated_at": "2026-07-25T08:14:03.937709+00:00"
+      }
+    },
+    {
+      "number": 14,
+      "source": "performers-v3/14-zuri-adebayo-c02-cool-gray-ribbed__00001_.png",
+      "source_sha256": "74d563a6ac873e8f0220db1437bed3cc1848e363283ec1be66c66b35cfe450c6",
+      "bytes": 3304401,
+      "generated_at": "2026-07-25T08:13:04.901110+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "zuri-adebayo",
+      "candidate": 2,
+      "portrait_style": "cool-gray-ribbed",
+      "prompt": "Studio portrait of Zuri Adebayo, a strikingly beautiful, youthful-looking fictional 29-year-old British actress of Nigerian Yoruba heritage, with deep brown skin and amber eyes, burgundy-tinted natural coils, and a small eyebrow piercing. Square to camera with relaxed shoulders, her face fully visible, and a confident closed-lip smile. Waist-up composition, wearing a casual crew-neck ribbed knit top in a rich jewel tone, against a cool-gray seamless studio backdrop with soft diffused light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 6057488427,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "reject",
+        "notes": "Face too smooth/waxy",
+        "updated_at": "2026-07-25T09:15:13.178280+00:00"
+      }
+    },
+    {
+      "number": 15,
+      "source": "performers-v3/15-zuri-adebayo-c03-warm-beige-jersey__00001_.png",
+      "source_sha256": "354fccfb74c212e37f1af4a12f79d33d95d5510864f606b874dcd5468a514925",
+      "bytes": 2997901,
+      "generated_at": "2026-07-25T08:16:58.388710+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "zuri-adebayo",
+      "candidate": 3,
+      "portrait_style": "warm-beige-jersey",
+      "prompt": "Studio portrait of Zuri Adebayo, a strikingly beautiful, youthful-looking fictional 29-year-old British actress of Nigerian Yoruba heritage, with deep brown skin and amber eyes, burgundy-tinted natural coils, and a small eyebrow piercing. Subtle three-quarter angle with relaxed shoulders, her face fully toward the camera, and a soft natural smile. Waist-up composition, wearing a casual short-sleeve jersey top with a moderate scoop neckline in a muted earth tone, against a warm beige lightly textured studio backdrop with clean soft light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 6100011633,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "",
+        "updated_at": "2026-07-25T09:15:03.820926+00:00"
+      },
+      "persona_id": "actor-010"
+    },
+    {
+      "number": 16,
+      "source": "performers-v3/16-zuri-adebayo-c04-pale-sage-boatneck__00001_.png",
+      "source_sha256": "15631fc5f4ffd4a6800d47aaf3cd23d57f9f3f5ee3d33b347515bbf7de45f704",
+      "bytes": 2950906,
+      "generated_at": "2026-07-25T08:20:50.072274+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "zuri-adebayo",
+      "candidate": 4,
+      "portrait_style": "pale-sage-boatneck",
+      "prompt": "Studio portrait of Zuri Adebayo, a strikingly beautiful, youthful-looking fictional 29-year-old British actress of Nigerian Yoruba heritage, with deep brown skin and amber eyes, burgundy-tinted natural coils, and a small eyebrow piercing. Shoulders slightly angled, her face fully toward the camera, with a poised neutral expression. Waist-up composition, wearing a casual soft boat-neck knit top in a deep cool color, against a muted pale-sage studio backdrop with gentle directional light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 6167493857,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "reject",
+        "notes": "",
+        "updated_at": "2026-07-25T09:15:17.786560+00:00"
+      }
+    },
+    {
+      "number": 17,
+      "source": "performers-v3/17-clara-beaulieu-c01-cool-gray-ribbed__00001_.png",
+      "source_sha256": "ed3e514147358df70d10a6a99a8ddc9524d5cbf3f15a439f20f071ade6008d0f",
+      "bytes": 2839802,
+      "generated_at": "2026-07-25T08:24:41.805840+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "clara-beaulieu",
+      "candidate": 1,
+      "portrait_style": "cool-gray-ribbed",
+      "prompt": "Studio portrait of Clara Beaulieu, a strikingly beautiful, youthful-looking fictional 34-year-old Canadian actress of French-Canadian heritage, with fair skin and blue-gray eyes, long espresso-brown waves, and a botanical collarbone tattoo. Square to camera with relaxed shoulders, her face fully visible, and a confident closed-lip smile. Waist-up composition, wearing a casual crew-neck ribbed knit top in a rich jewel tone, against a cool-gray seamless studio backdrop with soft diffused light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 7028822659,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "",
+        "updated_at": "2026-07-25T09:15:20.296572+00:00"
+      },
+      "persona_id": "actor-011"
+    },
+    {
+      "number": 18,
+      "source": "performers-v3/18-clara-beaulieu-c02-warm-beige-jersey__00001_.png",
+      "source_sha256": "1fb34d3eb47f86ec8151e8391180116efcc2391c880625d56939f35b647b52c3",
+      "bytes": 2658461,
+      "generated_at": "2026-07-25T08:28:34.065416+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "clara-beaulieu",
+      "candidate": 2,
+      "portrait_style": "warm-beige-jersey",
+      "prompt": "Studio portrait of Clara Beaulieu, a strikingly beautiful, youthful-looking fictional 34-year-old Canadian actress of French-Canadian heritage, with fair skin and blue-gray eyes, long espresso-brown waves, and a botanical collarbone tattoo. Subtle three-quarter angle with relaxed shoulders, her face fully toward the camera, and a soft natural smile. Waist-up composition, wearing a casual short-sleeve jersey top with a moderate scoop neckline in a muted earth tone, against a warm beige lightly textured studio backdrop with clean soft light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 7057488427,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "reject",
+        "notes": "",
+        "updated_at": "2026-07-25T09:15:25.914507+00:00"
+      }
+    },
+    {
+      "number": 19,
+      "source": "performers-v3/19-clara-beaulieu-c03-pale-sage-boatneck__00001_.png",
+      "source_sha256": "16d59060fba1265854a5fe09d15ec69aded1d803e75e93b6dbaa45727b48eae9",
+      "bytes": 2911459,
+      "generated_at": "2026-07-25T08:32:25.612978+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "clara-beaulieu",
+      "candidate": 3,
+      "portrait_style": "pale-sage-boatneck",
+      "prompt": "Studio portrait of Clara Beaulieu, a strikingly beautiful, youthful-looking fictional 34-year-old Canadian actress of French-Canadian heritage, with fair skin and blue-gray eyes, long espresso-brown waves, and a botanical collarbone tattoo. Shoulders slightly angled, her face fully toward the camera, with a poised neutral expression. Waist-up composition, wearing a casual soft boat-neck knit top in a deep cool color, against a muted pale-sage studio backdrop with gentle directional light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 7100011633,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "reject",
+        "notes": "",
+        "updated_at": "2026-07-25T09:15:28.924482+00:00"
+      }
+    },
+    {
+      "number": 20,
+      "source": "performers-v3/20-clara-beaulieu-c04-blue-gray-henley__00001_.png",
+      "source_sha256": "437f70f99958e6919f9642dc3192b6707fe2cd5b80b41adaed00f792e3286192",
+      "bytes": 2821120,
+      "generated_at": "2026-07-25T08:36:17.234606+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "clara-beaulieu",
+      "candidate": 4,
+      "portrait_style": "blue-gray-henley",
+      "prompt": "Studio portrait of Clara Beaulieu, a strikingly beautiful, youthful-looking fictional 34-year-old Canadian actress of French-Canadian heritage, with fair skin and blue-gray eyes, long espresso-brown waves, and a botanical collarbone tattoo. Gentle head tilt with relaxed shoulders, her face fully toward the camera, and a warm confident expression. Waist-up composition, wearing a casual henley-style knit top in a warm muted color, against a desaturated blue-gray studio backdrop with soft window-like light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 7167493857,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "",
+        "updated_at": "2026-07-25T09:15:30.768429+00:00"
+      },
+      "persona_id": "actor-012"
+    },
+    {
+      "number": 21,
+      "source": "performers-v3/21-maya-valenca-c01-warm-beige-jersey__00001_.png",
+      "source_sha256": "651cc881052f1665b1cc1b03d6e2db589b2e21256198b3d05499413402e804e5",
+      "bytes": 2952382,
+      "generated_at": "2026-07-25T08:40:09.300431+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "maya-valenca",
+      "candidate": 1,
+      "portrait_style": "warm-beige-jersey",
+      "prompt": "Studio portrait of Maya Valença, a strikingly beautiful, youthful-looking fictional 24-year-old Brazilian actress of mixed Afro-European Brazilian heritage, with light-brown skin and hazel eyes, voluminous chestnut curls, and a pronounced cupid's bow. Subtle three-quarter angle with relaxed shoulders, her face fully toward the camera, and a soft natural smile. Waist-up composition, wearing a casual short-sleeve jersey top with a moderate scoop neckline in a muted earth tone, against a warm beige lightly textured studio backdrop with clean soft light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 8028822659,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "",
+        "updated_at": "2026-07-25T09:15:33.870152+00:00"
+      },
+      "persona_id": "actor-013"
+    },
+    {
+      "number": 22,
+      "source": "performers-v3/22-maya-valenca-c02-pale-sage-boatneck__00001_.png",
+      "source_sha256": "a705273faa86b8db1947993681ce49cf41c31158bc2407d637db75f91cc003bb",
+      "bytes": 3045691,
+      "generated_at": "2026-07-25T08:44:01.051479+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "maya-valenca",
+      "candidate": 2,
+      "portrait_style": "pale-sage-boatneck",
+      "prompt": "Studio portrait of Maya Valença, a strikingly beautiful, youthful-looking fictional 24-year-old Brazilian actress of mixed Afro-European Brazilian heritage, with light-brown skin and hazel eyes, voluminous chestnut curls, and a pronounced cupid's bow. Shoulders slightly angled, her face fully toward the camera, with a poised neutral expression. Waist-up composition, wearing a casual soft boat-neck knit top in a deep cool color, against a muted pale-sage studio backdrop with gentle directional light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 8057488427,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "",
+        "updated_at": "2026-07-25T09:15:36.433721+00:00"
+      },
+      "persona_id": "actor-014"
+    },
+    {
+      "number": 23,
+      "source": "performers-v3/23-maya-valenca-c03-blue-gray-henley__00001_.png",
+      "source_sha256": "f69aa71ed7308d0e307dedf5618d5d081fcabd5350b03bcd0a8e1773b987bb2e",
+      "bytes": 3121378,
+      "generated_at": "2026-07-25T08:47:52.970251+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "maya-valenca",
+      "candidate": 3,
+      "portrait_style": "blue-gray-henley",
+      "prompt": "Studio portrait of Maya Valença, a strikingly beautiful, youthful-looking fictional 24-year-old Brazilian actress of mixed Afro-European Brazilian heritage, with light-brown skin and hazel eyes, voluminous chestnut curls, and a pronounced cupid's bow. Gentle head tilt with relaxed shoulders, her face fully toward the camera, and a warm confident expression. Waist-up composition, wearing a casual henley-style knit top in a warm muted color, against a desaturated blue-gray studio backdrop with soft window-like light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 8100011633,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "",
+        "updated_at": "2026-07-25T09:15:38.928922+00:00"
+      },
+      "persona_id": "actor-015"
+    },
+    {
+      "number": 24,
+      "source": "performers-v3/24-maya-valenca-c04-cool-gray-ribbed__00001_.png",
+      "source_sha256": "004b9dda8f81d7859e2355508c7ef157f3cb84b09d4247ec2502cb35ac90ac96",
+      "bytes": 3290048,
+      "generated_at": "2026-07-25T08:51:44.698936+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "maya-valenca",
+      "candidate": 4,
+      "portrait_style": "cool-gray-ribbed",
+      "prompt": "Studio portrait of Maya Valença, a strikingly beautiful, youthful-looking fictional 24-year-old Brazilian actress of mixed Afro-European Brazilian heritage, with light-brown skin and hazel eyes, voluminous chestnut curls, and a pronounced cupid's bow. Square to camera with relaxed shoulders, her face fully visible, and a confident closed-lip smile. Waist-up composition, wearing a casual crew-neck ribbed knit top in a rich jewel tone, against a cool-gray seamless studio backdrop with soft diffused light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 8167493857,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "",
+        "updated_at": "2026-07-25T09:15:41.134712+00:00"
+      },
+      "persona_id": "actor-016"
+    },
+    {
+      "number": 25,
+      "source": "performers-v3/25-sofia-marin-c01-pale-sage-boatneck__00001_.png",
+      "source_sha256": "abe433ebbb370c048bf5c613a6991f7123c951f8fd6bc610297a269e6b1d31d3",
+      "bytes": 2705445,
+      "generated_at": "2026-07-25T08:55:36.115726+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "sofia-marin",
+      "candidate": 1,
+      "portrait_style": "pale-sage-boatneck",
+      "prompt": "Studio portrait of Sofia Marín, a strikingly beautiful, youthful-looking fictional 36-year-old Spanish actress of Andalusian heritage, with olive skin and green eyes, a glossy dark-brown bob, and a delicate silver nose ring. Shoulders slightly angled, her face fully toward the camera, with a poised neutral expression. Waist-up composition, wearing a casual soft boat-neck knit top in a deep cool color, against a muted pale-sage studio backdrop with gentle directional light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 9028822659,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "reject",
+        "notes": "",
+        "updated_at": "2026-07-25T09:15:44.227965+00:00"
+      }
+    },
+    {
+      "number": 26,
+      "source": "performers-v3/26-sofia-marin-c02-blue-gray-henley__00001_.png",
+      "source_sha256": "cdd2354bb919dcc2be55e71385a450c37bff0a4f04fc0f646dfd019345aa8679",
+      "bytes": 2889138,
+      "generated_at": "2026-07-25T08:59:28.706555+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "sofia-marin",
+      "candidate": 2,
+      "portrait_style": "blue-gray-henley",
+      "prompt": "Studio portrait of Sofia Marín, a strikingly beautiful, youthful-looking fictional 36-year-old Spanish actress of Andalusian heritage, with olive skin and green eyes, a glossy dark-brown bob, and a delicate silver nose ring. Gentle head tilt with relaxed shoulders, her face fully toward the camera, and a warm confident expression. Waist-up composition, wearing a casual henley-style knit top in a warm muted color, against a desaturated blue-gray studio backdrop with soft window-like light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 9057488427,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "",
+        "updated_at": "2026-07-25T09:15:46.707897+00:00"
+      },
+      "persona_id": "actor-017"
+    },
+    {
+      "number": 27,
+      "source": "performers-v3/27-sofia-marin-c03-cool-gray-ribbed__00001_.png",
+      "source_sha256": "b25e5010e5c4198c8c22521fc74834239bf8cb6f927338a6d3250507abce89a7",
+      "bytes": 2797092,
+      "generated_at": "2026-07-25T09:03:20.578256+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "sofia-marin",
+      "candidate": 3,
+      "portrait_style": "cool-gray-ribbed",
+      "prompt": "Studio portrait of Sofia Marín, a strikingly beautiful, youthful-looking fictional 36-year-old Spanish actress of Andalusian heritage, with olive skin and green eyes, a glossy dark-brown bob, and a delicate silver nose ring. Square to camera with relaxed shoulders, her face fully visible, and a confident closed-lip smile. Waist-up composition, wearing a casual crew-neck ribbed knit top in a rich jewel tone, against a cool-gray seamless studio backdrop with soft diffused light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 9100011633,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "",
+        "updated_at": "2026-07-25T09:15:49.726438+00:00"
+      },
+      "persona_id": "actor-018"
+    },
+    {
+      "number": 28,
+      "source": "performers-v3/28-sofia-marin-c04-warm-beige-jersey__00001_.png",
+      "source_sha256": "01265b6656fd4a3b6a5cfdaf27cfd2292dbabd5f98c3729b1cfcc3b05e5671f7",
+      "bytes": 2581802,
+      "generated_at": "2026-07-25T09:07:12.370943+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "sofia-marin",
+      "candidate": 4,
+      "portrait_style": "warm-beige-jersey",
+      "prompt": "Studio portrait of Sofia Marín, a strikingly beautiful, youthful-looking fictional 36-year-old Spanish actress of Andalusian heritage, with olive skin and green eyes, a glossy dark-brown bob, and a delicate silver nose ring. Subtle three-quarter angle with relaxed shoulders, her face fully toward the camera, and a soft natural smile. Waist-up composition, wearing a casual short-sleeve jersey top with a moderate scoop neckline in a muted earth tone, against a warm beige lightly textured studio backdrop with clean soft light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 9167493857,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "maybe",
+        "notes": "",
+        "updated_at": "2026-07-25T09:15:52.610587+00:00"
+      }
+    },
+    {
+      "number": 29,
+      "source": "performers-v3/29-nia-arden-c01-blue-gray-henley__00001_.png",
+      "source_sha256": "d4d23d1315bed74836225796e7d3e180d9621493922a1008c8ff34d215710c98",
+      "bytes": 2918386,
+      "generated_at": "2026-07-25T09:11:04.770640+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "nia-arden",
+      "candidate": 1,
+      "portrait_style": "blue-gray-henley",
+      "prompt": "Studio portrait of Nia Arden, a strikingly beautiful, youthful-looking fictional 28-year-old American actress of African-American heritage, with medium-brown skin and dark eyes, long layered brunette hair, and a floral upper-arm tattoo. Gentle head tilt with relaxed shoulders, her face fully toward the camera, and a warm confident expression. Waist-up composition, wearing a casual henley-style knit top in a warm muted color, against a desaturated blue-gray studio backdrop with soft window-like light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 10028822659,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "",
+        "updated_at": "2026-07-25T09:15:58.134437+00:00"
+      },
+      "persona_id": "actor-019"
+    },
+    {
+      "number": 30,
+      "source": "performers-v3/30-nia-arden-c02-cool-gray-ribbed__00001_.png",
+      "source_sha256": "6506f18958f3e63196f9cb7d083179692c5d0b59d1057d49f5e456ab26b38e9c",
+      "bytes": 2823971,
+      "generated_at": "2026-07-25T09:14:56.442326+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "nia-arden",
+      "candidate": 2,
+      "portrait_style": "cool-gray-ribbed",
+      "prompt": "Studio portrait of Nia Arden, a strikingly beautiful, youthful-looking fictional 28-year-old American actress of African-American heritage, with medium-brown skin and dark eyes, long layered brunette hair, and a floral upper-arm tattoo. Square to camera with relaxed shoulders, her face fully visible, and a confident closed-lip smile. Waist-up composition, wearing a casual crew-neck ribbed knit top in a rich jewel tone, against a cool-gray seamless studio backdrop with soft diffused light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 10057488427,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "",
+        "updated_at": "2026-07-25T09:16:00.047061+00:00"
+      },
+      "persona_id": "actor-020"
+    },
+    {
+      "number": 31,
+      "source": "performers-v3/31-nia-arden-c03-warm-beige-jersey__00001_.png",
+      "source_sha256": "80e13ed89037bd7395061921658f2b37cce331c35f4ffe46def16cfa324137b7",
+      "bytes": 2756640,
+      "generated_at": "2026-07-25T09:18:48.367016+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "nia-arden",
+      "candidate": 3,
+      "portrait_style": "warm-beige-jersey",
+      "prompt": "Studio portrait of Nia Arden, a strikingly beautiful, youthful-looking fictional 28-year-old American actress of African-American heritage, with medium-brown skin and dark eyes, long layered brunette hair, and a floral upper-arm tattoo. Subtle three-quarter angle with relaxed shoulders, her face fully toward the camera, and a soft natural smile. Waist-up composition, wearing a casual short-sleeve jersey top with a moderate scoop neckline in a muted earth tone, against a warm beige lightly textured studio backdrop with clean soft light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 10100011633,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "",
+        "updated_at": "2026-07-25T09:25:34.720614+00:00"
+      },
+      "persona_id": "actor-021"
+    },
+    {
+      "number": 32,
+      "source": "performers-v3/32-nia-arden-c04-pale-sage-boatneck__00001_.png",
+      "source_sha256": "187d42d3de3a6ca6297ffe6d4d68011526951630239d93a69fd30a5eee533c7c",
+      "bytes": 2887009,
+      "generated_at": "2026-07-25T09:22:40.005698+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "nia-arden",
+      "candidate": 4,
+      "portrait_style": "pale-sage-boatneck",
+      "prompt": "Studio portrait of Nia Arden, a strikingly beautiful, youthful-looking fictional 28-year-old American actress of African-American heritage, with medium-brown skin and dark eyes, long layered brunette hair, and a floral upper-arm tattoo. Shoulders slightly angled, her face fully toward the camera, with a poised neutral expression. Waist-up composition, wearing a casual soft boat-neck knit top in a deep cool color, against a muted pale-sage studio backdrop with gentle directional light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 10167493857,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "Face is good, but off center and a bit waxy",
+        "updated_at": "2026-07-25T09:25:55.171231+00:00"
+      },
+      "persona_id": "actor-022"
+    },
+    {
+      "number": 33,
+      "source": "performers-v3/33-ama-mensah-c01-cool-gray-ribbed__00001_.png",
+      "source_sha256": "49533fcc416b5c16571c75d6a73d4e9d1896cc340c4024c28604eba04358e231",
+      "bytes": 3196282,
+      "generated_at": "2026-07-25T09:26:31.783382+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "ama-mensah",
+      "candidate": 1,
+      "portrait_style": "cool-gray-ribbed",
+      "prompt": "Studio portrait of Ama Mensah, a strikingly beautiful, youthful-looking fictional 26-year-old Ghanaian actress of Akan heritage, with deep dark-brown skin and dark eyes, long black natural coils, and a tiny gold nose stud. Square to camera with relaxed shoulders, her face fully visible, and a confident closed-lip smile. Waist-up composition, wearing a casual crew-neck ribbed knit top in a rich jewel tone, against a cool-gray seamless studio backdrop with soft diffused light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 11028822659,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "maybe",
+        "notes": "",
+        "updated_at": "2026-07-25T10:06:08.169276+00:00"
+      }
+    },
+    {
+      "number": 34,
+      "source": "performers-v3/34-ama-mensah-c02-warm-beige-jersey__00001_.png",
+      "source_sha256": "1a775ecde4660a963bcbac10bff3ba9e5535512535016f6e0538afd00cd10826",
+      "bytes": 2674030,
+      "generated_at": "2026-07-25T09:30:23.855063+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "ama-mensah",
+      "candidate": 2,
+      "portrait_style": "warm-beige-jersey",
+      "prompt": "Studio portrait of Ama Mensah, a strikingly beautiful, youthful-looking fictional 26-year-old Ghanaian actress of Akan heritage, with deep dark-brown skin and dark eyes, long black natural coils, and a tiny gold nose stud. Subtle three-quarter angle with relaxed shoulders, her face fully toward the camera, and a soft natural smile. Waist-up composition, wearing a casual short-sleeve jersey top with a moderate scoop neckline in a muted earth tone, against a warm beige lightly textured studio backdrop with clean soft light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 11057488427,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "",
+        "updated_at": "2026-07-25T10:06:10.448590+00:00"
+      },
+      "persona_id": "actor-023"
+    },
+    {
+      "number": 35,
+      "source": "performers-v3/35-ama-mensah-c03-pale-sage-boatneck__00001_.png",
+      "source_sha256": "17a2e7b9f6ae5b31251ea1df3b3a4ae4715809d2dbc52a1e662adae236618098",
+      "bytes": 2871148,
+      "generated_at": "2026-07-25T09:34:15.454659+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "ama-mensah",
+      "candidate": 3,
+      "portrait_style": "pale-sage-boatneck",
+      "prompt": "Studio portrait of Ama Mensah, a strikingly beautiful, youthful-looking fictional 26-year-old Ghanaian actress of Akan heritage, with deep dark-brown skin and dark eyes, long black natural coils, and a tiny gold nose stud. Shoulders slightly angled, her face fully toward the camera, with a poised neutral expression. Waist-up composition, wearing a casual soft boat-neck knit top in a deep cool color, against a muted pale-sage studio backdrop with gentle directional light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 11100011633,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "maybe",
+        "notes": "",
+        "updated_at": "2026-07-25T10:06:12.749412+00:00"
+      }
+    },
+    {
+      "number": 36,
+      "source": "performers-v3/36-ama-mensah-c04-blue-gray-henley__00001_.png",
+      "source_sha256": "b8ed8a9c0ec90335fafba7051f439e10a27d7d6e852ec41cada2436f62126ce8",
+      "bytes": 2862213,
+      "generated_at": "2026-07-25T09:38:07.160263+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "ama-mensah",
+      "candidate": 4,
+      "portrait_style": "blue-gray-henley",
+      "prompt": "Studio portrait of Ama Mensah, a strikingly beautiful, youthful-looking fictional 26-year-old Ghanaian actress of Akan heritage, with deep dark-brown skin and dark eyes, long black natural coils, and a tiny gold nose stud. Gentle head tilt with relaxed shoulders, her face fully toward the camera, and a warm confident expression. Waist-up composition, wearing a casual henley-style knit top in a warm muted color, against a desaturated blue-gray studio backdrop with soft window-like light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 11167493857,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "reject",
+        "notes": "",
+        "updated_at": "2026-07-25T10:06:14.864472+00:00"
+      }
+    },
+    {
+      "number": 37,
+      "source": "performers-v3/37-naomi-kamau-c01-warm-beige-jersey__00001_.png",
+      "source_sha256": "3f09712a914f4bc588cbd6628de50a8f9b983b3055ccda3e8ba4c0097810ce0b",
+      "bytes": 2644430,
+      "generated_at": "2026-07-25T09:41:59.178874+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "naomi-kamau",
+      "candidate": 1,
+      "portrait_style": "warm-beige-jersey",
+      "prompt": "Studio portrait of Naomi Kamau, a strikingly beautiful, youthful-looking fictional 32-year-old British actress of Kenyan heritage, with deep brown skin and warm brown eyes, long neat box braids, and multiple small gold ear piercings. Subtle three-quarter angle with relaxed shoulders, her face fully toward the camera, and a soft natural smile. Waist-up composition, wearing a casual short-sleeve jersey top with a moderate scoop neckline in a muted earth tone, against a warm beige lightly textured studio backdrop with clean soft light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 12028822659,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "",
+        "updated_at": "2026-07-25T10:06:17.185552+00:00"
+      },
+      "persona_id": "actor-024"
+    },
+    {
+      "number": 38,
+      "source": "performers-v3/38-naomi-kamau-c02-pale-sage-boatneck__00001_.png",
+      "source_sha256": "be0b384bb7cb98324181bc6871c736308d4be014da4a0e07bc9566369cd8750b",
+      "bytes": 2695401,
+      "generated_at": "2026-07-25T09:45:50.932476+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "naomi-kamau",
+      "candidate": 2,
+      "portrait_style": "pale-sage-boatneck",
+      "prompt": "Studio portrait of Naomi Kamau, a strikingly beautiful, youthful-looking fictional 32-year-old British actress of Kenyan heritage, with deep brown skin and warm brown eyes, long neat box braids, and multiple small gold ear piercings. Shoulders slightly angled, her face fully toward the camera, with a poised neutral expression. Waist-up composition, wearing a casual soft boat-neck knit top in a deep cool color, against a muted pale-sage studio backdrop with gentle directional light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 12057488427,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "",
+        "updated_at": "2026-07-25T10:06:18.897206+00:00"
+      },
+      "persona_id": "actor-025"
+    },
+    {
+      "number": 39,
+      "source": "performers-v3/39-naomi-kamau-c03-blue-gray-henley__00001_.png",
+      "source_sha256": "4174b00c46b8d3546c317d176329bb5f99bee0c15de4a623e49319c016500629",
+      "bytes": 2958564,
+      "generated_at": "2026-07-25T09:49:42.963115+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "naomi-kamau",
+      "candidate": 3,
+      "portrait_style": "blue-gray-henley",
+      "prompt": "Studio portrait of Naomi Kamau, a strikingly beautiful, youthful-looking fictional 32-year-old British actress of Kenyan heritage, with deep brown skin and warm brown eyes, long neat box braids, and multiple small gold ear piercings. Gentle head tilt with relaxed shoulders, her face fully toward the camera, and a warm confident expression. Waist-up composition, wearing a casual henley-style knit top in a warm muted color, against a desaturated blue-gray studio backdrop with soft window-like light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 12100011633,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "",
+        "updated_at": "2026-07-25T10:06:24.094222+00:00"
+      },
+      "persona_id": "actor-026"
+    },
+    {
+      "number": 40,
+      "source": "performers-v3/40-naomi-kamau-c04-cool-gray-ribbed__00001_.png",
+      "source_sha256": "3cc3174772b04c7a7706abc4490ea59deba770caa6839b24b52387e132cb4210",
+      "bytes": 2893789,
+      "generated_at": "2026-07-25T09:53:34.322757+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "naomi-kamau",
+      "candidate": 4,
+      "portrait_style": "cool-gray-ribbed",
+      "prompt": "Studio portrait of Naomi Kamau, a strikingly beautiful, youthful-looking fictional 32-year-old British actress of Kenyan heritage, with deep brown skin and warm brown eyes, long neat box braids, and multiple small gold ear piercings. Square to camera with relaxed shoulders, her face fully visible, and a confident closed-lip smile. Waist-up composition, wearing a casual crew-neck ribbed knit top in a rich jewel tone, against a cool-gray seamless studio backdrop with soft diffused light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 12167493857,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "reject",
+        "notes": "",
+        "updated_at": "2026-07-25T10:06:26.751753+00:00"
+      }
+    },
+    {
+      "number": 41,
+      "source": "performers-v3/41-hana-mori-c01-pale-sage-boatneck__00001_.png",
+      "source_sha256": "2edd5390d995d12530355d2eb89ed054d02e2e43d263c5397aa60aea53416212",
+      "bytes": 2710707,
+      "generated_at": "2026-07-25T09:57:26.199419+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "hana-mori",
+      "candidate": 1,
+      "portrait_style": "pale-sage-boatneck",
+      "prompt": "Studio portrait of Hana Mori, a strikingly beautiful, youthful-looking fictional 30-year-old Japanese actress of Japanese heritage, with light-medium skin and dark almond-shaped eyes, a sleek black bob, and a polished ear cuff. Shoulders slightly angled, her face fully toward the camera, with a poised neutral expression. Waist-up composition, wearing a casual soft boat-neck knit top in a deep cool color, against a muted pale-sage studio backdrop with gentle directional light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 13028822659,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "",
+        "updated_at": "2026-07-25T10:06:28.808216+00:00"
+      },
+      "persona_id": "actor-027"
+    },
+    {
+      "number": 42,
+      "source": "performers-v3/42-hana-mori-c02-blue-gray-henley__00001_.png",
+      "source_sha256": "938028ea0c3ec5d3c21fd61ef37a2de33d7b71326c58c459eba83594c25bbeae",
+      "bytes": 2641108,
+      "generated_at": "2026-07-25T10:01:19.003109+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "hana-mori",
+      "candidate": 2,
+      "portrait_style": "blue-gray-henley",
+      "prompt": "Studio portrait of Hana Mori, a strikingly beautiful, youthful-looking fictional 30-year-old Japanese actress of Japanese heritage, with light-medium skin and dark almond-shaped eyes, a sleek black bob, and a polished ear cuff. Gentle head tilt with relaxed shoulders, her face fully toward the camera, and a warm confident expression. Waist-up composition, wearing a casual henley-style knit top in a warm muted color, against a desaturated blue-gray studio backdrop with soft window-like light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 13057488427,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "",
+        "updated_at": "2026-07-25T10:06:30.477352+00:00"
+      },
+      "persona_id": "actor-028"
+    },
+    {
+      "number": 43,
+      "source": "performers-v3/43-hana-mori-c03-cool-gray-ribbed__00001_.png",
+      "source_sha256": "2e71bd2c3d5967d68e8450fe13f0f04cf777250391e71b017ae1322d43769d82",
+      "bytes": 2612592,
+      "generated_at": "2026-07-25T10:05:10.362762+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "hana-mori",
+      "candidate": 3,
+      "portrait_style": "cool-gray-ribbed",
+      "prompt": "Studio portrait of Hana Mori, a strikingly beautiful, youthful-looking fictional 30-year-old Japanese actress of Japanese heritage, with light-medium skin and dark almond-shaped eyes, a sleek black bob, and a polished ear cuff. Square to camera with relaxed shoulders, her face fully visible, and a confident closed-lip smile. Waist-up composition, wearing a casual crew-neck ribbed knit top in a rich jewel tone, against a cool-gray seamless studio backdrop with soft diffused light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 13100011633,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "",
+        "updated_at": "2026-07-25T10:06:32.509564+00:00"
+      },
+      "persona_id": "actor-029"
+    },
+    {
+      "number": 44,
+      "source": "performers-v3/44-hana-mori-c04-warm-beige-jersey__00001_.png",
+      "source_sha256": "509eb5c2eec6e04f20d8e4de8c660c58ca1304aaccce19c76c4cd0bf03ac9691",
+      "bytes": 2497266,
+      "generated_at": "2026-07-25T10:09:03.201436+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "hana-mori",
+      "candidate": 4,
+      "portrait_style": "warm-beige-jersey",
+      "prompt": "Studio portrait of Hana Mori, a strikingly beautiful, youthful-looking fictional 30-year-old Japanese actress of Japanese heritage, with light-medium skin and dark almond-shaped eyes, a sleek black bob, and a polished ear cuff. Subtle three-quarter angle with relaxed shoulders, her face fully toward the camera, and a soft natural smile. Waist-up composition, wearing a casual short-sleeve jersey top with a moderate scoop neckline in a muted earth tone, against a warm beige lightly textured studio backdrop with clean soft light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 13167493857,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "reject",
+        "notes": "",
+        "updated_at": "2026-07-25T10:28:33.465394+00:00"
+      }
+    },
+    {
+      "number": 45,
+      "source": "performers-v3/45-priya-sethi-c01-blue-gray-henley__00001_.png",
+      "source_sha256": "02fbe10b12bb4209681e264fcb981887adef74f38165c7c135c37f660064bfd7",
+      "bytes": 2687071,
+      "generated_at": "2026-07-25T10:12:55.152092+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "priya-sethi",
+      "candidate": 1,
+      "portrait_style": "blue-gray-henley",
+      "prompt": "Studio portrait of Priya Sethi, a strikingly beautiful, youthful-looking fictional 27-year-old British actress of Indian Punjabi heritage, with warm-brown skin and large dark eyes, long glossy black waves, and a delicate jeweled nose stud. Gentle head tilt with relaxed shoulders, her face fully toward the camera, and a warm confident expression. Waist-up composition, wearing a casual henley-style knit top in a warm muted color, against a desaturated blue-gray studio backdrop with soft window-like light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 14028822659,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "reject",
+        "notes": "",
+        "updated_at": "2026-07-25T10:28:40.731604+00:00"
+      }
+    },
+    {
+      "number": 46,
+      "source": "performers-v3/46-priya-sethi-c02-cool-gray-ribbed__00001_.png",
+      "source_sha256": "04c25fccefbdba996245aec0c7a3998cf3e0746843d19bb2b5d02ada6b0ed9cc",
+      "bytes": 2697293,
+      "generated_at": "2026-07-25T10:16:47.167752+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "priya-sethi",
+      "candidate": 2,
+      "portrait_style": "cool-gray-ribbed",
+      "prompt": "Studio portrait of Priya Sethi, a strikingly beautiful, youthful-looking fictional 27-year-old British actress of Indian Punjabi heritage, with warm-brown skin and large dark eyes, long glossy black waves, and a delicate jeweled nose stud. Square to camera with relaxed shoulders, her face fully visible, and a confident closed-lip smile. Waist-up composition, wearing a casual crew-neck ribbed knit top in a rich jewel tone, against a cool-gray seamless studio backdrop with soft diffused light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 14057488427,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "maybe",
+        "notes": "",
+        "updated_at": "2026-07-25T10:28:42.456533+00:00"
+      }
+    },
+    {
+      "number": 47,
+      "source": "performers-v3/47-priya-sethi-c03-warm-beige-jersey__00001_.png",
+      "source_sha256": "3d527ddd3660859389305b932edfc84efe553ac68fa015257964e8921c44b13f",
+      "bytes": 2616673,
+      "generated_at": "2026-07-25T10:20:39.353415+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "priya-sethi",
+      "candidate": 3,
+      "portrait_style": "warm-beige-jersey",
+      "prompt": "Studio portrait of Priya Sethi, a strikingly beautiful, youthful-looking fictional 27-year-old British actress of Indian Punjabi heritage, with warm-brown skin and large dark eyes, long glossy black waves, and a delicate jeweled nose stud. Subtle three-quarter angle with relaxed shoulders, her face fully toward the camera, and a soft natural smile. Waist-up composition, wearing a casual short-sleeve jersey top with a moderate scoop neckline in a muted earth tone, against a warm beige lightly textured studio backdrop with clean soft light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 14100011633,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "reject",
+        "notes": "",
+        "updated_at": "2026-07-25T10:28:43.538124+00:00"
+      }
+    },
+    {
+      "number": 48,
+      "source": "performers-v3/48-priya-sethi-c04-pale-sage-boatneck__00001_.png",
+      "source_sha256": "c4577e8bfce59d5eb7a7ee73a090d207231145f7fddb4b31e5dd3e969ba1c1d8",
+      "bytes": 2820482,
+      "generated_at": "2026-07-25T10:24:31.144063+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "priya-sethi",
+      "candidate": 4,
+      "portrait_style": "pale-sage-boatneck",
+      "prompt": "Studio portrait of Priya Sethi, a strikingly beautiful, youthful-looking fictional 27-year-old British actress of Indian Punjabi heritage, with warm-brown skin and large dark eyes, long glossy black waves, and a delicate jeweled nose stud. Shoulders slightly angled, her face fully toward the camera, with a poised neutral expression. Waist-up composition, wearing a casual soft boat-neck knit top in a deep cool color, against a muted pale-sage studio backdrop with gentle directional light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 14167493857,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "",
+        "updated_at": "2026-07-25T10:28:44.628493+00:00"
+      },
+      "persona_id": "actor-030"
+    },
+    {
+      "number": 49,
+      "source": "performers-v3/49-iga-kowalska-c01-cool-gray-ribbed__00001_.png",
+      "source_sha256": "ba044026ac36b20908ed3f0afaf944c13552a1b677bfb2a9b0022c22ba20a576",
+      "bytes": 3039912,
+      "generated_at": "2026-07-25T10:28:22.683690+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "iga-kowalska",
+      "candidate": 1,
+      "portrait_style": "cool-gray-ribbed",
+      "prompt": "Studio portrait of Iga Kowalska, a strikingly beautiful, youthful-looking fictional 23-year-old Polish actress of Polish heritage, with pale skin and gray eyes, a sharp jet-black pixie cut, and a subtle eyebrow piercing. Square to camera with relaxed shoulders, her face fully visible, and a confident closed-lip smile. Waist-up composition, wearing a casual crew-neck ribbed knit top in a rich jewel tone, against a cool-gray seamless studio backdrop with soft diffused light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 15028822659,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "reject",
+        "notes": "Too androgynous",
+        "updated_at": "2026-07-25T10:29:38.364500+00:00"
+      }
+    },
+    {
+      "number": 50,
+      "source": "performers-v3/50-iga-kowalska-c02-warm-beige-jersey__00001_.png",
+      "source_sha256": "76713aab7b1b716080d1923ebf87492305ccb821ce77f97df45509f16c2eb009",
+      "bytes": 2595573,
+      "generated_at": "2026-07-25T10:32:14.307319+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "iga-kowalska",
+      "candidate": 2,
+      "portrait_style": "warm-beige-jersey",
+      "prompt": "Studio portrait of Iga Kowalska, a strikingly beautiful, youthful-looking fictional 23-year-old Polish actress of Polish heritage, with pale skin and gray eyes, a sharp jet-black pixie cut, and a subtle eyebrow piercing. Subtle three-quarter angle with relaxed shoulders, her face fully toward the camera, and a soft natural smile. Waist-up composition, wearing a casual short-sleeve jersey top with a moderate scoop neckline in a muted earth tone, against a warm beige lightly textured studio backdrop with clean soft light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 15057488427,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "",
+        "updated_at": "2026-07-25T10:33:08.722482+00:00"
+      },
+      "persona_id": "actor-031"
+    },
+    {
+      "number": 51,
+      "source": "performers-v3/51-iga-kowalska-c03-pale-sage-boatneck__00001_.png",
+      "source_sha256": "f8967c1abcc3e91b261f40fe2678262517cecbd8ad9f569d25af35f8ccd39bff",
+      "bytes": 2628962,
+      "generated_at": "2026-07-25T10:36:06.136967+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "iga-kowalska",
+      "candidate": 3,
+      "portrait_style": "pale-sage-boatneck",
+      "prompt": "Studio portrait of Iga Kowalska, a strikingly beautiful, youthful-looking fictional 23-year-old Polish actress of Polish heritage, with pale skin and gray eyes, a sharp jet-black pixie cut, and a subtle eyebrow piercing. Shoulders slightly angled, her face fully toward the camera, with a poised neutral expression. Waist-up composition, wearing a casual soft boat-neck knit top in a deep cool color, against a muted pale-sage studio backdrop with gentle directional light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 15100011633,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "maybe",
+        "notes": "",
+        "updated_at": "2026-07-25T10:52:31.997860+00:00"
+      }
+    },
+    {
+      "number": 52,
+      "source": "performers-v3/52-iga-kowalska-c04-blue-gray-henley__00001_.png",
+      "source_sha256": "992cc3050acf3536cb0070415fa8afd473b360bbde0ee2058d45f54fd0a48a6a",
+      "bytes": 2708338,
+      "generated_at": "2026-07-25T10:39:58.539630+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "iga-kowalska",
+      "candidate": 4,
+      "portrait_style": "blue-gray-henley",
+      "prompt": "Studio portrait of Iga Kowalska, a strikingly beautiful, youthful-looking fictional 23-year-old Polish actress of Polish heritage, with pale skin and gray eyes, a sharp jet-black pixie cut, and a subtle eyebrow piercing. Gentle head tilt with relaxed shoulders, her face fully toward the camera, and a warm confident expression. Waist-up composition, wearing a casual henley-style knit top in a warm muted color, against a desaturated blue-gray studio backdrop with soft window-like light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 15167493857,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "reject",
+        "notes": "",
+        "updated_at": "2026-07-25T10:52:29.360132+00:00"
+      }
+    },
+    {
+      "number": 53,
+      "source": "performers-v3/53-leila-haddad-c01-warm-beige-jersey__00001_.png",
+      "source_sha256": "d97426980c34bcf365c60986ea20e917d86b0a634f38873ef4cb3db28df5392f",
+      "bytes": 2762086,
+      "generated_at": "2026-07-25T10:43:50.912295+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "leila-haddad",
+      "candidate": 1,
+      "portrait_style": "warm-beige-jersey",
+      "prompt": "Studio portrait of Leila Haddad, a strikingly beautiful, youthful-looking fictional 33-year-old Lebanese actress of Lebanese Arab heritage, with warm beige skin and brown eyes, long honey-blonde waves, and a small shoulder tattoo. Subtle three-quarter angle with relaxed shoulders, her face fully toward the camera, and a soft natural smile. Waist-up composition, wearing a casual short-sleeve jersey top with a moderate scoop neckline in a muted earth tone, against a warm beige lightly textured studio backdrop with clean soft light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 16028822659,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "",
+        "updated_at": "2026-07-25T10:52:38.096761+00:00"
+      },
+      "persona_id": "actor-032"
+    },
+    {
+      "number": 54,
+      "source": "performers-v3/54-leila-haddad-c02-pale-sage-boatneck__00001_.png",
+      "source_sha256": "5467219393d88cb8ce83c195b6e766f11633d4d9d1bbe68b2f6bba6bbcf8208d",
+      "bytes": 3122573,
+      "generated_at": "2026-07-25T10:47:43.453967+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "leila-haddad",
+      "candidate": 2,
+      "portrait_style": "pale-sage-boatneck",
+      "prompt": "Studio portrait of Leila Haddad, a strikingly beautiful, youthful-looking fictional 33-year-old Lebanese actress of Lebanese Arab heritage, with warm beige skin and brown eyes, long honey-blonde waves, and a small shoulder tattoo. Shoulders slightly angled, her face fully toward the camera, with a poised neutral expression. Waist-up composition, wearing a casual soft boat-neck knit top in a deep cool color, against a muted pale-sage studio backdrop with gentle directional light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 16057488427,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "",
+        "updated_at": "2026-07-25T10:52:39.309292+00:00"
+      },
+      "persona_id": "actor-033"
+    },
+    {
+      "number": 55,
+      "source": "performers-v3/55-leila-haddad-c03-blue-gray-henley__00001_.png",
+      "source_sha256": "6cc4dbaaad7cc4ca42a1522d2b2f628d5c09029987c4b7b8457176dc6343492f",
+      "bytes": 2825410,
+      "generated_at": "2026-07-25T10:51:35.599635+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "leila-haddad",
+      "candidate": 3,
+      "portrait_style": "blue-gray-henley",
+      "prompt": "Studio portrait of Leila Haddad, a strikingly beautiful, youthful-looking fictional 33-year-old Lebanese actress of Lebanese Arab heritage, with warm beige skin and brown eyes, long honey-blonde waves, and a small shoulder tattoo. Gentle head tilt with relaxed shoulders, her face fully toward the camera, and a warm confident expression. Waist-up composition, wearing a casual henley-style knit top in a warm muted color, against a desaturated blue-gray studio backdrop with soft window-like light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 16100011633,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "",
+        "updated_at": "2026-07-25T10:52:40.868103+00:00"
+      },
+      "persona_id": "actor-034"
+    },
+    {
+      "number": 56,
+      "source": "performers-v3/56-leila-haddad-c04-cool-gray-ribbed__00001_.png",
+      "source_sha256": "1a77f4f7f18f58212614b91a301a8fb13c1e24f3e319c2fca11f3954448e87aa",
+      "bytes": 3319812,
+      "generated_at": "2026-07-25T10:55:27.268289+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "leila-haddad",
+      "candidate": 4,
+      "portrait_style": "cool-gray-ribbed",
+      "prompt": "Studio portrait of Leila Haddad, a strikingly beautiful, youthful-looking fictional 33-year-old Lebanese actress of Lebanese Arab heritage, with warm beige skin and brown eyes, long honey-blonde waves, and a small shoulder tattoo. Square to camera with relaxed shoulders, her face fully visible, and a confident closed-lip smile. Waist-up composition, wearing a casual crew-neck ribbed knit top in a rich jewel tone, against a cool-gray seamless studio backdrop with soft diffused light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 16167493857,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "",
+        "updated_at": "2026-07-25T11:01:04.151512+00:00"
+      },
+      "persona_id": "actor-035"
+    },
+    {
+      "number": 57,
+      "source": "performers-v3/57-greta-lane-c01-pale-sage-boatneck__00001_.png",
+      "source_sha256": "ed606acc57d753558479f08048590d014e0f97d77f1b4fa425640165f643f6e9",
+      "bytes": 3032959,
+      "generated_at": "2026-07-25T10:59:19.673972+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "greta-lane",
+      "candidate": 1,
+      "portrait_style": "pale-sage-boatneck",
+      "prompt": "Studio portrait of Greta Lane, a strikingly beautiful, youthful-looking fictional 26-year-old Australian actress of Anglo-Australian heritage, with fair skin and bright blue eyes, tousled golden-blonde hair, and soft freckles across her nose. Shoulders slightly angled, her face fully toward the camera, with a poised neutral expression. Waist-up composition, wearing a casual soft boat-neck knit top in a deep cool color, against a muted pale-sage studio backdrop with gentle directional light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 17028822659,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "",
+        "updated_at": "2026-07-25T11:01:09.157055+00:00"
+      },
+      "persona_id": "actor-036"
+    },
+    {
+      "number": 58,
+      "source": "performers-v3/58-greta-lane-c02-blue-gray-henley__00001_.png",
+      "source_sha256": "a16746f7c1594fb712e3ce1f71879285ec8414af6d4a98933bfe33638c9e65bb",
+      "bytes": 3105604,
+      "generated_at": "2026-07-25T11:03:11.965660+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "greta-lane",
+      "candidate": 2,
+      "portrait_style": "blue-gray-henley",
+      "prompt": "Studio portrait of Greta Lane, a strikingly beautiful, youthful-looking fictional 26-year-old Australian actress of Anglo-Australian heritage, with fair skin and bright blue eyes, tousled golden-blonde hair, and soft freckles across her nose. Gentle head tilt with relaxed shoulders, her face fully toward the camera, and a warm confident expression. Waist-up composition, wearing a casual henley-style knit top in a warm muted color, against a desaturated blue-gray studio backdrop with soft window-like light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 17057488427,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "",
+        "updated_at": "2026-07-25T11:08:28.367836+00:00"
+      },
+      "persona_id": "actor-037"
+    },
+    {
+      "number": 59,
+      "source": "performers-v3/59-greta-lane-c03-cool-gray-ribbed__00001_.png",
+      "source_sha256": "7470fbbad7154baa35f303a816a53ede42c151d36d99a0a76762b6c39c861d3c",
+      "bytes": 3027326,
+      "generated_at": "2026-07-25T11:07:04.507360+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "greta-lane",
+      "candidate": 3,
+      "portrait_style": "cool-gray-ribbed",
+      "prompt": "Studio portrait of Greta Lane, a strikingly beautiful, youthful-looking fictional 26-year-old Australian actress of Anglo-Australian heritage, with fair skin and bright blue eyes, tousled golden-blonde hair, and soft freckles across her nose. Square to camera with relaxed shoulders, her face fully visible, and a confident closed-lip smile. Waist-up composition, wearing a casual crew-neck ribbed knit top in a rich jewel tone, against a cool-gray seamless studio backdrop with soft diffused light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 17100011633,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "maybe",
+        "notes": "",
+        "updated_at": "2026-07-25T11:08:29.639024+00:00"
+      }
+    },
+    {
+      "number": 60,
+      "source": "performers-v3/60-greta-lane-c04-warm-beige-jersey__00001_.png",
+      "source_sha256": "1075aeb9666ea284a736b42791af6854bf8132a1fd4302646c20b4d5e5455d38",
+      "bytes": 2808706,
+      "generated_at": "2026-07-25T11:10:56.314045+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "greta-lane",
+      "candidate": 4,
+      "portrait_style": "warm-beige-jersey",
+      "prompt": "Studio portrait of Greta Lane, a strikingly beautiful, youthful-looking fictional 26-year-old Australian actress of Anglo-Australian heritage, with fair skin and bright blue eyes, tousled golden-blonde hair, and soft freckles across her nose. Subtle three-quarter angle with relaxed shoulders, her face fully toward the camera, and a soft natural smile. Waist-up composition, wearing a casual short-sleeve jersey top with a moderate scoop neckline in a muted earth tone, against a warm beige lightly textured studio backdrop with clean soft light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 17167493857,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "",
+        "updated_at": "2026-07-25T11:13:04.820516+00:00"
+      },
+      "persona_id": "actor-038"
+    },
+    {
+      "number": 61,
+      "source": "performers-v3/61-elise-jonsdottir-c01-blue-gray-henley__00001_.png",
+      "source_sha256": "8e469028bcd829dca53d183227a754589050e13ec1505312fb7702e970819a5a",
+      "bytes": 3031368,
+      "generated_at": "2026-07-25T11:14:48.243730+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "elise-jonsdottir",
+      "candidate": 1,
+      "portrait_style": "blue-gray-henley",
+      "prompt": "Studio portrait of Elise Jónsdóttir, a strikingly beautiful, youthful-looking fictional 29-year-old Icelandic actress of Icelandic heritage, with pale skin and dark-brown eyes, a platinum-blonde blunt lob, and multiple silver ear piercings. Gentle head tilt with relaxed shoulders, her face fully toward the camera, and a warm confident expression. Waist-up composition, wearing a casual henley-style knit top in a warm muted color, against a desaturated blue-gray studio backdrop with soft window-like light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 18028822659,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "",
+        "updated_at": "2026-07-25T11:18:00.672170+00:00"
+      },
+      "persona_id": "actor-039"
+    },
+    {
+      "number": 62,
+      "source": "performers-v3/62-elise-jonsdottir-c02-cool-gray-ribbed__00001_.png",
+      "source_sha256": "fb2229ba075510d7fa049d351f3caead4adca125b7e787e0e6baab8f6393ecf3",
+      "bytes": 2680671,
+      "generated_at": "2026-07-25T11:18:40.734435+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "elise-jonsdottir",
+      "candidate": 2,
+      "portrait_style": "cool-gray-ribbed",
+      "prompt": "Studio portrait of Elise Jónsdóttir, a strikingly beautiful, youthful-looking fictional 29-year-old Icelandic actress of Icelandic heritage, with pale skin and dark-brown eyes, a platinum-blonde blunt lob, and multiple silver ear piercings. Square to camera with relaxed shoulders, her face fully visible, and a confident closed-lip smile. Waist-up composition, wearing a casual crew-neck ribbed knit top in a rich jewel tone, against a cool-gray seamless studio backdrop with soft diffused light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 18057488427,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "reject",
+        "notes": "",
+        "updated_at": "2026-07-25T11:41:49.229306+00:00"
+      }
+    },
+    {
+      "number": 63,
+      "source": "performers-v3/63-elise-jonsdottir-c03-warm-beige-jersey__00001_.png",
+      "source_sha256": "30b35875c3baaebad7dce6a086fb89d60337e9596df013fef0b2060b6bf28d4c",
+      "bytes": 2712072,
+      "generated_at": "2026-07-25T11:22:32.692111+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "elise-jonsdottir",
+      "candidate": 3,
+      "portrait_style": "warm-beige-jersey",
+      "prompt": "Studio portrait of Elise Jónsdóttir, a strikingly beautiful, youthful-looking fictional 29-year-old Icelandic actress of Icelandic heritage, with pale skin and dark-brown eyes, a platinum-blonde blunt lob, and multiple silver ear piercings. Subtle three-quarter angle with relaxed shoulders, her face fully toward the camera, and a soft natural smile. Waist-up composition, wearing a casual short-sleeve jersey top with a moderate scoop neckline in a muted earth tone, against a warm beige lightly textured studio backdrop with clean soft light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 18100011633,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "reject",
+        "notes": "",
+        "updated_at": "2026-07-25T11:41:53.185988+00:00"
+      }
+    },
+    {
+      "number": 64,
+      "source": "performers-v3/64-elise-jonsdottir-c04-pale-sage-boatneck__00001_.png",
+      "source_sha256": "ed00960655ab2987f73f432faf634ee2562f0bbc5cd90eded3872106c193e5ae",
+      "bytes": 2567384,
+      "generated_at": "2026-07-25T11:26:24.508776+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "elise-jonsdottir",
+      "candidate": 4,
+      "portrait_style": "pale-sage-boatneck",
+      "prompt": "Studio portrait of Elise Jónsdóttir, a strikingly beautiful, youthful-looking fictional 29-year-old Icelandic actress of Icelandic heritage, with pale skin and dark-brown eyes, a platinum-blonde blunt lob, and multiple silver ear piercings. Shoulders slightly angled, her face fully toward the camera, with a poised neutral expression. Waist-up composition, wearing a casual soft boat-neck knit top in a deep cool color, against a muted pale-sage studio backdrop with gentle directional light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 18167493857,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "reject",
+        "notes": "",
+        "updated_at": "2026-07-25T11:41:57.667617+00:00"
+      }
+    },
+    {
+      "number": 65,
+      "source": "performers-v3/65-valentina-rossi-c01-cool-gray-ribbed__00001_.png",
+      "source_sha256": "b1ff4aa64ba9a86c3d9bf2e58124f2632bc9d347245529994d6b30132620f036",
+      "bytes": 3293873,
+      "generated_at": "2026-07-25T11:30:16.568442+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "valentina-rossi",
+      "candidate": 1,
+      "portrait_style": "cool-gray-ribbed",
+      "prompt": "Studio portrait of Valentina Rossi, a strikingly beautiful, youthful-looking fictional 35-year-old Argentine actress of Italian-Argentine heritage, with lightly tanned skin and green eyes, thick dark-blonde waves, and a distinctive dimple. Square to camera with relaxed shoulders, her face fully visible, and a confident closed-lip smile. Waist-up composition, wearing a casual crew-neck ribbed knit top in a rich jewel tone, against a cool-gray seamless studio backdrop with soft diffused light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 19028822659,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "reject",
+        "notes": "",
+        "updated_at": "2026-07-25T11:42:04.712873+00:00"
+      }
+    },
+    {
+      "number": 66,
+      "source": "performers-v3/66-valentina-rossi-c02-warm-beige-jersey__00001_.png",
+      "source_sha256": "f599e51181f659ed0761ce8d5f8ca597dc817dc34866de4554fc73b5b19a8b33",
+      "bytes": 2677497,
+      "generated_at": "2026-07-25T11:34:09.015114+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "valentina-rossi",
+      "candidate": 2,
+      "portrait_style": "warm-beige-jersey",
+      "prompt": "Studio portrait of Valentina Rossi, a strikingly beautiful, youthful-looking fictional 35-year-old Argentine actress of Italian-Argentine heritage, with lightly tanned skin and green eyes, thick dark-blonde waves, and a distinctive dimple. Subtle three-quarter angle with relaxed shoulders, her face fully toward the camera, and a soft natural smile. Waist-up composition, wearing a casual short-sleeve jersey top with a moderate scoop neckline in a muted earth tone, against a warm beige lightly textured studio backdrop with clean soft light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 19057488427,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "",
+        "updated_at": "2026-07-25T11:42:03.282635+00:00"
+      },
+      "persona_id": "actor-040"
+    },
+    {
+      "number": 67,
+      "source": "performers-v3/67-valentina-rossi-c03-pale-sage-boatneck__00001_.png",
+      "source_sha256": "30882edf8fea92bc158a4d36e6ae057e831418284ca1ab2e7b7dea264038a196",
+      "bytes": 2802478,
+      "generated_at": "2026-07-25T11:38:01.747784+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "valentina-rossi",
+      "candidate": 3,
+      "portrait_style": "pale-sage-boatneck",
+      "prompt": "Studio portrait of Valentina Rossi, a strikingly beautiful, youthful-looking fictional 35-year-old Argentine actress of Italian-Argentine heritage, with lightly tanned skin and green eyes, thick dark-blonde waves, and a distinctive dimple. Shoulders slightly angled, her face fully toward the camera, with a poised neutral expression. Waist-up composition, wearing a casual soft boat-neck knit top in a deep cool color, against a muted pale-sage studio backdrop with gentle directional light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 19100011633,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "maybe",
+        "notes": "",
+        "updated_at": "2026-07-25T11:42:10.466566+00:00"
+      }
+    },
+    {
+      "number": 68,
+      "source": "performers-v3/68-valentina-rossi-c04-blue-gray-henley__00001_.png",
+      "source_sha256": "6eafcc7a83cec6ff9eaf339cb50748ae6cc1e7d072da4b66480e9c8d95c749a1",
+      "bytes": 2831241,
+      "generated_at": "2026-07-25T11:41:53.559414+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "valentina-rossi",
+      "candidate": 4,
+      "portrait_style": "blue-gray-henley",
+      "prompt": "Studio portrait of Valentina Rossi, a strikingly beautiful, youthful-looking fictional 35-year-old Argentine actress of Italian-Argentine heritage, with lightly tanned skin and green eyes, thick dark-blonde waves, and a distinctive dimple. Gentle head tilt with relaxed shoulders, her face fully toward the camera, and a warm confident expression. Waist-up composition, wearing a casual henley-style knit top in a warm muted color, against a desaturated blue-gray studio backdrop with soft window-like light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 19167493857,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "",
+        "updated_at": "2026-07-25T11:58:14.515822+00:00"
+      },
+      "persona_id": "actor-041"
+    },
+    {
+      "number": 69,
+      "source": "performers-v3/69-vera-kovalenko-c01-warm-beige-jersey__00001_.png",
+      "source_sha256": "dd4a2871d054a040673bd2dc1b28590495977e8a672515ca261abcf13d8f28e4",
+      "bytes": 2779666,
+      "generated_at": "2026-07-25T11:45:45.254041+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "vera-kovalenko",
+      "candidate": 1,
+      "portrait_style": "warm-beige-jersey",
+      "prompt": "Studio portrait of Vera Kovalenko, a strikingly beautiful, youthful-looking fictional 43-year-old Ukrainian actress of Ukrainian heritage, with fair skin and blue-gray eyes, polished silver-blonde waves, and a graceful beauty mark. Subtle three-quarter angle with relaxed shoulders, her face fully toward the camera, and a soft natural smile. Waist-up composition, wearing a casual short-sleeve jersey top with a moderate scoop neckline in a muted earth tone, against a warm beige lightly textured studio backdrop with clean soft light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 20028822659,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "reject",
+        "notes": "Too old",
+        "updated_at": "2026-07-25T11:58:24.226169+00:00"
+      }
+    },
+    {
+      "number": 70,
+      "source": "performers-v3/70-vera-kovalenko-c02-pale-sage-boatneck__00001_.png",
+      "source_sha256": "9340573c1c7181f315021b4ef80b2b4b0834dcde6437ffb5620107e08c721105",
+      "bytes": 2958209,
+      "generated_at": "2026-07-25T11:49:36.889687+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "vera-kovalenko",
+      "candidate": 2,
+      "portrait_style": "pale-sage-boatneck",
+      "prompt": "Studio portrait of Vera Kovalenko, a strikingly beautiful, youthful-looking fictional 43-year-old Ukrainian actress of Ukrainian heritage, with fair skin and blue-gray eyes, polished silver-blonde waves, and a graceful beauty mark. Shoulders slightly angled, her face fully toward the camera, with a poised neutral expression. Waist-up composition, wearing a casual soft boat-neck knit top in a deep cool color, against a muted pale-sage studio backdrop with gentle directional light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 20057488427,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "maybe",
+        "notes": "Too old",
+        "updated_at": "2026-07-25T11:59:02.925468+00:00"
+      }
+    },
+    {
+      "number": 71,
+      "source": "performers-v3/71-vera-kovalenko-c03-blue-gray-henley__00001_.png",
+      "source_sha256": "191fffb4c4b400c1c97e024d1cf12a99dd5ffa45a64e77c37e3e6321d61dff3c",
+      "bytes": 2840155,
+      "generated_at": "2026-07-25T11:53:28.604335+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "vera-kovalenko",
+      "candidate": 3,
+      "portrait_style": "blue-gray-henley",
+      "prompt": "Studio portrait of Vera Kovalenko, a strikingly beautiful, youthful-looking fictional 43-year-old Ukrainian actress of Ukrainian heritage, with fair skin and blue-gray eyes, polished silver-blonde waves, and a graceful beauty mark. Gentle head tilt with relaxed shoulders, her face fully toward the camera, and a warm confident expression. Waist-up composition, wearing a casual henley-style knit top in a warm muted color, against a desaturated blue-gray studio backdrop with soft window-like light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 20100011633,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "maybe",
+        "notes": "Too old",
+        "updated_at": "2026-07-25T11:58:51.767099+00:00"
+      }
+    },
+    {
+      "number": 72,
+      "source": "performers-v3/72-vera-kovalenko-c04-cool-gray-ribbed__00001_.png",
+      "source_sha256": "a13f5e4a90993340bfe0dd1e910776229c33151dbf54d505981f55d04813a886",
+      "bytes": 3290660,
+      "generated_at": "2026-07-25T11:57:20.567946+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "vera-kovalenko",
+      "candidate": 4,
+      "portrait_style": "cool-gray-ribbed",
+      "prompt": "Studio portrait of Vera Kovalenko, a strikingly beautiful, youthful-looking fictional 43-year-old Ukrainian actress of Ukrainian heritage, with fair skin and blue-gray eyes, polished silver-blonde waves, and a graceful beauty mark. Square to camera with relaxed shoulders, her face fully visible, and a confident closed-lip smile. Waist-up composition, wearing a casual crew-neck ribbed knit top in a rich jewel tone, against a cool-gray seamless studio backdrop with soft diffused light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 20167493857,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "reject",
+        "notes": "Too old",
+        "updated_at": "2026-07-25T11:58:45.281876+00:00"
+      }
+    },
+    {
+      "number": 73,
+      "source": "performers-v3/73-jules-navarro-c01-pale-sage-boatneck__00001_.png",
+      "source_sha256": "f0494fe437226b0e1024e5cc4722f4f70552e2f8e7b4af738c96ab776ca40679",
+      "bytes": 2694654,
+      "generated_at": "2026-07-25T12:01:12.686546+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "jules-navarro",
+      "candidate": 1,
+      "portrait_style": "pale-sage-boatneck",
+      "prompt": "Studio portrait of Jules Navarro, a strikingly beautiful, youthful-looking fictional 25-year-old American actress of Mexican-American heritage, with medium skin and brown eyes, a side-swept brunette undercut, and an artistic neck tattoo and small nose ring. Shoulders slightly angled, her face fully toward the camera, with a poised neutral expression. Waist-up composition, wearing a casual soft boat-neck knit top in a deep cool color, against a muted pale-sage studio backdrop with gentle directional light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 21028822659,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "maybe",
+        "notes": "",
+        "updated_at": "2026-07-25T13:09:29.797085+00:00"
+      }
+    },
+    {
+      "number": 74,
+      "source": "performers-v3/74-jules-navarro-c02-blue-gray-henley__00001_.png",
+      "source_sha256": "a684da348d7e25e09688a079156b1756cd0044e7c5e9077b8f3c983b9dd64d56",
+      "bytes": 3057881,
+      "generated_at": "2026-07-25T12:05:04.841145+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "jules-navarro",
+      "candidate": 2,
+      "portrait_style": "blue-gray-henley",
+      "prompt": "Studio portrait of Jules Navarro, a strikingly beautiful, youthful-looking fictional 25-year-old American actress of Mexican-American heritage, with medium skin and brown eyes, a side-swept brunette undercut, and an artistic neck tattoo and small nose ring. Gentle head tilt with relaxed shoulders, her face fully toward the camera, and a warm confident expression. Waist-up composition, wearing a casual henley-style knit top in a warm muted color, against a desaturated blue-gray studio backdrop with soft window-like light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 21057488427,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "",
+        "updated_at": "2026-07-25T13:09:32.628655+00:00"
+      },
+      "persona_id": "actor-042"
+    },
+    {
+      "number": 75,
+      "source": "performers-v3/75-jules-navarro-c03-cool-gray-ribbed__00001_.png",
+      "source_sha256": "0d29d9d7bfb7f9094ee67917062a4faaf6bd01649cca8500c3272fedc5b6366e",
+      "bytes": 3007564,
+      "generated_at": "2026-07-25T12:08:56.704735+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "jules-navarro",
+      "candidate": 3,
+      "portrait_style": "cool-gray-ribbed",
+      "prompt": "Studio portrait of Jules Navarro, a strikingly beautiful, youthful-looking fictional 25-year-old American actress of Mexican-American heritage, with medium skin and brown eyes, a side-swept brunette undercut, and an artistic neck tattoo and small nose ring. Square to camera with relaxed shoulders, her face fully visible, and a confident closed-lip smile. Waist-up composition, wearing a casual crew-neck ribbed knit top in a rich jewel tone, against a cool-gray seamless studio backdrop with soft diffused light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 21100011633,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "reject",
+        "notes": "",
+        "updated_at": "2026-07-25T13:09:35.064087+00:00"
+      }
+    },
+    {
+      "number": 76,
+      "source": "performers-v3/76-jules-navarro-c04-warm-beige-jersey__00001_.png",
+      "source_sha256": "72ebcc84b2726dadb7861c64e698f89e0abdb7b7eb3d2b6a80b7efec2b03ff52",
+      "bytes": 2718721,
+      "generated_at": "2026-07-25T12:12:48.947327+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "jules-navarro",
+      "candidate": 4,
+      "portrait_style": "warm-beige-jersey",
+      "prompt": "Studio portrait of Jules Navarro, a strikingly beautiful, youthful-looking fictional 25-year-old American actress of Mexican-American heritage, with medium skin and brown eyes, a side-swept brunette undercut, and an artistic neck tattoo and small nose ring. Subtle three-quarter angle with relaxed shoulders, her face fully toward the camera, and a soft natural smile. Waist-up composition, wearing a casual short-sleeve jersey top with a moderate scoop neckline in a muted earth tone, against a warm beige lightly textured studio backdrop with clean soft light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 21167493857,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "",
+        "updated_at": "2026-07-25T13:09:40.513520+00:00"
+      },
+      "persona_id": "actor-043"
+    },
+    {
+      "number": 77,
+      "source": "performers-v3/77-leyla-demir-c01-blue-gray-henley__00001_.png",
+      "source_sha256": "4ca8bab9059629729614f90fd304eac7ad2f69cdf006718cdade87a9a0508e2a",
+      "bytes": 2868916,
+      "generated_at": "2026-07-25T12:16:40.712900+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "leyla-demir",
+      "candidate": 1,
+      "portrait_style": "blue-gray-henley",
+      "prompt": "Studio portrait of Leyla Demir, a strikingly beautiful, youthful-looking fictional 30-year-old Turkish actress of Turkish heritage, with olive skin and hazel eyes, brunette waves with a bold blonde face-framing streak, and a thin gold nose ring. Gentle head tilt with relaxed shoulders, her face fully toward the camera, and a warm confident expression. Waist-up composition, wearing a casual henley-style knit top in a warm muted color, against a desaturated blue-gray studio backdrop with soft window-like light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 22028822659,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "",
+        "updated_at": "2026-07-25T13:09:42.967926+00:00"
+      },
+      "persona_id": "actor-044"
+    },
+    {
+      "number": 78,
+      "source": "performers-v3/78-leyla-demir-c02-cool-gray-ribbed__00001_.png",
+      "source_sha256": "bf4f28fa4af069678c30c83777539f35873077e9b6a908c09df903e01ebf2ea1",
+      "bytes": 3153740,
+      "generated_at": "2026-07-25T12:20:32.765517+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "leyla-demir",
+      "candidate": 2,
+      "portrait_style": "cool-gray-ribbed",
+      "prompt": "Studio portrait of Leyla Demir, a strikingly beautiful, youthful-looking fictional 30-year-old Turkish actress of Turkish heritage, with olive skin and hazel eyes, brunette waves with a bold blonde face-framing streak, and a thin gold nose ring. Square to camera with relaxed shoulders, her face fully visible, and a confident closed-lip smile. Waist-up composition, wearing a casual crew-neck ribbed knit top in a rich jewel tone, against a cool-gray seamless studio backdrop with soft diffused light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 22057488427,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "maybe",
+        "notes": "Overdone makeup on cheeks",
+        "updated_at": "2026-07-25T13:10:06.237657+00:00"
+      }
+    },
+    {
+      "number": 79,
+      "source": "performers-v3/79-leyla-demir-c03-warm-beige-jersey__00001_.png",
+      "source_sha256": "6ceb96043745c229ae8c5d342829b1b48f40d42bc1aa970be925eaf727576eab",
+      "bytes": 2461052,
+      "generated_at": "2026-07-25T12:24:24.808115+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "leyla-demir",
+      "candidate": 3,
+      "portrait_style": "warm-beige-jersey",
+      "prompt": "Studio portrait of Leyla Demir, a strikingly beautiful, youthful-looking fictional 30-year-old Turkish actress of Turkish heritage, with olive skin and hazel eyes, brunette waves with a bold blonde face-framing streak, and a thin gold nose ring. Subtle three-quarter angle with relaxed shoulders, her face fully toward the camera, and a soft natural smile. Waist-up composition, wearing a casual short-sleeve jersey top with a moderate scoop neckline in a muted earth tone, against a warm beige lightly textured studio backdrop with clean soft light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 22100011633,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "Could smile more",
+        "updated_at": "2026-07-25T13:10:15.920161+00:00"
+      },
+      "persona_id": "actor-045"
+    },
+    {
+      "number": 80,
+      "source": "performers-v3/80-leyla-demir-c04-pale-sage-boatneck__00001_.png",
+      "source_sha256": "349cd17608c650ea8f4e0704ada5da75545fcf56b219d388e34a60182046f337",
+      "bytes": 2863523,
+      "generated_at": "2026-07-25T12:28:16.325713+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "leyla-demir",
+      "candidate": 4,
+      "portrait_style": "pale-sage-boatneck",
+      "prompt": "Studio portrait of Leyla Demir, a strikingly beautiful, youthful-looking fictional 30-year-old Turkish actress of Turkish heritage, with olive skin and hazel eyes, brunette waves with a bold blonde face-framing streak, and a thin gold nose ring. Shoulders slightly angled, her face fully toward the camera, with a poised neutral expression. Waist-up composition, wearing a casual soft boat-neck knit top in a deep cool color, against a muted pale-sage studio backdrop with gentle directional light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 22167493857,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "",
+        "updated_at": "2026-07-25T13:10:18.758740+00:00"
+      },
+      "persona_id": "actor-046"
+    },
+    {
+      "number": 81,
+      "source": "performers-v3/81-simone-gray-c01-cool-gray-ribbed__00001_.png",
+      "source_sha256": "89db7e9e96c3e3a34f3f2579af4964212c5390a7822e9d77b479b01b5f0eac79",
+      "bytes": 3460922,
+      "generated_at": "2026-07-25T12:32:08.262290+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "simone-gray",
+      "candidate": 1,
+      "portrait_style": "cool-gray-ribbed",
+      "prompt": "Studio portrait of Simone Gray, a strikingly beautiful, youthful-looking fictional 48-year-old Jamaican actress of Afro-Jamaican heritage, with deep brown skin and warm eyes, glamorous natural-gray curls, and elegant statement earrings. Square to camera with relaxed shoulders, her face fully visible, and a confident closed-lip smile. Waist-up composition, wearing a casual crew-neck ribbed knit top in a rich jewel tone, against a cool-gray seamless studio backdrop with soft diffused light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 23028822659,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "reject",
+        "notes": "Too old",
+        "updated_at": "2026-07-25T13:10:25.964540+00:00"
+      }
+    },
+    {
+      "number": 82,
+      "source": "performers-v3/82-simone-gray-c02-warm-beige-jersey__00001_.png",
+      "source_sha256": "b9bef39669fd2aa59281941b290eddd9967d2d91f50eb675b72a8913bc831360",
+      "bytes": 3020387,
+      "generated_at": "2026-07-25T12:36:00.830815+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "simone-gray",
+      "candidate": 2,
+      "portrait_style": "warm-beige-jersey",
+      "prompt": "Studio portrait of Simone Gray, a strikingly beautiful, youthful-looking fictional 48-year-old Jamaican actress of Afro-Jamaican heritage, with deep brown skin and warm eyes, glamorous natural-gray curls, and elegant statement earrings. Subtle three-quarter angle with relaxed shoulders, her face fully toward the camera, and a soft natural smile. Waist-up composition, wearing a casual short-sleeve jersey top with a moderate scoop neckline in a muted earth tone, against a warm beige lightly textured studio backdrop with clean soft light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 23057488427,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "reject",
+        "notes": "Too old",
+        "updated_at": "2026-07-25T13:10:32.410321+00:00"
+      }
+    },
+    {
+      "number": 83,
+      "source": "performers-v3/83-simone-gray-c03-pale-sage-boatneck__00001_.png",
+      "source_sha256": "ba71a775a45c2603b1de4ff6bcb8674df5b6cb44e7e58aa84c01a6658248a890",
+      "bytes": 3024420,
+      "generated_at": "2026-07-25T12:39:52.571425+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "simone-gray",
+      "candidate": 3,
+      "portrait_style": "pale-sage-boatneck",
+      "prompt": "Studio portrait of Simone Gray, a strikingly beautiful, youthful-looking fictional 48-year-old Jamaican actress of Afro-Jamaican heritage, with deep brown skin and warm eyes, glamorous natural-gray curls, and elegant statement earrings. Shoulders slightly angled, her face fully toward the camera, with a poised neutral expression. Waist-up composition, wearing a casual soft boat-neck knit top in a deep cool color, against a muted pale-sage studio backdrop with gentle directional light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 23100011633,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "reject",
+        "notes": "Too old",
+        "updated_at": "2026-07-25T13:10:36.547829+00:00"
+      }
+    },
+    {
+      "number": 84,
+      "source": "performers-v3/84-simone-gray-c04-blue-gray-henley__00001_.png",
+      "source_sha256": "dee8ddeb2595ff1e7041e2b669139d516862f1e663bd354094bcfb3b8310e32b",
+      "bytes": 3185864,
+      "generated_at": "2026-07-25T12:43:44.513040+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "simone-gray",
+      "candidate": 4,
+      "portrait_style": "blue-gray-henley",
+      "prompt": "Studio portrait of Simone Gray, a strikingly beautiful, youthful-looking fictional 48-year-old Jamaican actress of Afro-Jamaican heritage, with deep brown skin and warm eyes, glamorous natural-gray curls, and elegant statement earrings. Gentle head tilt with relaxed shoulders, her face fully toward the camera, and a warm confident expression. Waist-up composition, wearing a casual henley-style knit top in a warm muted color, against a desaturated blue-gray studio backdrop with soft window-like light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 23167493857,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "reject",
+        "notes": "Too old",
+        "updated_at": "2026-07-25T13:10:41.402354+00:00"
+      }
+    },
+    {
+      "number": 85,
+      "source": "performers-v3/85-dahlia-cruz-c01-warm-beige-jersey__00001_.png",
+      "source_sha256": "53d394b4df6b0f19b09476dc6ccdfb5246e93f580bbd000b1cf96ac43dbde4dc",
+      "bytes": 2762259,
+      "generated_at": "2026-07-25T12:47:36.449653+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "dahlia-cruz",
+      "candidate": 1,
+      "portrait_style": "warm-beige-jersey",
+      "prompt": "Studio portrait of Dahlia Cruz, a strikingly beautiful, youthful-looking fictional 39-year-old Colombian actress of mixed Colombian heritage, with golden-brown skin and amber eyes, long dark-brown curls, and a colorful upper-arm tattoo. Subtle three-quarter angle with relaxed shoulders, her face fully toward the camera, and a soft natural smile. Waist-up composition, wearing a casual short-sleeve jersey top with a moderate scoop neckline in a muted earth tone, against a warm beige lightly textured studio backdrop with clean soft light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 24028822659,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "",
+        "updated_at": "2026-07-25T13:10:43.629623+00:00"
+      },
+      "persona_id": "actor-047"
+    },
+    {
+      "number": 86,
+      "source": "performers-v3/86-dahlia-cruz-c02-pale-sage-boatneck__00001_.png",
+      "source_sha256": "e0b7827692b0717efa1f3bba585b374daabd29d45e5133a4f3fca2fc21ba53a3",
+      "bytes": 2610375,
+      "generated_at": "2026-07-25T12:51:27.807255+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "dahlia-cruz",
+      "candidate": 2,
+      "portrait_style": "pale-sage-boatneck",
+      "prompt": "Studio portrait of Dahlia Cruz, a strikingly beautiful, youthful-looking fictional 39-year-old Colombian actress of mixed Colombian heritage, with golden-brown skin and amber eyes, long dark-brown curls, and a colorful upper-arm tattoo. Shoulders slightly angled, her face fully toward the camera, with a poised neutral expression. Waist-up composition, wearing a casual soft boat-neck knit top in a deep cool color, against a muted pale-sage studio backdrop with gentle directional light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 24057488427,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "maybe",
+        "notes": "Good face, expression a bit flat ",
+        "updated_at": "2026-07-25T13:11:08.554662+00:00"
+      }
+    },
+    {
+      "number": 87,
+      "source": "performers-v3/87-dahlia-cruz-c03-blue-gray-henley__00001_.png",
+      "source_sha256": "c6ee395ff511a98d240ca6966bcc4603c457d698dcb48c635598e4eadc7becc7",
+      "bytes": 2653706,
+      "generated_at": "2026-07-25T12:55:20.272876+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "dahlia-cruz",
+      "candidate": 3,
+      "portrait_style": "blue-gray-henley",
+      "prompt": "Studio portrait of Dahlia Cruz, a strikingly beautiful, youthful-looking fictional 39-year-old Colombian actress of mixed Colombian heritage, with golden-brown skin and amber eyes, long dark-brown curls, and a colorful upper-arm tattoo. Gentle head tilt with relaxed shoulders, her face fully toward the camera, and a warm confident expression. Waist-up composition, wearing a casual henley-style knit top in a warm muted color, against a desaturated blue-gray studio backdrop with soft window-like light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 24100011633,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "",
+        "updated_at": "2026-07-25T13:11:11.265753+00:00"
+      },
+      "persona_id": "actor-048"
+    },
+    {
+      "number": 88,
+      "source": "performers-v3/88-dahlia-cruz-c04-cool-gray-ribbed__00001_.png",
+      "source_sha256": "cf2656f71871b4656ff03336f6713af9c54c22e78efdce97abc67057c1d7f5d3",
+      "bytes": 3148280,
+      "generated_at": "2026-07-25T12:59:12.193483+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "dahlia-cruz",
+      "candidate": 4,
+      "portrait_style": "cool-gray-ribbed",
+      "prompt": "Studio portrait of Dahlia Cruz, a strikingly beautiful, youthful-looking fictional 39-year-old Colombian actress of mixed Colombian heritage, with golden-brown skin and amber eyes, long dark-brown curls, and a colorful upper-arm tattoo. Square to camera with relaxed shoulders, her face fully visible, and a confident closed-lip smile. Waist-up composition, wearing a casual crew-neck ribbed knit top in a rich jewel tone, against a cool-gray seamless studio backdrop with soft diffused light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 24167493857,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "reject",
+        "notes": "",
+        "updated_at": "2026-07-25T13:11:13.191465+00:00"
+      }
+    },
+    {
+      "number": 89,
+      "source": "performers-v3/89-nandi-dlamini-c01-pale-sage-boatneck__00001_.png",
+      "source_sha256": "9222400c7e1cf51813b53ab8c31155c3733b439e6fb9f54012478af261899bb7",
+      "bytes": 2749349,
+      "generated_at": "2026-07-25T13:03:03.866088+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "nandi-dlamini",
+      "candidate": 1,
+      "portrait_style": "pale-sage-boatneck",
+      "prompt": "Studio portrait of Nandi Dlamini, a strikingly beautiful, youthful-looking fictional 37-year-old South African actress of Zulu heritage, with deep brown skin and dark eyes, blue-black shoulder-length curls, and a geometric collarbone tattoo. Shoulders slightly angled, her face fully toward the camera, with a poised neutral expression. Waist-up composition, wearing a casual soft boat-neck knit top in a deep cool color, against a muted pale-sage studio backdrop with gentle directional light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 25028822659,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "reject",
+        "notes": "",
+        "updated_at": "2026-07-25T13:11:15.726140+00:00"
+      }
+    },
+    {
+      "number": 90,
+      "source": "performers-v3/90-nandi-dlamini-c02-blue-gray-henley__00001_.png",
+      "source_sha256": "d251785e6de6857f0564b56d34947da562c74f76bfae67688e0a5e5ff35991f2",
+      "bytes": 3103284,
+      "generated_at": "2026-07-25T13:06:55.790699+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "nandi-dlamini",
+      "candidate": 2,
+      "portrait_style": "blue-gray-henley",
+      "prompt": "Studio portrait of Nandi Dlamini, a strikingly beautiful, youthful-looking fictional 37-year-old South African actress of Zulu heritage, with deep brown skin and dark eyes, blue-black shoulder-length curls, and a geometric collarbone tattoo. Gentle head tilt with relaxed shoulders, her face fully toward the camera, and a warm confident expression. Waist-up composition, wearing a casual henley-style knit top in a warm muted color, against a desaturated blue-gray studio backdrop with soft window-like light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 25057488427,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "keep",
+        "notes": "",
+        "updated_at": "2026-07-25T13:11:17.657773+00:00"
+      },
+      "persona_id": "actor-049"
+    },
+    {
+      "number": 91,
+      "source": "performers-v3/91-nandi-dlamini-c03-cool-gray-ribbed__00001_.png",
+      "source_sha256": "093c5d2830ff7a8d7ac669dc1f25fd75e4de4b3f01bca45f803b2e170bb0d3ae",
+      "bytes": 3153059,
+      "generated_at": "2026-07-25T13:10:48.209320+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "nandi-dlamini",
+      "candidate": 3,
+      "portrait_style": "cool-gray-ribbed",
+      "prompt": "Studio portrait of Nandi Dlamini, a strikingly beautiful, youthful-looking fictional 37-year-old South African actress of Zulu heritage, with deep brown skin and dark eyes, blue-black shoulder-length curls, and a geometric collarbone tattoo. Square to camera with relaxed shoulders, her face fully visible, and a confident closed-lip smile. Waist-up composition, wearing a casual crew-neck ribbed knit top in a rich jewel tone, against a cool-gray seamless studio backdrop with soft diffused light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 25100011633,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "maybe",
+        "notes": "",
+        "updated_at": "2026-07-25T13:13:07.898232+00:00"
+      }
+    },
+    {
+      "number": 92,
+      "source": "performers-v3/92-nandi-dlamini-c04-warm-beige-jersey__00001_.png",
+      "source_sha256": "7cd83b105e79b7f4dc77d731553c99651ebf37b44fbc96b5610c665a6e466eac",
+      "bytes": 2700249,
+      "generated_at": "2026-07-25T13:14:40.166932+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "nandi-dlamini",
+      "candidate": 4,
+      "portrait_style": "warm-beige-jersey",
+      "prompt": "Studio portrait of Nandi Dlamini, a strikingly beautiful, youthful-looking fictional 37-year-old South African actress of Zulu heritage, with deep brown skin and dark eyes, blue-black shoulder-length curls, and a geometric collarbone tattoo. Subtle three-quarter angle with relaxed shoulders, her face fully toward the camera, and a soft natural smile. Waist-up composition, wearing a casual short-sleeve jersey top with a moderate scoop neckline in a muted earth tone, against a warm beige lightly textured studio backdrop with clean soft light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 25167493857,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "maybe",
+        "notes": "",
+        "updated_at": "2026-07-25T13:38:01.567205+00:00"
+      }
+    },
+    {
+      "number": 93,
+      "source": "performers-v3/93-rowan-pierce-c01-blue-gray-henley__00001_.png",
+      "source_sha256": "77dccadc85b4c1867c49064bbda09f440e43aff78f645693febaed6699940928",
+      "bytes": 2893652,
+      "generated_at": "2026-07-25T13:18:31.531532+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "rowan-pierce",
+      "candidate": 1,
+      "portrait_style": "blue-gray-henley",
+      "prompt": "Studio portrait of Rowan Pierce, a strikingly beautiful, youthful-looking fictional 28-year-old Scottish actress of Scottish heritage, with fair freckled skin and green eyes, a textured copper pixie cut, and three small ear studs. Gentle head tilt with relaxed shoulders, her face fully toward the camera, and a warm confident expression. Waist-up composition, wearing a casual henley-style knit top in a warm muted color, against a desaturated blue-gray studio backdrop with soft window-like light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 26028822659,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "reject",
+        "notes": "",
+        "updated_at": "2026-07-25T13:38:03.309082+00:00"
+      }
+    },
+    {
+      "number": 94,
+      "source": "performers-v3/94-rowan-pierce-c02-cool-gray-ribbed__00001_.png",
+      "source_sha256": "c4380b850cb2933fa7c522ed01dca6a1b3a36cfd9069069d7a9685f14bc94b0d",
+      "bytes": 2971486,
+      "generated_at": "2026-07-25T13:22:23.474143+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "rowan-pierce",
+      "candidate": 2,
+      "portrait_style": "cool-gray-ribbed",
+      "prompt": "Studio portrait of Rowan Pierce, a strikingly beautiful, youthful-looking fictional 28-year-old Scottish actress of Scottish heritage, with fair freckled skin and green eyes, a textured copper pixie cut, and three small ear studs. Square to camera with relaxed shoulders, her face fully visible, and a confident closed-lip smile. Waist-up composition, wearing a casual crew-neck ribbed knit top in a rich jewel tone, against a cool-gray seamless studio backdrop with soft diffused light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 26057488427,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "reject",
+        "notes": "",
+        "updated_at": "2026-07-25T13:38:05.766408+00:00"
+      }
+    },
+    {
+      "number": 95,
+      "source": "performers-v3/95-rowan-pierce-c03-warm-beige-jersey__00001_.png",
+      "source_sha256": "9e2a6917506450936173bb6127df0ddda40552f90f05f78c02216056e15a8b5e",
+      "bytes": 2862167,
+      "generated_at": "2026-07-25T13:26:15.244751+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "rowan-pierce",
+      "candidate": 3,
+      "portrait_style": "warm-beige-jersey",
+      "prompt": "Studio portrait of Rowan Pierce, a strikingly beautiful, youthful-looking fictional 28-year-old Scottish actress of Scottish heritage, with fair freckled skin and green eyes, a textured copper pixie cut, and three small ear studs. Subtle three-quarter angle with relaxed shoulders, her face fully toward the camera, and a soft natural smile. Waist-up composition, wearing a casual short-sleeve jersey top with a moderate scoop neckline in a muted earth tone, against a warm beige lightly textured studio backdrop with clean soft light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 26100011633,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "maybe",
+        "notes": "",
+        "updated_at": "2026-07-25T13:38:07.835033+00:00"
+      }
+    },
+    {
+      "number": 96,
+      "source": "performers-v3/96-rowan-pierce-c04-pale-sage-boatneck__00001_.png",
+      "source_sha256": "004614ce0dcc157396734b46b6d14517876f8fae4566c0ae310062d282df2c3b",
+      "bytes": 2734692,
+      "generated_at": "2026-07-25T13:30:07.692372+00:00",
+      "width": 1200,
+      "height": 1600,
+      "archetype": "rowan-pierce",
+      "candidate": 4,
+      "portrait_style": "pale-sage-boatneck",
+      "prompt": "Studio portrait of Rowan Pierce, a strikingly beautiful, youthful-looking fictional 28-year-old Scottish actress of Scottish heritage, with fair freckled skin and green eyes, a textured copper pixie cut, and three small ear studs. Shoulders slightly angled, her face fully toward the camera, with a poised neutral expression. Waist-up composition, wearing a casual soft boat-neck knit top in a deep cool color, against a muted pale-sage studio backdrop with gentle directional light. Polished camera-ready makeup suited to her complexion, with defined eyes, luminous natural-looking skin, and satin lips.",
+      "seed": 26167493857,
+      "sampler_steps": "6+2",
+      "review": {
+        "status": "reject",
+        "notes": "",
+        "updated_at": "2026-07-25T13:38:10.422870+00:00"
+      }
+    }
+  ]
+}

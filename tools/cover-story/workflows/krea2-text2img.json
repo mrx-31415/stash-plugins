@@ -1,0 +1,11 @@
+{
+  "3": {"inputs": {"unet_name": "Krea-2-Turbo-Q4_K_M.gguf"}, "class_type": "UnetLoaderGGUF", "_meta": {"title": "Unet Loader (GGUF)"}},
+  "4": {"inputs": {"clip_name": "qwen3vl_4b_fp8_scaled.safetensors", "type": "krea2", "device": "default"}, "class_type": "CLIPLoader", "_meta": {"title": "Load CLIP"}},
+  "5": {"inputs": {"vae_name": "qwen_image_vae.safetensors"}, "class_type": "VAELoader", "_meta": {"title": "Load VAE"}},
+  "6": {"inputs": {"text": "Relaxed cinematic screen-test portrait of an exceptionally beautiful fictional adult leading actress, glamorous and highly photogenic, harmonious feminine features, expressive eyes, defined cheekbones, full natural lips, realistic skin texture, casual fitted knit top, no businesswear, workplace-safe", "clip": ["4", 0]}, "class_type": "CLIPTextEncode", "_meta": {"title": "CLIP Text Encode (Prompt)"}},
+  "7": {"inputs": {"text": "", "clip": ["4", 0]}, "class_type": "CLIPTextEncode", "_meta": {"title": "CLIP Text Encode (Prompt)"}},
+  "8": {"inputs": {"seed": 0, "steps": 6, "cfg": 1, "sampler_name": "euler", "scheduler": "simple", "denoise": 1, "model": ["3", 0], "positive": ["6", 0], "negative": ["7", 0], "latent_image": ["9", 0]}, "class_type": "KSampler", "_meta": {"title": "KSampler"}},
+  "9": {"inputs": {"width": 1024, "height": 1536, "batch_size": 1}, "class_type": "EmptyLatentImage", "_meta": {"title": "Empty Latent Image"}},
+  "10": {"inputs": {"samples": ["8", 0], "vae": ["5", 0]}, "class_type": "VAEDecode", "_meta": {"title": "VAE Decode"}},
+  "11": {"inputs": {"filename_prefix": "cover-story/headshots/headshot_", "images": ["10", 0]}, "class_type": "SaveImage", "_meta": {"title": "Save Image"}}
+}

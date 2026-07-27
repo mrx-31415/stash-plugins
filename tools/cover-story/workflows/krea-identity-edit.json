@@ -1,0 +1,15 @@
+{
+  "1": {"inputs": {"unet_name": "Krea-2-Turbo-Q4_K_M.gguf"}, "class_type": "UnetLoaderGGUF", "_meta": {"title": "Unet Loader (GGUF)"}},
+  "2": {"inputs": {"clip_name": "qwen3vl_4b_fp8_scaled.safetensors", "type": "krea2", "device": "default"}, "class_type": "CLIPLoader", "_meta": {"title": "Load CLIP"}},
+  "3": {"inputs": {"vae_name": "qwen_image_vae.safetensors"}, "class_type": "VAELoader", "_meta": {"title": "Load VAE"}},
+  "4": {"inputs": {"lora_name": "krea2_identity_edit_v1_2_r64.safetensors", "strength_model": 1, "model": ["1", 0]}, "class_type": "LoraLoaderModelOnly", "_meta": {"title": "Load LoRA"}},
+  "5": {"inputs": {"image": "identity.png"}, "class_type": "LoadImage", "_meta": {"title": "Load Image"}},
+  "6": {"inputs": {"pixels": ["5", 0], "vae": ["3", 0]}, "class_type": "VAEEncode", "_meta": {"title": "VAE Encode"}},
+  "7": {"inputs": {"width": 1280, "height": 720, "batch_size": 1}, "class_type": "EmptySD3LatentImage", "_meta": {"title": "EmptySD3LatentImage"}},
+  "8": {"inputs": {"prompt": "Create a workplace-safe cinematic photograph preserving the supplied fictional identity", "grounding_px": 768, "system_prompt": "", "clip": ["2", 0], "image": ["5", 0]}, "class_type": "Krea2EditGroundedEncode", "_meta": {"title": "Krea2 Edit (grounded encode)"}},
+  "9": {"inputs": {"prompt": "", "grounding_px": 768, "system_prompt": "", "clip": ["2", 0], "image": ["5", 0]}, "class_type": "Krea2EditGroundedEncode", "_meta": {"title": "Negative (ignored at CFG 1)"}},
+  "10": {"inputs": {"ref_boost": 2, "ref_boost_a": 1, "fit_mode": "fit", "model": ["4", 0], "source_latent": ["6", 0], "vae": ["3", 0], "source_image": ["5", 0]}, "class_type": "Krea2EditModelPatch", "_meta": {"title": "Krea2 Edit (source patch)"}},
+  "11": {"inputs": {"seed": 0, "steps": 10, "cfg": 1, "sampler_name": "euler", "scheduler": "simple", "denoise": 1.0, "model": ["10", 0], "positive": ["8", 0], "negative": ["9", 0], "latent_image": ["7", 0]}, "class_type": "KSampler", "_meta": {"title": "KSampler"}},
+  "12": {"inputs": {"samples": ["11", 0], "vae": ["3", 0]}, "class_type": "VAEDecode", "_meta": {"title": "VAE Decode"}},
+  "13": {"inputs": {"filename_prefix": "cover-story/identity-edit/identity_", "images": ["12", 0]}, "class_type": "SaveImage", "_meta": {"title": "Save Image"}}
+}
