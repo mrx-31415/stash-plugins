@@ -8,8 +8,9 @@ count and can be added one at a time. Existing scene tags are never removed.
 
 Open **Tag Organizer** from Stash's main navigation, select a provider, and
 click **Scan**. Scans run as Stash jobs, so you can leave the page and return to
-the saved progress. Adding a result creates the local tag and applies it to
-the verified linked scenes.
+the saved progress. Scans and full syncs batch remote scene lookups to reduce
+StashDB requests. Adding a result creates the local tag and applies it to the
+verified linked scenes.
 
 The existing **Sync remote tags** task still adds every matching local tag to
 linked scenes.

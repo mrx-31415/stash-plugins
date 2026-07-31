@@ -1,6 +1,6 @@
 name: Tag Organizer
 description: Find remote tag gaps and add matching local tags to linked scenes.
-version: 1.2.0
+version: 1.4.0
 url: https://github.com/mrx-31415/stash-plugins
 exec:
   - python

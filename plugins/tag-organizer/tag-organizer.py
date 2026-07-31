@@ -13,7 +13,8 @@ from urllib.request import Request, urlopen
 
 PLUGIN_ID = "tag-organizer"
 PAGE_SIZE = 100
-SCAN_PAGE_SIZE = 10
+SCAN_PAGE_SIZE = 25
+REMOTE_BATCH_SIZE = 25
 SCAN_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 
 CONFIG_QUERY = """
@@ -178,6 +179,65 @@ def merge_tag_ids(existing_ids, remote_names, local_tags):
     return set(existing_ids) | additions
 
 
+def remote_tags_batch_query(scene_ids):
+    variables = {}
+    fields = []
+    aliases = {}
+    for index, (cache_key, scene_id) in enumerate(scene_ids):
+        variable = f"id_{index}"
+        alias = f"scene_{index}"
+        variables[variable] = scene_id
+        aliases[alias] = cache_key
+        fields.append(f"{alias}: findScene(id: ${variable}) {{ tags {{ name }} }}")
+    declarations = ", ".join(f"${name}: ID!" for name in variables)
+    return f"query RemoteScenes({declarations}) {{ {' '.join(fields)} }}", variables, aliases
+
+
+def remote_tag_names_for_id(endpoint, stash_id, provider, cache):
+    cache_key = (endpoint, stash_id)
+    if cache_key in cache:
+        return cache[cache_key], []
+    try:
+        data = graphql(
+            endpoint,
+            REMOTE_TAGS_QUERY,
+            {"id": stash_id},
+            {"ApiKey": provider["api_key"]},
+        )
+        cache[cache_key] = [tag["name"] for tag in (data["findScene"] or {}).get("tags", [])]
+        return cache[cache_key], []
+    except RuntimeError as error:
+        return [], [{"provider": endpoint, "error": str(error)}]
+
+
+def prefetch_remote_tag_names(scenes, providers, cache):
+    pending = {}
+    for scene in scenes:
+        for stash_id in scene.get("stash_ids") or []:
+            endpoint = stash_id.get("endpoint")
+            if endpoint not in providers:
+                continue
+            cache_key = (endpoint, stash_id["stash_id"])
+            if cache_key not in cache:
+                pending.setdefault(endpoint, {})[cache_key] = stash_id["stash_id"]
+
+    for endpoint, scene_ids in pending.items():
+        provider = providers[endpoint]
+        items = list(scene_ids.items())
+        for offset in range(0, len(items), REMOTE_BATCH_SIZE):
+            chunk = items[offset:offset + REMOTE_BATCH_SIZE]
+            if len(chunk) == 1:
+                continue
+            query, variables, aliases = remote_tags_batch_query(chunk)
+            try:
+                data = graphql(endpoint, query, variables, {"ApiKey": provider["api_key"]})
+            except RuntimeError:
+                continue
+            for alias, cache_key in aliases.items():
+                scene = data.get(alias) or {}
+                cache[cache_key] = [tag["name"] for tag in scene.get("tags", [])]
+
+
 def remote_tag_names(scene, providers, cache):
     names = []
     failures = []
@@ -186,20 +246,14 @@ def remote_tag_names(scene, providers, cache):
         provider = providers.get(endpoint)
         if not provider:
             continue
-        cache_key = (endpoint, stash_id["stash_id"])
-        try:
-            if cache_key not in cache:
-                data = graphql(
-                    endpoint,
-                    REMOTE_TAGS_QUERY,
-                    {"id": stash_id["stash_id"]},
-                    {"ApiKey": provider["api_key"]},
-                )
-                cache[cache_key] = [tag["name"] for tag in (data["findScene"] or {}).get("tags", [])]
-        except RuntimeError as error:
-            failures.append({"provider": endpoint, "error": str(error)})
-            continue
-        names.extend(cache[cache_key])
+        scene_names, scene_failures = remote_tag_names_for_id(
+            endpoint,
+            stash_id["stash_id"],
+            provider,
+            cache,
+        )
+        failures.extend(scene_failures)
+        names.extend(scene_names)
     return names, failures
 
 
@@ -215,6 +269,7 @@ def gap_rows(scenes, providers, cache):
     gaps = {}
     failures = []
     scanned = 0
+    prefetch_remote_tag_names(scenes, providers, cache)
     for scene in scenes:
         if not any(stash_id.get("endpoint") in providers for stash_id in scene.get("stash_ids") or []):
             continue
@@ -552,6 +607,7 @@ def run(payload):
             result = graphql(local_url, SCENES_QUERY, {"filter": {"page": page, "per_page": PAGE_SIZE}}, local_headers)["findScenes"]
             total = result["count"]
             stash_progress(summary["scanned"], total)
+            prefetch_remote_tag_names(result["scenes"], providers, cache)
             for scene in result["scenes"]:
                 process(scene)
             if page * PAGE_SIZE >= result["count"]:
@@ -625,6 +681,11 @@ def self_test():
                     ]
                 }
             }
+        if query.startswith("query RemoteScenes("):
+            return {
+                f"scene_{index}": {"tags": [{"name": f"Batch{index}"}]}
+                for index in range(len(variables))
+            }
         if query == REMOTE_TAGS_QUERY:
             return {"findScene": {"tags": [{"name": "New"}, {"name": "Anal"}, {"name": "Blowjob"}]}}
         if query == TAG_SEARCH_QUERY:
@@ -644,6 +705,14 @@ def self_test():
             {},
             {"endpoint": "remote", "api_key": "key"},
             2,
+        )
+        batch_rows, batch_scanned, batch_failures = gap_rows(
+            [
+                {"id": "1", "stash_ids": [{"endpoint": "remote", "stash_id": "a"}]},
+                {"id": "2", "stash_ids": [{"endpoint": "remote", "stash_id": "b"}]},
+            ],
+            {"remote": {"endpoint": "remote", "api_key": "key"}},
+            {},
         )
         with tempfile.TemporaryDirectory() as state_dir:
             scan_result = scan_all(
@@ -675,6 +744,12 @@ def self_test():
         ],
         "failure_count": 0,
     }
+    assert batch_rows == [
+        {"name": "Batch0", "scene_count": 1, "scene_ids": ["1"]},
+        {"name": "Batch1", "scene_count": 1, "scene_ids": ["2"]},
+    ]
+    assert batch_scanned == 2 and batch_failures == []
+    assert sum(call[0].startswith("query RemoteScenes(") for call in calls) == 1
     assert scan_result == {
         "scan_token": "scan-token",
         "status": "completed",
