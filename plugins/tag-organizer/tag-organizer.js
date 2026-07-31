@@ -32,9 +32,13 @@
   }
 
   function markLocal(rows, name) {
-    const key = name.toLowerCase();
+    return markLocalNames(rows, [name]);
+  }
+
+  function markLocalNames(rows, names) {
+    const keys = new Set(names.map(function (name) { return name.toLowerCase(); }));
     return rows.map(function (row) {
-      return row.name.toLowerCase() === key ? Object.assign({}, row, { is_local: true }) : row;
+      return keys.has(row.name.toLowerCase()) ? Object.assign({}, row, { is_local: true }) : row;
     });
   }
 
@@ -93,6 +97,7 @@
       const added = markLocal(merged, "NEW");
       assert.equal(added[0].is_local, true);
       assert.deepEqual(visibleRows(added, "", false).map(function (row) { return row.name; }), ["Another"]);
+      assert.equal(markLocalNames(merged, ["another"])[2].is_local, true);
       assert.equal(terminalJobStatus("FINISHED"), true);
       assert.equal(terminalJobStatus("RUNNING"), false);
       console.log("self-check passed");
@@ -186,9 +191,13 @@
     const [progress, setProgress] = React.useState(null);
     const [search, setSearch] = React.useState("");
     const [showLocal, setShowLocal] = React.useState(false);
+    const [selectedNames, setSelectedNames] = React.useState(new Set());
     const [job, setJob] = React.useState(null);
     const localTags = React.useRef(new Set());
     const filteredRows = visibleRows(rows, search, showLocal, localTags.current);
+    const selectedRows = rows.filter(function (row) {
+      return selectedNames.has(row.name.toLowerCase());
+    });
     const scanActive = Boolean(job && !terminalJobStatus(job.status));
 
     React.useEffect(function () {
@@ -300,6 +309,7 @@
     async function scan() {
       setBusy("scan");
       setRows([]);
+      setSelectedNames(new Set());
       setStatus("");
       setWarning("");
       setError("");
@@ -349,6 +359,11 @@
           return markLocal(current, row.name);
         });
         localTags.current.add(row.name.toLowerCase());
+        setSelectedNames(function (current) {
+          const next = new Set(current);
+          next.delete(row.name.toLowerCase());
+          return next;
+        });
         setStatus(
           (result.created ? "Created " + row.name + " and applied it" : "Applied " + row.name) +
             " to " + result.applied + " scene(s)."
@@ -357,6 +372,66 @@
           setWarning(
             result.failed + " scene(s) were not updated." +
               (result.error ? " " + result.error : " Run Sync remote tags to retry.")
+          );
+        }
+      } catch (addError) {
+        setError(errorMessage(addError));
+      } finally {
+        setBusy("");
+      }
+    }
+
+    async function addSelected() {
+      const selected = selectedRows.slice();
+      if (!selected.length) return;
+      setBusy("add-many");
+      setWarning("");
+      setError("");
+      try {
+        const result = await runOperation({
+          mode: "add_many",
+          provider: provider,
+          items: selected.map(function (row) {
+            return { name: row.name, scene_ids: row.scene_ids };
+          }),
+        });
+        const results = result.results || [];
+        const resolvedNames = results.filter(function (item) {
+          return item.resolved;
+        }).map(function (item) {
+          return item.name;
+        });
+        const completedNames = results.filter(function (item) {
+          return item.resolved && !item.error && !item.failed;
+        }).map(function (item) {
+          return item.name;
+        });
+        setRows(function (current) {
+          return markLocalNames(current, resolvedNames);
+        });
+        resolvedNames.forEach(function (name) {
+          localTags.current.add(name.toLowerCase());
+        });
+        setSelectedNames(function (current) {
+          const next = new Set(current);
+          completedNames.forEach(function (name) {
+            next.delete(name.toLowerCase());
+          });
+          return next;
+        });
+        setStatus(
+          "Processed " + (result.processed || results.length) + " tag(s); applied " +
+            (result.applied || 0) + " scene tag assignment(s)."
+        );
+        const failed = results.filter(function (item) {
+          return item.error || item.failed;
+        });
+        if (failed.length) {
+          setWarning(
+            failed.length + " tag(s) had update failures: " +
+              failed.map(function (item) {
+                return item.name + (item.error ? " (" + item.error + ")" : "");
+              }).join("; ")
           );
         }
       } catch (addError) {
@@ -405,14 +480,70 @@
         },
       React.createElement(
         "div",
-        { className: "form-row align-items-end mb-3" },
+        { className: "d-flex align-items-end flex-nowrap mb-3" },
         React.createElement(
           Form.Group,
-          { className: "col-md-5 mb-2" },
+          { className: "flex-grow-1 mb-0", style: { minWidth: 0 } },
+          React.createElement(Form.Label, { htmlFor: "tag-organizer-provider" }, "Metadata provider"),
+          React.createElement(
+            Form.Control,
+            {
+              as: "select",
+              id: "tag-organizer-provider",
+              value: provider,
+              disabled: Boolean(busy) || scanActive,
+              onChange: function (event) {
+                setProvider(event.target.value);
+                setRows([]);
+                setSelectedNames(new Set());
+                setJob(null);
+                window.localStorage.removeItem("tag-organizer.scan");
+                setStatus("");
+                setWarning("");
+              },
+            },
+            providers.map(function (item) {
+              return React.createElement("option", { key: item.endpoint, value: item.endpoint }, item.name);
+            })
+          )
+        ),
+        React.createElement(
+          Button,
+          { onClick: scan, disabled: !provider || Boolean(busy) || scanActive, className: "ml-2 text-nowrap" },
+          busy === "scan"
+            ? React.createElement(
+                React.Fragment,
+                null,
+                React.createElement(Spinner, { animation: "border", size: "sm", className: "mr-2" }),
+                "Scanning…"
+              )
+            : scanActive
+              ? "Scanning…"
+            : "Scan"
+        ),
+        scanActive
+          ? React.createElement(
+              Button,
+              {
+                variant: "outline-danger",
+                className: "ml-2 text-nowrap",
+                disabled: Boolean(busy),
+                onClick: cancelScan,
+              },
+              busy === "cancel" ? "Stopping…" : "Cancel scan"
+            )
+          : null
+      ),
+      React.createElement(
+        "div",
+        { className: "d-flex align-items-end flex-nowrap mb-3" },
+        React.createElement(
+          Form.Group,
+          { className: "flex-grow-1 mb-0", style: { minWidth: 0 } },
           React.createElement(Form.Label, { htmlFor: "tag-organizer-search" }, "Search tags"),
           React.createElement(
             "div",
-            { className: "d-flex" },
+            { className: "d-flex", style: { minWidth: 0 } },
             React.createElement(Form.Control, {
               id: "tag-organizer-search",
               type: "search",
@@ -421,12 +552,13 @@
               onChange: function (event) {
                 setSearch(event.target.value);
               },
+              style: { minWidth: 0 },
             }),
             React.createElement(
               Button,
               {
                 variant: "outline-secondary",
-                className: "ml-2",
+                className: "ml-2 text-nowrap",
                 disabled: !search,
                 onClick: function () {
                   setSearch("");
@@ -438,72 +570,37 @@
           )
         ),
         React.createElement(
-          "div",
-          { className: "col-md-auto mb-2" },
-          React.createElement(
-            Button,
-            {
-              variant: showLocal ? "secondary" : "outline-secondary",
-              "aria-pressed": showLocal,
-              onClick: function () {
-                setShowLocal(!showLocal);
-              },
-            },
-            "Show local tags"
-          )
-        )
-      ),
-      React.createElement(
-        Form.Group,
-        { className: "mb-3" },
-        React.createElement(Form.Label, { htmlFor: "tag-organizer-provider" }, "Metadata provider"),
-        React.createElement(
-          Form.Control,
+          Button,
           {
-            as: "select",
-            id: "tag-organizer-provider",
-            value: provider,
-            disabled: Boolean(busy) || scanActive,
-            onChange: function (event) {
-              setProvider(event.target.value);
-              setRows([]);
-              setJob(null);
-              window.localStorage.removeItem("tag-organizer.scan");
-              setStatus("");
-              setWarning("");
+            variant: showLocal ? "secondary" : "outline-secondary",
+            className: "ml-2 text-nowrap",
+            "aria-pressed": showLocal,
+            onClick: function () {
+              setShowLocal(!showLocal);
             },
           },
-          providers.map(function (item) {
-            return React.createElement("option", { key: item.endpoint, value: item.endpoint }, item.name);
-          })
-        )
-      ),
-      React.createElement(
-        Button,
-        { onClick: scan, disabled: !provider || Boolean(busy) || scanActive, className: "mb-3" },
-        busy === "scan"
+          "Show local tags"
+        ),
+        selectedRows.length
           ? React.createElement(
-              React.Fragment,
-              null,
-              React.createElement(Spinner, { animation: "border", size: "sm", className: "mr-2" }),
-              "Scanning…"
+              Button,
+              {
+                variant: "primary",
+                className: "ml-2 text-nowrap",
+                disabled: Boolean(busy) || scanActive,
+                onClick: addSelected,
+              },
+              busy === "add-many"
+                ? React.createElement(
+                    React.Fragment,
+                    null,
+                    React.createElement(Spinner, { animation: "border", size: "sm", className: "mr-2" }),
+                    "Adding " + selectedRows.length + "…"
+                  )
+                : "Add selected (" + selectedRows.length + ")"
             )
-          : scanActive
-            ? "Scanning…"
-          : "Scan"
-      ),
-      scanActive
-        ? React.createElement(
-            Button,
-            {
-              variant: "outline-danger",
-              className: "ml-2 mb-3",
-              disabled: Boolean(busy),
-              onClick: cancelScan,
-            },
-            busy === "cancel" ? "Stopping…" : "Cancel scan"
-          )
-        : null,
+          : null
+        ),
       progress
         ? React.createElement(ProgressBar, {
             className: "mb-3",
@@ -537,6 +634,7 @@
               React.createElement(
                 "tr",
                 null,
+                React.createElement("th", null, "Select"),
                 React.createElement("th", null, "Tag"),
                 React.createElement("th", null, "Scenes"),
                 React.createElement("th", null)
@@ -552,6 +650,24 @@
                   React.createElement(
                     "td",
                     null,
+                    React.createElement("input", {
+                      type: "checkbox",
+                      className: "mr-2",
+                      checked: selectedNames.has(row.name.toLowerCase()),
+                      disabled: Boolean(busy) || scanActive,
+                      onChange: function (event) {
+                        setSelectedNames(function (current) {
+                          const next = new Set(current);
+                          if (event.target.checked) {
+                            next.add(row.name.toLowerCase());
+                          } else {
+                            next.delete(row.name.toLowerCase());
+                          }
+                          return next;
+                        });
+                      },
+                      "aria-label": "Select " + row.name,
+                    }),
                     row.name,
                     row.is_local
                       ? React.createElement(Badge, { variant: "secondary", className: "ml-2" }, "Local")

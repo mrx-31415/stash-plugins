@@ -2,7 +2,8 @@
 
 Finds tags used by configured metadata providers on linked local scenes but
 missing from the local tag collection. Results are sorted by affected scene
-count and can be added one at a time. Existing scene tags are never removed.
+count and can be added individually or in batches. Existing scene tags are
+never removed.
 
 ## Use
 
@@ -11,6 +12,10 @@ click **Scan**. Scans run as Stash jobs, so you can leave the page and return to
 the saved progress. Scans and full syncs batch remote scene lookups to reduce
 StashDB requests. Adding a result creates the local tag and applies it to the
 verified linked scenes.
+
+Select one or more results with the checkboxes and click **Add selected** to
+process them in one operation. A failed tag does not prevent the remaining
+selected tags from being processed; failed tags remain selected for retry.
 
 The existing **Sync remote tags** task still adds every matching local tag to
 linked scenes.

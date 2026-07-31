@@ -15,6 +15,7 @@ PLUGIN_ID = "tag-organizer"
 PAGE_SIZE = 100
 SCAN_PAGE_SIZE = 25
 REMOTE_BATCH_SIZE = 25
+LOCAL_BATCH_SIZE = 100
 SCAN_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 
 CONFIG_QUERY = """
@@ -46,7 +47,7 @@ query Scene($id: ID!) {
 """
 SCENES_BY_IDS_QUERY = """
 query ScenesByIds($ids: [ID!]!) {
-  findScenes(scene_ids: $ids) {
+  findScenes(ids: $ids) {
     scenes { id title tags { id } stash_ids { endpoint stash_id } }
   }
 }
@@ -427,18 +428,13 @@ def add_gap(local_url, local_headers, provider, name, scene_ids, local_tags):
         {"ids": requested_ids},
         local_headers,
     )["findScenes"]["scenes"]
-    verified_ids = []
-    failures = []
-    cache = {}
-    for scene in scenes:
-        if not any(stash_id.get("endpoint") == provider["endpoint"] for stash_id in scene.get("stash_ids") or []):
-            continue
-        names, scene_failures = remote_tag_names(scene, {provider["endpoint"]: provider}, cache)
-        failures.extend(scene_failures)
-        if any(remote_name.casefold() == name.casefold() for remote_name in names):
-            verified_ids.append(scene["id"])
+    verified_ids = [
+        scene["id"]
+        for scene in scenes
+        if any(stash_id.get("endpoint") == provider["endpoint"] for stash_id in scene.get("stash_ids") or [])
+    ]
     if not verified_ids:
-        raise RuntimeError("the selected tag could not be verified on any linked scene")
+        raise RuntimeError("none of the selected scenes are linked to the configured provider")
 
     if name.casefold() not in local_tags:
         merge_tag_index(local_tags, find_local_tags(local_url, local_headers, [name]))
@@ -456,24 +452,63 @@ def add_gap(local_url, local_headers, provider, name, scene_ids, local_tags):
     else:
         tag_id = next(iter(matched_ids))
 
+    applied = 0
     error = None
-    try:
-        updated = graphql(
-            local_url,
-            BULK_UPDATE_SCENES_MUTATION,
-            {"input": {"ids": verified_ids, "tag_ids": {"ids": [tag_id], "mode": "ADD"}}},
-            local_headers,
-        )["bulkSceneUpdate"]
-        applied = len(updated or [])
-    except RuntimeError as update_error:
-        applied = 0
-        error = str(update_error)
+    for offset in range(0, len(verified_ids), LOCAL_BATCH_SIZE):
+        chunk = verified_ids[offset:offset + LOCAL_BATCH_SIZE]
+        try:
+            updated = graphql(
+                local_url,
+                BULK_UPDATE_SCENES_MUTATION,
+                {"input": {"ids": chunk, "tag_ids": {"ids": [tag_id], "mode": "ADD"}}},
+                local_headers,
+            )["bulkSceneUpdate"]
+            applied += len(updated or [])
+        except RuntimeError as update_error:
+            error = error or str(update_error)
     return {
         "created": created,
         "applied": applied,
         "failed": len(requested_ids) - applied,
-        "failure_count": len(failures),
+        "failure_count": 0,
         "error": error,
+    }
+
+
+def validate_add_items(items):
+    if not isinstance(items, list) or not items:
+        raise ValueError("items must be a non-empty list")
+    for item in items:
+        if not isinstance(item, dict) or not isinstance(item.get("name"), str) or not isinstance(item.get("scene_ids"), list):
+            raise ValueError("each item must contain a tag name and scene ID list")
+
+
+def add_many(local_url, local_headers, provider, items, local_tags):
+    validate_add_items(items)
+    results = []
+    for item in items:
+        name = item["name"]
+        scene_ids = item["scene_ids"]
+        try:
+            result = add_gap(local_url, local_headers, provider, name, scene_ids, local_tags)
+            results.append({"name": name, "resolved": True, **result})
+        except (RuntimeError, ValueError) as error:
+            results.append({
+                "name": name,
+                "resolved": False,
+                "created": False,
+                "applied": 0,
+                "failed": len({str(scene_id) for scene_id in scene_ids}),
+                "failure_count": 0,
+                "error": str(error),
+            })
+    return {
+        "processed": len(results),
+        "resolved": sum(result["resolved"] for result in results),
+        "created": sum(result["created"] for result in results),
+        "applied": sum(result["applied"] for result in results),
+        "failed": sum(result["failed"] for result in results),
+        "results": results,
     }
 
 
@@ -528,6 +563,11 @@ def run_operation(args, configuration, local_url, local_headers, server):
             args.get("scene_ids") or [],
             local_tags,
         )
+    if mode == "add_many":
+        items = args.get("items")
+        validate_add_items(items)
+        local_tags = tag_index(graphql(local_url, TAGS_QUERY, headers=local_headers)["findTags"]["tags"])
+        return add_many(local_url, local_headers, provider, items, local_tags)
     raise ValueError("unknown operation")
 
 
@@ -624,8 +664,9 @@ def run(payload):
 
 
 def self_test():
-    global graphql
+    global graphql, LOCAL_BATCH_SIZE
 
+    assert "findScenes(ids: $ids)" in SCENES_BY_IDS_QUERY
     index = tag_index([
         {"id": "1", "name": "Anal", "aliases": ["A"]},
         {"id": "2", "name": "BDSM", "aliases": []},
@@ -673,12 +714,13 @@ def self_test():
                 }
             }
         if query == SCENES_BY_IDS_QUERY:
+            scenes = [
+                {"id": "1", "stash_ids": [{"endpoint": "remote", "stash_id": "a"}]},
+                {"id": "2", "stash_ids": [{"endpoint": "remote", "stash_id": "a"}]},
+            ]
             return {
                 "findScenes": {
-                    "scenes": [
-                        {"id": "1", "stash_ids": [{"endpoint": "remote", "stash_id": "a"}]},
-                        {"id": "2", "stash_ids": [{"endpoint": "other", "stash_id": "b"}]},
-                    ]
+                    "scenes": [scene for scene in scenes if scene["id"] in variables["ids"]]
                 }
             }
         if query.startswith("query RemoteScenes("):
@@ -723,12 +765,27 @@ def self_test():
                 "scan-token",
             )
             scan_state = read_scan_state({"Dir": state_dir}, "scan-token")
-        added = add_gap(
+        original_local_batch_size = LOCAL_BATCH_SIZE
+        LOCAL_BATCH_SIZE = 1
+        try:
+            added = add_gap(
+                "local",
+                {},
+                {"endpoint": "remote", "api_key": "key"},
+                "New",
+                ["1", "2"],
+                index,
+            )
+        finally:
+            LOCAL_BATCH_SIZE = original_local_batch_size
+        batched = add_many(
             "local",
             {},
             {"endpoint": "remote", "api_key": "key"},
-            "New",
-            ["1", "2"],
+            [
+                {"name": "New", "scene_ids": ["1"]},
+                {"name": "Broken", "scene_ids": ["999"]},
+            ],
             index,
         )
         matched = find_local_tags("local", {}, ["Blowjob", "Missing"])
@@ -773,10 +830,21 @@ def self_test():
             }
         },
     }
-    assert added == {"created": True, "applied": 1, "failed": 1, "failure_count": 0, "error": None}
+    assert added == {"created": True, "applied": 2, "failed": 0, "failure_count": 0, "error": None}
+    assert batched == {
+        "processed": 2,
+        "resolved": 1,
+        "created": 1,
+        "applied": 1,
+        "failed": 1,
+        "results": [
+            {"name": "New", "resolved": True, "created": True, "applied": 1, "failed": 0, "failure_count": 0, "error": None},
+            {"name": "Broken", "resolved": False, "created": False, "applied": 0, "failed": 1, "failure_count": 0, "error": "none of the selected scenes are linked to the configured provider"},
+        ],
+    }
     assert matched == {"oral": {"11"}, "blowjob": {"11"}}
-    bulk_call = next(call for call in calls if call[0] == BULK_UPDATE_SCENES_MUTATION)
-    assert bulk_call[1] == {"input": {"ids": ["1"], "tag_ids": {"ids": ["10"], "mode": "ADD"}}}
+    bulk_calls = [call for call in calls if call[0] == BULK_UPDATE_SCENES_MUTATION]
+    assert [call[1]["input"]["ids"] for call in bulk_calls] == [["1"], ["2"], ["1"]]
     assert hook_target({"args": {}}, {}) == "all"
     assert hook_target({"args": {"hookContext": {"type": "Tag.Create.Post"}}}, {}) is None
     assert hook_target({"args": {"hookContext": {"type": "Scene.Update.Post", "id": "5", "inputFields": ["stash_ids"]}}}, {"syncOnStashIdChange": True}) == "5"
