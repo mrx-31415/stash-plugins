@@ -2,13 +2,31 @@
 """Queue an API-format ComfyUI workflow and download its images."""
 
 import argparse
+import errno
 import json
 import os
 import struct
 import tempfile
 import time
+import uuid
 from pathlib import Path
 from urllib import error, parse, request
+
+
+def retry_refused(operation, timeout, poll=5):
+    deadline = time.monotonic() + timeout
+    attempts = 0
+    while True:
+        try:
+            return operation()
+        except error.URLError as exc:
+            reason = getattr(exc, "reason", None)
+            if getattr(reason, "errno", None) != errno.ECONNREFUSED or time.monotonic() >= deadline:
+                raise
+            if attempts % 12 == 0:
+                print("ComfyUI connection refused; retrying…", flush=True)
+            attempts += 1
+            time.sleep(min(poll, max(0, deadline - time.monotonic())))
 
 
 def endpoint(server, path, query=None):
@@ -37,6 +55,33 @@ def api(server, path, payload=None, timeout=30):
         body = exc.read().decode(errors="replace")
         raise RuntimeError(f"ComfyUI returned HTTP {exc.code}: {body}") from exc
     return json.loads(body)
+
+
+def upload_image(server, path, subfolder="cover-story/corridorkey", timeout=300):
+    boundary = uuid.uuid4().hex
+    parts = []
+    for name, value in (("subfolder", subfolder), ("type", "input"), ("overwrite", "true")):
+        parts.append(
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n"
+            f"{value}\r\n".encode()
+        )
+    parts.append(
+        f"--{boundary}\r\nContent-Disposition: form-data; name=\"image\"; "
+        f"filename=\"{path.name}\"\r\nContent-Type: image/png\r\n\r\n".encode()
+        + path.read_bytes() + b"\r\n"
+    )
+    parts.append(f"--{boundary}--\r\n".encode())
+    req = request.Request(endpoint(server, "/upload/image"), data=b"".join(parts))
+    req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+    def send():
+        with request.urlopen(req, timeout=60) as response:
+            return json.loads(response.read())
+    try:
+        result = retry_refused(send, timeout)
+    except error.HTTPError as exc:
+        body = exc.read().decode(errors="replace")
+        raise RuntimeError(f"ComfyUI upload returned HTTP {exc.code}: {body}") from exc
+    return "/".join(filter(None, (result.get("subfolder"), result["name"])))
 
 
 def prepare(workflow, prompt, seed, filename_prefix=None):
@@ -83,11 +128,16 @@ def image_info(data):
     raise ValueError("response is not a recognized image")
 
 
-def run(server, workflow, output_dir, timeout, poll=2):
-    queued = api(server, "/prompt", {"prompt": workflow})
+def run(server, workflow, output_dir, timeout, poll=2, queued_event=None):
+    queued = retry_refused(
+        lambda: api(server, "/prompt", {"prompt": workflow}),
+        timeout, poll,
+    )
     prompt_id = queued.get("prompt_id")
     if not prompt_id:
         raise RuntimeError(f"ComfyUI did not return a prompt_id: {queued}")
+    if queued_event:
+        queued_event.set()
 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -157,6 +207,16 @@ def self_test():
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
     png = b"\x89PNG\r\n\x1a\n" + b"\0\0\0\rIHDR" + struct.pack(">II", 1, 1) + b"\x08\x02\0\0\0"
+    attempts = iter((
+        error.URLError(ConnectionRefusedError(errno.ECONNREFUSED, "refused")),
+        "connected",
+    ))
+    def connect():
+        result = next(attempts)
+        if isinstance(result, Exception):
+            raise result
+        return result
+    assert retry_refused(connect, 1, 0) == "connected"
 
     class Handler(BaseHTTPRequestHandler):
         mode = "success"
@@ -166,6 +226,13 @@ def self_test():
             pass
 
         def do_POST(self):
+            if self.path.startswith("/upload/image"):
+                body = self.rfile.read(int(self.headers["Content-Length"]))
+                assert b'name="image"' in body and b"test.png" in body
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b'{"name":"test.png","subfolder":"cover-story/corridorkey","type":"input"}')
+                return
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             assert body["prompt"]["6"]["inputs"]["text"] == "test prompt"
             assert body["prompt"]["8"]["inputs"]["seed"] == 7
@@ -223,7 +290,12 @@ def self_test():
     url = f"http://127.0.0.1:{server.server_port}?token=test"
     try:
         with tempfile.TemporaryDirectory() as directory:
-            result = run(url, prepared, Path(directory), 1, 0.01)
+            upload = Path(directory) / "test.png"
+            upload.write_bytes(png)
+            assert upload_image(url, upload) == "cover-story/corridorkey/test.png"
+            queued_event = threading.Event()
+            result = run(url, prepared, Path(directory), 1, 0.01, queued_event)
+            assert queued_event.is_set()
             assert result["images"][0]["width"] == 1
             try:
                 run(url, prepared, Path(directory), 1, 0.01)

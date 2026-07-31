@@ -9,32 +9,31 @@
     "At {place}, {lead} discovers {discovery}. After {complication}, they must {goal} before {stakes}.",
   ];
 
-  function assets(id) {
+  function assets(id, covers = 0) {
     const rootPath = `themes/${id}`;
+    const layer = (path, details) => ({ path, avif: path.replace(/\.webp$/, ".avif"), ...details });
     return {
+      layered: covers > 0,
       backgrounds: [
-        `${rootPath}/backgrounds/day-centered-01.webp`,
-        `${rootPath}/backgrounds/day-left-01.webp`,
-        `${rootPath}/backgrounds/warm-right-01.webp`,
-        `${rootPath}/backgrounds/night-centered-01.webp`,
+        layer(`${rootPath}/backgrounds/day-centered-01.webp`, { layouts: ["center", "duo"], light: "day" }),
+        layer(`${rootPath}/backgrounds/day-left-01.webp`, { layouts: ["left"], light: "day" }),
+        layer(`${rootPath}/backgrounds/warm-right-01.webp`, { layouts: ["right"], light: "warm" }),
+        layer(`${rootPath}/backgrounds/night-centered-01.webp`, { layouts: ["center", "duo"], light: "night" }),
       ],
       actors: [
-        `${rootPath}/actors/actor-01-left.webp`,
-        `${rootPath}/actors/actor-01-right.webp`,
-        `${rootPath}/actors/actor-02-left.webp`,
-        `${rootPath}/actors/actor-02-right.webp`,
+        layer(`${rootPath}/actors/actor-01-left.webp`, { identity: "actor-01", facing: "left" }),
+        layer(`${rootPath}/actors/actor-01-right.webp`, { identity: "actor-01", facing: "right" }),
+        layer(`${rootPath}/actors/actor-02-left.webp`, { identity: "actor-02", facing: "left" }),
+        layer(`${rootPath}/actors/actor-02-right.webp`, { identity: "actor-02", facing: "right" }),
       ],
-      foregrounds: [
-        `${rootPath}/foregrounds/center-01.webp`,
-        `${rootPath}/foregrounds/left-01.webp`,
-        `${rootPath}/foregrounds/right-01.webp`,
-      ],
+      foregrounds: [],
+      covers: Array.from({ length: covers }, (_, index) => `${rootPath}/covers/cover-${String(index + 1).padStart(2, "0")}.webp`),
     };
   }
 
   const themes = [
     {
-      id: "viking", label: "Viking Saga", assets: assets("viking"),
+      id: "viking", label: "Viking Saga", assets: assets("viking", 8),
       titles: { prefixes: ["The Last", "Beyond the", "Song of the", "Oath of the", "Under the", "Return to"], nouns: ["Longship", "Fjord", "Winter Crown", "Runestone", "Raven Banner", "Northern Fire", "Whale Road", "Oak Shield"] },
       descriptions: {
         templates,

@@ -59,10 +59,25 @@
     const pick = (items, type, id, field) => items[key(type, id, field) % items.length];
     const number = (type, id, field, minimum, range) => minimum + key(type, id, field) % range;
     const copy = (value, changes) => Object.assign({}, value || {}, changes);
+    const assetURL = (path) => /^(?:data:|https?:|\/)/.test(path) ? path : `/plugin/cover-story/assets/${path}`;
+    const assignedPersonas = new Map();
+    const claimedPersonas = new Set();
 
     function performerPersona(id) {
       const available = personaDefinitions ?? root?.CoverStoryPersonas ?? personas;
-      return available.length ? pick(available, "performer", id, "persona") : null;
+      if (!available.length) return null;
+      const identity = String(id);
+      if (/^(?:director|photographer|queue)-/.test(identity)) {
+        return pick(available, "performer", id, "persona");
+      }
+      if (assignedPersonas.has(identity)) return available[assignedPersonas.get(identity)];
+      let index = key("performer", id, "persona") % available.length;
+      while (claimedPersonas.has(index) && claimedPersonas.size < available.length) {
+        index = (index + 1) % available.length;
+      }
+      assignedPersonas.set(identity, index);
+      claimedPersonas.add(index);
+      return available[index];
     }
 
     function personName(id) {
@@ -103,6 +118,38 @@
         const values = theme.descriptions[fields[field]];
         return values ? pick(values, "scene", id, `description-${field}`) : placeholder;
       });
+    }
+
+    function sceneComposition(id) {
+      const theme = sceneTheme(id);
+      const assets = theme?.assets;
+      if (!assets?.layered || !assets.backgrounds?.length || !assets.actors?.length) return null;
+      const background = pick(assets.backgrounds, "scene", id, "background");
+      const layout = pick(background.layouts, "scene", id, "layout");
+      const identities = [...new Set(assets.actors.map((actor) => actor.identity))];
+      const variant = (identity, facing) => assets.actors.find((actor) => actor.identity === identity && actor.facing === facing);
+      const firstIndex = key("scene", id, "actor") % identities.length;
+      const first = identities[firstIndex];
+      let actors;
+      if (layout === "duo" && identities.length > 1) {
+        const second = identities[(firstIndex + 1) % identities.length];
+        actors = [
+          { ...variant(first, "right"), slot: "left" },
+          { ...variant(second, "left"), slot: "right" },
+        ];
+      } else {
+        const facing = layout === "left" ? "right" : layout === "right" ? "left" : pick(["left", "right"], "scene", id, "facing");
+        actors = [{ ...variant(first, facing), slot: layout === "duo" ? "center" : layout }];
+      }
+      if (actors.some((actor) => !actor.path)) return null;
+      return { theme: theme.id, layout, light: background.light, background, actors };
+    }
+
+    function sceneImage(id, title) {
+      const covers = sceneTheme(id)?.assets?.covers || [];
+      return covers.length
+        ? assetURL(pick(covers, "scene", id, "cover"))
+        : poster(`scene-${id}`, title || sceneTitle(id), false);
     }
 
     function studioName(id) {
@@ -224,7 +271,7 @@
       return copy(value, {
         title, details: sceneDescription(value.id),
         director: personName(`director-${value.id}`), date: fakeDate("scene", value.id), code: "", urls: [], stash_ids: [],
-        paths: copy(value.paths, { screenshot: poster(`scene-${value.id}`, title, false), preview: "", stream: "", vtt: "", sprite: "" }),
+        paths: copy(value.paths, { screenshot: sceneImage(value.id, title), preview: "", stream: "", vtt: "", sprite: "" }),
         files: (value.files || []).map((file) => copy(file, { path: `Cover Story/${title}.mp4`, basename: `${title}.mp4` })),
         studio: studioLite(value.studio), performers: (value.performers || []).map(performerLite), tags: (value.tags || []).map(tagLite),
         groups: (value.groups || []).map((entry) => copy(entry, { group: groupLite(entry.group) })),
@@ -249,7 +296,7 @@
       const title = isPerformer ? personName(value.id) : sceneTitle(value.id);
       return copy(value, { payload: copy(value.payload, {
         title, name: title,
-        images: [{ url: isPerformer ? performerImage(value.id, title) : poster(`scene-${value.id}`, title, false) }],
+        images: [{ url: isPerformer ? performerImage(value.id, title) : sceneImage(value.id, title) }],
         performers: (value.payload.performers || []).map((entry) => {
           const performer = performerLite(entry.performer);
           return copy(entry, { performer: copy(performer, { images: [{ url: performer.image_path }] }) });
@@ -289,7 +336,7 @@
       });
     }
 
-    return { hash, performerPersona, personName, performerImage, sceneTitle, sceneTheme, sceneDescription, studioName, labelName, fakeDate, poster, performer, studio, tag, group, scene, marker, curatorItem, gallery, image };
+    return { hash, assetURL, performerPersona, personName, performerImage, sceneTitle, sceneTheme, sceneDescription, sceneComposition, sceneImage, studioName, labelName, fakeDate, poster, performer, studio, tag, group, scene, marker, curatorItem, gallery, image };
   }
 
   const exported = { hash, makeCover, sceneIDFromPath, externalIDFromURL };
@@ -418,11 +465,43 @@
     const type = props.performer ? "actor" : props.gallery ? "gallery" : props.image ? "image" : "film";
     const performer = props.performer && cover.performer(entity);
     const title = performer ? performer.name : props.gallery ? cover.gallery(entity).title : props.image ? cover.image(entity).title : cover.sceneTitle(entity.id);
+    if (props.scene) return React.createElement(ScenePoster, { key: `scene-${entity.id}`, scene: entity, title });
+    const source = performer ? performer.image_path : cover.poster(`${type}-${entity.id}`, title, false);
     return React.createElement("div", {
       className: `cover-story-poster ${type === "actor" ? "portrait" : ""}`,
-      style: { backgroundImage: `url("${performer ? performer.image_path : cover.poster(`${type}-${entity.id}`, title, false)}")` },
+      style: { backgroundImage: `url("${source}")` },
       role: "img", "aria-label": title,
     }, React.createElement("span", null, title));
+  }
+
+  function ScenePoster({ scene, title }) {
+    const composition = cover.sceneComposition(scene.id);
+    const [stage, setStage] = React.useState(composition ? 0 : 1);
+    if (stage) {
+      const source = stage === 1 ? cover.sceneImage(scene.id, title) : cover.poster(`scene-${scene.id}`, title, false);
+      return React.createElement("div", {
+        className: "cover-story-poster", role: "img", "aria-label": title,
+      }, React.createElement("img", {
+        className: "cover-story-layer cover-story-background", src: source, alt: "", "aria-hidden": "true",
+        loading: "lazy", decoding: "async", onError: stage === 1 ? () => setStage(2) : undefined,
+      }), React.createElement("span", null, title));
+    }
+    const fail = () => setStage(1);
+    const layer = (asset, className, key) => React.createElement("picture", { key },
+      React.createElement("source", { srcSet: cover.assetURL(asset.avif), type: "image/avif" }),
+      React.createElement("img", {
+        className: `cover-story-layer ${className}`, src: cover.assetURL(asset.path),
+        alt: "", "aria-hidden": "true", loading: "lazy", decoding: "async", onError: fail,
+      }));
+    return React.createElement("div", {
+      className: `cover-story-poster cover-story-layered cover-story-layout-${composition.layout} cover-story-light-${composition.light}`,
+      role: "img", "aria-label": title,
+    },
+    layer(composition.background, "cover-story-background", "background"),
+    ...composition.actors.map((actor, index) => layer(
+      actor, `cover-story-actor cover-story-slot-${actor.slot}`, `${actor.identity}-${actor.facing}-${index}`,
+    )),
+    React.createElement("span", null, title));
   }
 
   ["SceneCard.Image", "PerformerCard.Image", "GalleryCard.Image", "ImageCard.Image", "TagCard.Image"].forEach((component) => {
@@ -439,6 +518,51 @@
 
   // ponytail: targeted DOM fallback covers unpatchable detail roots; remove when Stash exposes their display components.
   let scheduled = false;
+  function replaceLayeredImage(image, id, title) {
+    if (image?.closest(".cover-story-layered")) return true;
+    const composition = cover.sceneComposition(id);
+    if (!image || !composition) return false;
+    const poster = document.createElement("div");
+    const compositionClass = `cover-story-layout-${composition.layout} cover-story-light-${composition.light}`;
+    poster.className = `${image.className} cover-story-poster cover-story-layered cover-story-curator-poster ${compositionClass}`;
+    poster.setAttribute("role", "img");
+    poster.setAttribute("aria-label", title);
+    if (image.getAttribute("style")) poster.setAttribute("style", image.getAttribute("style"));
+    let failed = false;
+    function fail() {
+      if (failed) return;
+      failed = true;
+      poster.querySelectorAll(".cover-story-picture").forEach((layer) => layer.remove());
+      poster.style.backgroundImage = `url("${cover.sceneImage(id, title)}"),url("${cover.poster(`scene-${id}`, title, false)}")`;
+    }
+    const layers = [
+      { className: "cover-story-background", ...composition.background },
+      ...composition.actors.map((actor) => ({ className: `cover-story-actor cover-story-slot-${actor.slot}`, ...actor })),
+    ];
+    for (const layer of layers) {
+      const picture = document.createElement("picture");
+      picture.className = "cover-story-picture";
+      if (layer.avif) {
+        const source = document.createElement("source");
+        source.srcset = cover.assetURL(layer.avif);
+        source.type = "image/avif";
+        picture.append(source);
+      }
+      const element = document.createElement("img");
+      element.className = `cover-story-layer ${layer.className}`;
+      element.src = cover.assetURL(layer.path);
+      element.alt = "";
+      element.setAttribute("aria-hidden", "true");
+      element.loading = "lazy";
+      element.decoding = "async";
+      element.addEventListener("error", fail, { once: true });
+      picture.append(element);
+      poster.append(picture);
+    }
+    image.replaceWith(poster);
+    return true;
+  }
+
   function scrubCuratorDOM() {
     document.querySelectorAll(".curator-external-card").forEach((card) => {
       const performer = card.classList.contains("curator-external-performer");
@@ -447,9 +571,10 @@
       if (!id) return;
       const title = performer ? cover.personName(id) : cover.sceneTitle(id);
       const image = card.querySelector(`img.${performer ? "performer" : "scene"}-card-image`);
-      const source = performer ? cover.performerImage(id, title) : cover.poster(`scene-${id}`, title, false);
-      if (image && image.getAttribute("src") !== source) image.setAttribute("src", source);
-      if (image) image.setAttribute("alt", title);
+      if (image && (performer || !replaceLayeredImage(image, id, title))) {
+        image.setAttribute("src", performer ? cover.performerImage(id, title) : cover.sceneImage(id, title));
+        image.setAttribute("alt", title);
+      }
       const heading = card.querySelector(".curator-card-body h3 a");
       if (heading && heading.textContent !== title) heading.textContent = title;
       card.querySelectorAll(".curator-performer-links a").forEach((person, index) => {
@@ -471,8 +596,10 @@
       if (!id) return;
       const title = performer ? cover.personName(id) : cover.sceneTitle(id);
       const image = reference.querySelector("img");
-      const source = performer ? cover.performerImage(id, title) : cover.poster(`scene-${id}`, title, false);
-      if (image && image.getAttribute("src") !== source) image.setAttribute("src", source);
+      if (image && (performer || !replaceLayeredImage(image, id, title))) {
+        image.setAttribute("src", performer ? cover.performerImage(id, title) : cover.sceneImage(id, title));
+        image.setAttribute("alt", title);
+      }
       const heading = reference.querySelector("strong");
       if (heading && heading.textContent !== title) heading.textContent = title;
       const details = reference.querySelector("small");

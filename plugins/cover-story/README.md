@@ -32,10 +32,13 @@ Reload available packages, install **Cover Story**, and reload Stash.
 
 ## Assets
 
-Performer pages and cards use a deterministic pool of curated fictional
-portraits and matching fictional metadata. Other entity types still use
+Performer pages and cards use a deterministic pool of 500 curated fictional
+opaque AVIF portraits and matching fictional metadata. Viking scenes use deterministic
+runtime-stacked backgrounds and alpha actors. Browsers prefer AVIF layers and
+fall back to WebP through native `<picture>` selection; precomposed WebP covers
+remain as a load-failure fallback. Themes without an approved asset pack use
 dependency-free procedural posters. Theme titles, description fragments, tags,
-studio vocabulary, and planned scene asset paths live in [`themes.js`](themes.js).
+studio vocabulary, and scene asset paths live in [`themes.js`](themes.js).
 
 ## Development
 

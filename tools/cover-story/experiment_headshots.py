@@ -557,24 +557,24 @@ EYE_COLORS = {
     "Middle Eastern": ("dark brown", "hazel", "green", "amber-brown", "warm brown", "gray-green", "honey-brown", "deep brown"),
 }
 BUST_VARIANTS = (
-    ("a lean, athletic build with a small bust", "Small"),
+    ("a lean, athletic build with a medium bust", "Medium"),
     ("a fit, athletic build with a full bust", "Full"),
-    ("a toned, athletic build with a medium bust", "Medium"),
+    ("a toned, athletic build with a large bust", "Large"),
     ("a curvy-athletic build with a large bust", "Large"),
     ("a strong, athletic build with a full bust", "Full"),
     ("a fit, athletic build with a large bust", "Large"),
-    ("a lean, athletic build with a modest bust", "Small"),
+    ("a lean, athletic build with a medium bust", "Medium"),
     ("a sculpted, athletic build with a full bust", "Full"),
-    ("a fit, balanced athletic build with a medium bust", "Medium"),
-    ("a strong, curvy-athletic build with a large bust", "Large"),
+    ("a fit, balanced athletic build with a large bust", "Large"),
+    ("a strong, curvy-athletic build with a very large bust", "Very Large"),
     ("a toned, curvy-athletic build with a full bust", "Full"),
     ("a fit, curvy-athletic build with a large bust", "Large"),
-    ("a toned, athletic build with a medium-full bust", "Medium"),
+    ("a toned, athletic build with a large bust", "Large"),
     ("a balanced, athletic build with a full bust", "Full"),
     ("a statuesque athletic build with a large bust", "Large"),
-    ("a compact athletic build with a medium bust", "Medium"),
+    ("a compact athletic build with a large bust", "Large"),
     ("a fit, statuesque build with a full bust", "Full"),
-    ("a toned, statuesque build with a large bust", "Large"),
+    ("a toned, statuesque build with a very large bust", "Very Large"),
     ("a strong athletic build with a generously full bust", "Full"),
     ("a fit, curvy build with a prominently large bust", "Large"),
 )
@@ -952,7 +952,7 @@ assert Counter(profile["hair_group"] for profile in DISTINCT_PROFILES) == {
     "Blonde": 125, "Brunette": 125, "Black": 125, "Red": 125,
 }
 assert Counter(profile["bust_group"] for profile in DISTINCT_PROFILES) == {
-    "Small": 52, "Medium": 99, "Full": 168, "Large": 181,
+    "Medium": 52, "Full": 168, "Large": 228, "Very Large": 52,
 }
 assert Counter(profile["age"] // 10 * 10 for profile in DISTINCT_PROFILES) == {
     20: 250, 30: 200, 40: 50,
@@ -1010,9 +1010,14 @@ def pilot_prompt(profile, pose, wardrobe, photography=False):
     )
 
 
-def generation_prompt(profile, style, age_emphasis=False, background=None, age_wording="exact", hair=None):
+def generation_prompt(
+    profile, style, age_emphasis=False, background=None, age_wording="exact",
+    hair=None, wardrobe=None, standing=False,
+):
     age = profile["age"]
     beauty = profile.get("beauty_direction", "strikingly beautiful, conventionally attractive")
+    if age_wording == "band":
+        beauty = "exceptionally beautiful, radiant, and highly photogenic"
     beauty = f"{'an' if beauty[0].lower() in 'aeiou' else 'a'} {beauty}"
     decade = {
         20: "twenties", 30: "thirties", 40: "forties", 50: "fifties", 60: "sixties",
@@ -1020,9 +1025,9 @@ def generation_prompt(profile, style, age_emphasis=False, background=None, age_w
     period = "early" if age % 10 <= 3 else "mid" if age % 10 <= 6 else "late"
     if age_wording == "band":
         age_direction = (
-            "with a youthful adult appearance and fresh well-rested features"
+            "with a youthful adult appearance and polished, well-rested features"
             if age < 35 else
-            "with a vibrant, well-rested contemporary appearance appropriate to her age band"
+            "with a polished, well-rested contemporary appearance appropriate to her age band"
         )
         subject = (
             f"{beauty} fictional {profile['identity']} "
@@ -1052,8 +1057,9 @@ def generation_prompt(profile, style, age_emphasis=False, background=None, age_w
     composition = style.get("composition", "Waist-up composition")
     prompt = (
         f"Studio portrait of {name}{subject}. She has {details}, and {profile['feature']}. "
-        f"{style['pose']}. {composition}; she has {profile['build']} and wears a "
-        f"{style['wardrobe']}, against a {background or style['background']}. {makeup}"
+        f"{'Standing upright. ' if standing else ''}{style['pose']}. "
+        f"{composition}; she has {profile['build']} and wears a "
+        f"{wardrobe or style['wardrobe']}, against a {background or style['background']}. {makeup}"
     )
     prompt += profile.get("prompt_suffix", "")
     if age_emphasis:
@@ -1066,6 +1072,14 @@ def generation_prompt(profile, style, age_emphasis=False, background=None, age_w
         )
         prompt += f" She is an actress in her {period} {decade}, with {appearance}."
     return prompt
+
+
+def replace_prompt(text, replacements):
+    for old, new in replacements:
+        if old not in text:
+            raise ValueError(f"prompt does not contain {old!r}")
+        text = text.replace(old, new)
+    return text
 
 
 GEOGRAPHIC_IDENTITIES = {
@@ -1111,10 +1125,11 @@ GEOGRAPHIC_IDENTITIES = {
 }
 REFINED_BEAUTY = (
     "charismatic and distinctive-looking", "classically elegant and poised",
-    "fresh-faced, approachable, and photogenic", "softly featured and radiant",
+    "exceptionally beautiful, radiant, and highly photogenic", "softly featured and radiant",
     "warm, expressive, and naturally appealing", "natural-looking and effortlessly photogenic",
     "athletic, vibrant, and camera-ready", "confident, contemporary, and striking",
 )
+assert "fresh-faced, approachable, and photogenic" not in REFINED_BEAUTY
 REFINED_MAKEUP = (
     "Understated camera-ready makeup with visible natural skin texture, softly defined eyes, and muted lips.",
     "Understated camera-ready makeup with visible natural skin texture, softly defined eyes, and muted lips.",
@@ -1140,11 +1155,11 @@ REFINED_FEATURES = (
     "a graceful beauty mark", "a subtle eyebrow scar",
 )
 DIRECT_POSES = (
-    "Square to camera with relaxed shoulders and a calm direct gaze",
+    "Square to camera with relaxed shoulders and a warm, genuine, unforced smile that reaches her eyes",
     "Subtle three-quarter stance with her face fully toward the camera and a soft smile",
     "Shoulders gently angled while her eyes look directly into the camera",
     "Relaxed upright posture with a warm direct gaze and a slight smile",
-    "Chin slightly lowered, face fully visible, with a confident direct gaze",
+    "Chin slightly lowered and face fully visible, with direct eye contact and a warm, genuine, unforced smile that reaches her eyes",
     "One shoulder slightly lowered while her face and eyes remain directed at the camera",
 )
 REFINEMENT_PILOT_INDICES = (0, 27, 66, 89, 175, 213, 227, 239, 342, 398, 406, 417, 423, 465, 498)
@@ -1269,7 +1284,7 @@ assert all(
 
 PRODUCTION_POSES = DIRECT_POSES + (
     "Subtle three-quarter angle with relaxed shoulders, her face and eyes fully toward the camera",
-    "Shoulders turned slightly left while her face returns to a confident direct gaze",
+    "Shoulders turned slightly left while her face returns to the camera with a warm, genuine, unforced smile that reaches her eyes",
     "Shoulders turned slightly right while her face returns to a warm direct gaze",
     "Gentle head tilt with a relaxed closed-lip smile and direct eye contact",
     "Chin gently raised with poised direct eye contact and relaxed shoulders",
@@ -1278,14 +1293,14 @@ PRODUCTION_POSES = DIRECT_POSES + (
     "Square to camera with a bright spontaneous smile and relaxed shoulders",
     "Three-quarter stance with a subtle knowing smile and direct eye contact",
     "One shoulder slightly forward with a calm, self-possessed direct gaze",
-    "Relaxed posture with chin slightly angled and eyes returning fully to the camera",
-    "Shoulders gently lowered with a serene direct gaze and softly parted lips",
+    "Relaxed posture with chin slightly angled and eyes returning fully to the camera, with a warm, genuine, unforced smile that reaches her eyes",
+    "Shoulders gently lowered with direct eye contact and a warm, genuine, unforced smile that reaches her eyes",
     "A restrained mid-laugh expression while keeping her eyes toward the camera",
-    "Subtle contrapposto stance with her face fully visible and a friendly direct gaze",
+    "Subtle contrapposto stance with her face fully visible, direct eye contact, and a warm, genuine, unforced smile that reaches her eyes",
     "Head held level with an intense but relaxed direct gaze",
-    "A slight sideways lean with her face and eyes fully toward the camera",
-    "Square to camera with one eyebrow subtly raised and a confident direct gaze",
-    "Shoulders angled toward the light while maintaining direct eye contact",
+    "A slight sideways lean with her face and eyes fully toward the camera, with a warm, genuine, unforced smile that reaches her eyes",
+    "Square to camera with one eyebrow subtly raised and a warm, genuine, unforced smile that reaches her eyes",
+    "Shoulders angled toward the light while maintaining direct eye contact and a warm, genuine, unforced smile that reaches her eyes",
 )
 PRODUCTION_BACKGROUNDS = BACKGROUND_VARIANTS + (
     "soft burgundy studio backdrop with broad diffused beauty light and a faint warm edge light",
@@ -1317,7 +1332,7 @@ PRODUCTION_BACKGROUNDS = BACKGROUND_VARIANTS + (
     "calm lakeside pier with a softly defocused shoreline and open shade",
     "brick courtyard with climbing greenery and broad diffused daylight",
 )
-PRODUCTION_WARDROBES = WARDROBE_VARIANTS + (
+BASE_PRODUCTION_WARDROBES = WARDROBE_VARIANTS + (
     "soft linen button-up shirt in muted sky blue with casually rolled sleeves",
     "fitted sleeveless polo knit in deep forest green",
     "ribbed scoop-neck tank top in warm terracotta",
@@ -1351,6 +1366,308 @@ PRODUCTION_WARDROBES = WARDROBE_VARIANTS + (
     "casual athletic scoop-neck top in deep green",
     "relaxed sleeveless henley top in muted plum",
 )
+EXPANDED_WARDROBES = (
+    # Casual
+    "soft oversized knit sweater with high-waisted skinny jeans and sneakers",
+    "cropped hoodie with yoga leggings and athletic sneakers",
+    "floral sundress with a light cardigan and sandals",
+    "fitted T-shirt tucked into denim shorts with canvas sneakers",
+    "cozy off-shoulder sweater with a plaid mini skirt, knee-high socks, and ankle boots",
+    "linen button-up shirt tied at the waist with wide-leg trousers and leather sandals",
+    "ribbed tank top with high-waisted jeans and a cropped denim jacket",
+    "casual romper with a thin belt and sneakers",
+    "soft pastel hoodie over a pleated tennis skirt",
+    "oversized flannel shirt over a fitted tank and jean shorts",
+    # Smart casual
+    "silk blouse tucked into tailored trousers with pointed heels",
+    "pencil skirt with a fitted cashmere sweater",
+    "wrap dress with ankle boots",
+    "blouse with a fitted blazer",
+    "turtleneck sweater dress with knee-high boots",
+    "satin camisole under an open blazer with slim trousers",
+    "high-waisted midi skirt with a tucked-in blouse",
+    "chic jumpsuit with a waist belt and heels",
+    "cropped cardigan over a flowing midi dress",
+    "tailored shorts with a structured blazer",
+    # Evening
+    "elegant cocktail dress with subtle jewelry",
+    "satin slip dress with high heels",
+    "off-shoulder evening gown",
+    "floor-length velvet gown with long gloves",
+    "sequined mini dress with stilettos",
+    "wrap dress with delicate accessories",
+    "lace cocktail dress with a delicate necklace",
+    "silk evening gown with a thigh slit",
+    "form-fitting dress with classic pumps",
+    "modern asymmetric evening dress",
+    # Business and professional
+    "tailored pantsuit with a silk blouse",
+    "blazer over a fitted pencil dress",
+    "button-up shirt with tailored slacks",
+    "sophisticated sheath dress with classic heels",
+    "double-breasted blazer with wide-leg trousers",
+    "business suit with minimalist jewelry",
+    "trench coat over a business dress",
+    "smart blouse tucked into a pleated midi skirt",
+    "structured blazer over a fitted turtleneck",
+    "professional wrap dress with classic pumps",
+    # Date night
+    "off-shoulder knit dress with ankle boots",
+    "satin blouse with a leather skirt",
+    "lace-trim camisole with fitted jeans and heels",
+    "floral wrap dress with delicate jewelry",
+    "bodycon midi dress with elegant heels",
+    "fitted crop top with a flowing maxi skirt",
+    "silk camisole with tailored pants",
+    "soft cashmere sweater tucked into a satin skirt",
+    "chic mini dress with a cropped leather jacket",
+    "velvet wrap dress with statement earrings",
+    # Summer
+    "eyelet sundress",
+    "light floral maxi dress with sandals",
+    "linen shorts with a sleeveless blouse",
+    "tropical-print wrap dress",
+    "off-shoulder cotton dress",
+    "cropped tank with flowing palazzo pants",
+    "lightweight romper with woven sandals",
+    "breezy patterned kimono over a swimsuit",
+    "halter-neck sundress",
+    "linen midi dress with espadrilles",
+    # Winter
+    "long wool coat over a turtleneck sweater dress",
+    "cable-knit sweater with leather leggings",
+    "faux-fur jacket over a fitted dress",
+    "cashmere sweater with a wool skirt and knee-high boots",
+    "oversized scarf with a tailored coat and slim jeans",
+    "wool trench with heeled boots",
+    "knit dress with opaque tights",
+    "chunky cardigan over a satin slip dress",
+    "puffer jacket with stylish winter boots",
+    "long peacoat over a coordinated outfit",
+    # Glamorous
+    "sparkling sequined gown",
+    "luxurious satin evening dress",
+    "figure-hugging velvet dress",
+    "high-fashion couture gown",
+    "elegant silk dress",
+    "rhinestone-studded cocktail dress",
+    "metallic evening gown",
+    "dramatic feather-trimmed dress",
+    "sophisticated velvet jumpsuit",
+    "crystal-embellished evening gown",
+)
+FITTED_WARDROBES = (
+    # Fitted casual
+    "fitted ribbed turtleneck with skinny jeans and ankle boots",
+    "fitted V-neck T-shirt with high-waisted jeans and sneakers",
+    "cropped fitted cardigan with straight-leg jeans",
+    "fitted long-sleeve henley with denim shorts",
+    "sleeveless mock-neck top with slim jeans",
+    "fitted tank top with linen shorts",
+    "ribbed scoop-neck top with cargo pants",
+    "fitted polo shirt with a pleated tennis skirt",
+    "knit short-sleeve sweater with ankle-length jeans",
+    "wrap knit top with skinny jeans",
+    # Sweaters
+    "fitted cashmere sweater with a pencil skirt",
+    "ribbed knit sweater with high-waisted trousers",
+    "off-shoulder knit sweater with slim jeans",
+    "boat-neck sweater with a midi skirt",
+    "soft fitted turtleneck with a leather skirt",
+    "cropped cable-knit sweater with wide-leg pants",
+    "fine-knit mock neck with tailored shorts",
+    "wrap sweater with slim trousers",
+    "fitted cardigan buttoned as a top with jeans",
+    "lightweight knit top with a pleated skirt",
+    # Blouses
+    "satin blouse tucked into a pencil skirt",
+    "silk wrap blouse with tailored pants",
+    "fitted button-down shirt",
+    "chiffon blouse with a high-waisted skirt",
+    "puff-sleeve blouse with slim trousers",
+    "tie-front blouse with jeans",
+    "sleeveless silk shell with a midi skirt",
+    "lace blouse with tailored shorts",
+    "square-neck blouse with fitted jeans",
+    "structured peplum blouse with trousers",
+    # Business chic
+    "tailored blazer over a fitted camisole",
+    "fitted blazer with a pencil skirt",
+    "double-breasted blazer over slim trousers",
+    "cropped blazer with a fitted dress",
+    "sleeveless turtleneck with a blazer",
+    "fitted pantsuit",
+    "blouse under a fitted blazer",
+    "tailored blazer with trousers",
+    "blazer over a fitted knit top",
+    "belted blazer dress",
+    # Dresses
+    "fitted wrap dress",
+    "ribbed knit midi dress",
+    "short-sleeve sweater dress",
+    "satin slip dress",
+    "floral wrap dress",
+    "body-skimming midi dress",
+    "cap-sleeve sheath dress",
+    "off-shoulder knit dress",
+    "square-neck midi dress",
+    "button-front shirt dress with a belt",
+)
+STATEMENT_WARDROBES = (
+    # Red carpet and gala
+    "floor-length emerald satin evening gown with a thigh-high slit, elegant stilettos, and diamond earrings",
+    "black velvet off-the-shoulder gown with opera gloves and a statement necklace",
+    "champagne silk mermaid gown with crystal jewelry",
+    "ruby red fitted evening gown with a dramatic train and high heels",
+    "navy one-shoulder gown with a metallic belt and elegant updo",
+    "silver sequined floor-length gown with delicate heels",
+    "gold satin wrap gown with an open back and minimalist jewelry",
+    "deep burgundy velvet gown with long sleeves and classic Hollywood styling",
+    "ivory column gown with subtle draping and pearl earrings",
+    "black satin halter gown with a sleek ponytail",
+    "midnight blue beaded evening dress with elegant heels",
+    "high-fashion couture gown with a sculptural silhouette",
+    "sparkling champagne cocktail dress with metallic heels",
+    "emerald velvet cocktail dress with gold accessories",
+    "modern asymmetrical evening gown with statement earrings",
+    "white tailored tuxedo-inspired suit with heels",
+    "black tuxedo blazer over a satin camisole and tailored trousers",
+    "luxury satin jumpsuit with a dramatic cape",
+    "fashion-forward metallic evening suit",
+    "elegant silk gown with minimal jewelry and refined styling",
+    # Punk
+    "black leather biker jacket with ripped skinny jeans, combat boots, and layered chains",
+    "plaid mini skirt with fishnet tights, an oversized band T-shirt, and heavy lace-up boots",
+    "black corset top with leather pants and chunky platform boots",
+    "distressed denim jacket covered in patches over a black dress",
+    "mesh long-sleeve top layered under a graphic T-shirt with ripped jeans",
+    "studded leather jacket with black skinny jeans and heavy boots",
+    "cropped leather jacket with tartan pants and combat boots",
+    "black tank top with cargo pants and fingerless gloves",
+    "oversized vintage band hoodie with fishnets and platform sneakers",
+    "black denim vest with pins, ripped shorts, and tall boots",
+    "sleeveless denim jacket with leather leggings and heavy boots",
+    "graphic crop top with plaid trousers and a studded belt",
+    "black hoodie with a pleated plaid skirt and fishnet sleeves",
+    "leather mini skirt with an oversized punk sweater and combat boots",
+    "dark ripped jeans with a fitted black turtleneck and leather jacket",
+    # Rock and hard rock
+    "black fitted leather jacket with dark skinny jeans and ankle boots",
+    "vintage band T-shirt tucked into black jeans with a leather belt",
+    "black lace camisole with leather pants and heeled boots",
+    "sleeveless black tank with ripped jeans and layered silver necklaces",
+    "velvet blazer over a fitted black top and leather skirt",
+    "black fitted bodysuit with distressed jeans and biker boots",
+    "faux-leather leggings with an oversized rock band shirt",
+    "denim jacket over a fitted black tank with black skinny jeans",
+    "black satin camisole with dark jeans and suede boots",
+    "deep burgundy leather jacket with black trousers",
+    "graphic T-shirt tied at the waist with leather shorts",
+    "studded black blazer over a fitted camisole",
+    "black jumpsuit with silver accessories",
+    "tight black turtleneck with leather pants",
+    "black ribbed sweater with dark denim and Chelsea boots",
+    # Pop punk and alternative
+    "oversized striped sweater with a pleated plaid skirt and canvas sneakers",
+    "cropped hoodie with cargo pants and skate shoes",
+    "graphic hoodie over denim shorts with striped knee socks",
+    "band crop top with ripped mom jeans and chunky sneakers",
+    "oversized flannel over a fitted tank with black shorts",
+    "black overall dress over a striped shirt",
+    "tie-dye hoodie with ripped jeans and skate shoes",
+    "cropped zip hoodie with a cargo skirt and sneakers",
+    "layered long-sleeve striped shirt under a graphic T-shirt",
+    "denim overalls with platform sneakers",
+    # Skater
+    "oversized hoodie with loose cargo pants and skate shoes",
+    "cropped hoodie with baggy jeans and classic skate sneakers",
+    "oversized flannel over a white tank with loose jeans",
+    "graphic T-shirt with cargo shorts and skate shoes",
+    "loose sweatshirt with relaxed-fit jeans",
+    "oversized zip hoodie with black leggings and skate sneakers",
+    "vintage graphic T-shirt with an oversized denim jacket and baggy jeans",
+    "cropped tank with parachute pants and skate shoes",
+    "relaxed-fit cargo pants with a fitted ribbed tank and oversized shirt",
+    "loose striped sweater with denim shorts and sneakers",
+    "oversized rugby shirt with baggy jeans",
+    "sleeveless hoodie with cargo joggers and skate shoes",
+    "relaxed plaid shirt over a fitted crop top",
+    "black cargo pants with an oversized sweatshirt",
+    "vintage hoodie with distressed jeans",
+    # Edgy fashion
+    "black fitted turtleneck with a leather pencil skirt and knee-high boots",
+    "long black trench coat over a fitted bodysuit",
+    "monochrome black tailored suit with heels",
+    "satin slip dress under an oversized leather jacket",
+    "structured blazer with leather shorts",
+    "sheer mesh blouse over a black camisole with tailored trousers",
+    "high-waisted leather pants with a silk blouse",
+    "cropped blazer over a fitted bodysuit",
+    "black jumpsuit with a dramatic belt",
+    "modern gothic-inspired fitted dress with subtle lace accents",
+)
+DROPPED_WARDROBES = {
+    "relaxed chambray button-up shirt with casually rolled sleeves",
+    "contrasting-sleeve baseball tee in muted colors",
+    "denim sundress layered over a fitted short-sleeve tee",
+    "floor-length velvet gown with long gloves",
+    "halter-neck sundress",
+    "wool trench with heeled boots",
+    "chunky cardigan over a satin slip dress",
+    "puffer jacket with stylish winter boots",
+    "dramatic feather-trimmed dress",
+    "simple ribbed long-sleeve crew-neck top in muted blue",
+}
+
+COLOR_HINT = re.compile(
+    r"\b(?:(?:deep|dark|light|soft|warm|cool|muted|pale|dusty|rich|midnight|sparkling)\s+)?"
+    r"(?:black|white|ivory|cream|charcoal|gray|grey|navy|cobalt|sapphire|blue|burgundy|"
+    r"wine|ruby|red|rose|pink|plum|violet|lavender|terracotta|rust|orange|camel|"
+    r"champagne|gold|golden|silver|green|lime|chartreuse|emerald|jade|olive|sage|"
+    r"mint|teal|turquoise|aqua|cyan|coral|mustard|brown|beige|tan|ochre|pastel|"
+    r"monochrome|jewel(?:-tone)?)\b(?:-colored)?",
+    re.IGNORECASE,
+)
+
+
+def strip_color_hints(wardrobe):
+    wardrobe = re.sub(r"\s+in\s+[^,;]+$", "", wardrobe)
+    wardrobe = COLOR_HINT.sub("", wardrobe)
+    wardrobe = re.sub(r"-and-|-\s*and\s*-", " ", wardrobe)
+    wardrobe = re.sub(r"\b(?:in|and|or)\b(?=\s*[,;]|$)", "", wardrobe)
+    wardrobe = re.sub(r"\s+([,;])", r"\1", wardrobe)
+    wardrobe = re.sub(r",\s*,", ",", wardrobe)
+    return re.sub(r"\s{2,}", " ", wardrobe).strip(" ,-")
+
+
+PRODUCTION_WARDROBES = tuple(dict.fromkeys(
+    strip_color_hints(wardrobe)
+    for wardrobe in (
+        BASE_PRODUCTION_WARDROBES + EXPANDED_WARDROBES
+        + FITTED_WARDROBES + STATEMENT_WARDROBES
+    )
+    if wardrobe not in DROPPED_WARDROBES
+))
+assert len(FITTED_WARDROBES) == 50
+assert len(STATEMENT_WARDROBES) == 85
+assert not {strip_color_hints(wardrobe) for wardrobe in DROPPED_WARDROBES}.intersection(PRODUCTION_WARDROBES)
+assert all(
+    wardrobe in PRODUCTION_WARDROBES
+    for wardrobe in (
+        "long-sleeve fitted crop top",
+        "lightweight bomber jacket over a fitted crew-neck tee",
+        "bodycon midi dress with elegant heels",
+    )
+)
+assert len(EXPANDED_WARDROBES) == 80
+assert strip_color_hints(
+    "floor-length emerald satin gown with black heels"
+) == "floor-length satin gown with heels"
+assert not any(COLOR_HINT.search(wardrobe) for wardrobe in PRODUCTION_WARDROBES)
+assert not any(
+    re.search(r"\b(?:hat|beanie|baseball cap)\b", wardrobe, re.IGNORECASE)
+    for wardrobe in PRODUCTION_WARDROBES
+)
 COMPOSITION_VARIANTS = (
     "Tight head-and-shoulders composition with the tops of her shoulders visible",
     "Head-and-upper-torso composition with modest space around her",
@@ -1361,6 +1678,22 @@ COMPOSITION_VARIANTS = (
 )
 PRODUCTION_AGES = (21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34)
 PRODUCTION_FACE_STRATEGIES = ("balanced", "minimal", "natural-prose")
+PRODUCTION_PROFILE_OVERRIDES = {
+    95: {
+        "age": 24,
+        "appearance": "warm golden-beige skin and softly upturned hazel eyes",
+        "face": "a softly heart-shaped face with a small gently upturned nose",
+        "hair": "long glossy black curls with soft face-framing layers",
+        "feature": "a tiny gold nose stud",
+        "makeup": (
+            "Fresh natural makeup with sheer coverage, softly defined eyes, "
+            "and lightly tinted lips."
+        ),
+    },
+}
+PRODUCTION_SEED_OVERRIDES = {
+    95: identity_seed("ana-torres-d05:identity-replacement-v2:4"),
+}
 
 
 def production_style(index, slug):
@@ -1426,6 +1759,7 @@ def production_profile(profile, index):
             f"{face_parts[0]}, naturally balanced with {face_parts[1]}, "
             f"{face_parts[2]}, and {face_parts[3]}"
         )
+    result.update(PRODUCTION_PROFILE_OVERRIDES.get(index + 1, {}))
     return result
 
 
@@ -1434,7 +1768,7 @@ PRODUCTION_EXPANSION = tuple(
     (
         profile,
         1,
-        identity_seed(profile["slug"]),
+        PRODUCTION_SEED_OVERRIDES.get(index + 1, identity_seed(profile["slug"])),
         production_style(index, profile["slug"]),
     )
     for index, profile in enumerate(PRODUCTION_PROFILES)
@@ -1443,7 +1777,7 @@ assert len(PRODUCTION_EXPANSION) == 500
 assert Counter(profile["face_strategy"] for profile in PRODUCTION_PROFILES) == {
     "balanced": 167, "minimal": 167, "natural-prose": 166,
 }
-assert Counter(profile["age"] // 10 * 10 for profile in PRODUCTION_PROFILES) == {20: 324, 30: 176}
+assert Counter(profile["age"] // 10 * 10 for profile in PRODUCTION_PROFILES) == {20: 325, 30: 175}
 assert min(Counter(style["composition"] for _, _, _, style in PRODUCTION_EXPANSION).values()) >= 83
 assert len({style["name"] for _, _, _, style in PRODUCTION_EXPANSION}) > 490
 
@@ -1654,6 +1988,9 @@ def main():
     parser.add_argument("--age-wording", choices=("exact", "band", "vague"), default="vague")
     parser.add_argument("--background", help="override the performer background and lighting prompt")
     parser.add_argument("--hair", help="override the performer hair prompt")
+    parser.add_argument("--wardrobe", help="override the performer wardrobe prompt")
+    parser.add_argument("--standing", action="store_true", help="require an upright standing pose")
+    parser.add_argument("--prompt-replace", nargs=2, action="append", default=[], metavar=("OLD", "NEW"))
     parser.add_argument("--suffix", help="append a label to generated filenames")
     parser.add_argument("--workflow", type=Path)
     parser.add_argument("--download-dir", type=Path, help="keep downloaded images in this directory")
@@ -1670,8 +2007,10 @@ def main():
         parser.error("--t-enhancer-strength and --bypass-strength are mutually exclusive")
     if args.background and args.mode not in {"performers", "performers-v4", "performers-v5", "performers-v6"}:
         parser.error("--background requires a performer mode")
-    if args.hair and args.mode not in {"performers", "performers-v4", "performers-v5", "performers-v6"}:
-        parser.error("--hair requires a performer mode")
+    if any((args.hair, args.wardrobe)) and args.mode not in {
+        "performers", "performers-v4", "performers-v5", "performers-v6",
+    }:
+        parser.error("--hair and --wardrobe require a performer mode")
     if args.age_emphasis and args.age_wording != "exact":
         parser.error("--age-emphasis requires --age-wording exact")
     if args.suffix and not re.fullmatch(r"[A-Za-z0-9_-]+", args.suffix):
@@ -1719,7 +2058,8 @@ def main():
             profile, candidate, _, style = entry
             name = f"{profile['slug']}-c{candidate:02d}-{style['name']}"
             text = generation_prompt(
-                profile, style, args.age_emphasis, args.background, args.age_wording, args.hair
+                profile, style, args.age_emphasis, args.background, args.age_wording,
+                args.hair, args.wardrobe, args.standing,
             )
         elif args.mode == "pilot-v2":
             profile, pose, wardrobe, candidate, _ = entry
@@ -1734,6 +2074,7 @@ def main():
                 text = entry[1]
             elif args.mode == "calibration":
                 text = calibration_prompt(entry[1])
+        text = replace_prompt(text, args.prompt_replace)
         if args.suffix:
             name = f"{name}_{args.suffix}"
         if args.mode in {"identity-diversity", "refinement-pilot", "face-combination-pilot", "seed-identity-cross-pilot"}:

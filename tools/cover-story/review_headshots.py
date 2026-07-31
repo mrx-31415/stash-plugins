@@ -59,13 +59,20 @@ INDEX = r"""<!doctype html>
   .pair-tools { display: flex; flex-wrap: wrap; gap: .5rem; justify-content: center; align-items: center; }
   #pair-progress { min-width: 12rem; text-align: center; color: #bbb; }
   #pair-stage { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
-  .pair-choice { min-width: 0; padding: 0; overflow: hidden; display: flex; flex-direction: column; background: #1b1b1b; border: 3px solid #444; }
+  .pair-choice { min-width: 0; min-height: 0; width: 100%; padding: 0; overflow: hidden; display: flex; flex: 1; flex-direction: column; background: #1b1b1b; border: 3px solid #444; }
   .pair-choice:hover, .pair-choice:focus-visible { border-color: #ddd; outline: none; }
   .pair-choice.winner { border-color: #59d58c; }
+  .pair-choice.tie { border-color: #efb953; }
+  .pair-choice.neither { border-color: #e36d6d; }
   .pair-choice img { width: 100%; min-height: 0; flex: 1; object-fit: contain; background: #080808; }
   .pair-label { padding: .55rem; font-weight: 700; }
   #pair-stage.single .pair-choice { display: none; }
   #pair-stage.single .pair-choice.active-side { display: flex; grid-column: 1/-1; }
+  #pair-comments { position: fixed; z-index: 4; right: 1rem; bottom: 1rem; left: 1rem; display: flex; flex-direction: column; align-items: end; gap: .5rem; }
+  #pair-comment-fields { width: 100%; padding: .65rem; display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; background: #181818ee; border: 1px solid #555; border-radius: .5rem; box-shadow: 0 .5rem 1.5rem #000a; backdrop-filter: blur(8px); }
+  #pair-comment-fields[hidden] { display: none; }
+  #pair-comment-fields label { display: grid; gap: .25rem; font-weight: 700; }
+  #pair-comment-fields textarea { min-height: 3rem; margin: 0; }
   #pair:fullscreen { width: 100%; height: 100%; padding: 1rem; background: #111; }
   #pair:fullscreen .pair-choice img { max-height: calc(100vh - 5rem); }
   @media (max-width: 700px) {
@@ -102,6 +109,13 @@ INDEX = r"""<!doctype html>
     <button id="pair-fullscreen">Fullscreen F</button>
   </div>
   <div id="pair-stage"></div>
+  <div id="pair-comments">
+    <button id="pair-comments-toggle" aria-controls="pair-comment-fields" aria-expanded="false">Comments C</button>
+    <div id="pair-comment-fields" hidden>
+      <label>A <textarea data-side="A" aria-label="Comment for A" placeholder="Enter closes · Shift+Enter adds a line"></textarea></label>
+      <label>B <textarea data-side="B" aria-label="Comment for B" placeholder="Enter closes · Shift+Enter adds a line"></textarea></label>
+    </div>
+  </div>
 </main>
 <script>
   const state = {
@@ -113,13 +127,15 @@ INDEX = r"""<!doctype html>
   const summary = document.querySelector("#summary"), autoKeep = document.querySelector("#auto-keep");
   const pair = document.querySelector("#pair"), pairStage = document.querySelector("#pair-stage");
   const pairProgress = document.querySelector("#pair-progress"), pairMode = document.querySelector("#pair-mode");
+  const pairCommentsToggle = document.querySelector("#pair-comments-toggle");
+  const pairCommentFields = document.querySelector("#pair-comment-fields");
   autoKeep.checked = localStorage.getItem("cover-story-auto-keep") === "true";
 
   async function load() {
     const selected = group.value;
     const groups = await fetch("/api/groups").then(r => r.json());
-    group.replaceChildren(...groups.map(value => new Option(value, value)));
-    group.value = groups.includes(selected) ? selected : groups[0] || "";
+    group.replaceChildren(...groups.map(option => new Option(option.label, option.value)));
+    group.value = groups.some(option => option.value === selected) ? selected : groups[0]?.value || "";
     if (!group.value) {
       state.items = []; state.reviews = {}; state.pairs = []; state.pairing = false; render(); return;
     }
@@ -199,7 +215,7 @@ INDEX = r"""<!doctype html>
       const body = document.createElement("div"); body.className = "body";
       const title = document.createElement("h2"); title.textContent = item.filename; body.append(title);
       const meta = document.createElement("div"); meta.className = "meta";
-      meta.textContent = `${item.group} · ${item.width}×${item.height} · seed ${item.seed ?? "?"} · ${item.steps ?? "?"} steps`;
+      meta.textContent = `${item.group} · ${item.width ?? "?"}×${item.height ?? "?"} · seed ${item.seed ?? "?"} · ${item.steps ?? "?"} steps`;
       body.append(meta);
       const choices = document.createElement("div"); choices.className = "choices";
       [["keep","Keep"],["maybe","Maybe"],["reject","Reject"],["","Clear"]].forEach(([value,label]) => {
@@ -263,6 +279,7 @@ INDEX = r"""<!doctype html>
     if (state.saving || !state.pairs.length) return;
     state.saving = true;
     const current = state.pairs[state.pairIndex];
+    for (const side of ["A", "B"]) clearTimeout(state.timers.get(current[side].path));
     const review = item => ({...(state.reviews[item.path] || {}), notes: state.reviews[item.path]?.notes || ""});
     const aReview = {...review(current.A), status: aStatus};
     const bReview = {...review(current.B), status: bStatus};
@@ -304,6 +321,15 @@ INDEX = r"""<!doctype html>
     else pair.requestFullscreen();
   }
 
+  function setComments(open) {
+    pairCommentFields.hidden = !open;
+    pairCommentsToggle.setAttribute("aria-expanded", open);
+  }
+
+  function toggleComments() {
+    setComments(pairCommentFields.hidden);
+  }
+
   function renderPair() {
     pairStage.replaceChildren();
     if (!state.pairs.length) {
@@ -313,10 +339,15 @@ INDEX = r"""<!doctype html>
     const current = state.pairs[state.pairIndex], result = pairResult(current);
     const decided = state.pairs.filter(pairResult).length;
     pairProgress.textContent = `${state.pairIndex + 1}/${state.pairs.length} · ${decided} decided${result ? ` · ${result}` : ""}`;
+    pairCommentFields.querySelectorAll("textarea").forEach(notes => {
+      notes.value = state.reviews[current[notes.dataset.side].path]?.notes || "";
+    });
+    pairCommentsToggle.textContent =
+      [...pairCommentFields.querySelectorAll("textarea")].some(notes => notes.value) ? "Comments • C" : "Comments C";
     for (const side of ["A", "B"]) {
       const item = current[side];
       const button = document.createElement("button");
-      button.className = `pair-choice${result === side ? " winner" : ""}`;
+      button.className = `pair-choice${result === side ? " winner" : ["tie", "neither"].includes(result) ? ` ${result}` : ""}`;
       button.dataset.side = side;
       button.title = `Choose ${side}`;
       const image = document.createElement("img");
@@ -347,14 +378,43 @@ INDEX = r"""<!doctype html>
   document.querySelector("#pair-layout").addEventListener("click", () => setSingle(!state.single));
   document.querySelector("#pair-toggle").addEventListener("click", toggleImage);
   document.querySelector("#pair-fullscreen").addEventListener("click", toggleFullscreen);
+  pairCommentsToggle.addEventListener("click", toggleComments);
+  pairCommentFields.querySelectorAll("textarea").forEach(notes => notes.addEventListener("input", () => {
+    const item = state.pairs[state.pairIndex][notes.dataset.side];
+    const review = {...(state.reviews[item.path] || {}), notes: notes.value};
+    state.reviews[item.path] = review;
+    schedule(item.path, review);
+    pairCommentsToggle.textContent =
+      [...pairCommentFields.querySelectorAll("textarea")].some(field => field.value) ? "Comments • C" : "Comments C";
+  }));
   document.addEventListener("keydown", event => {
-    if (!state.pairing || /^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName)) return;
+    if (!state.pairing) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setComments(false);
+      return;
+    }
+    if (event.key === "Enter" && event.target.matches("#pair-comment-fields textarea") && !event.shiftKey) {
+      event.preventDefault();
+      event.target.blur();
+      setComments(false);
+      return;
+    }
+    if (/^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName)) return;
     const actions = {
       ArrowLeft: () => choose("keep", "reject"),
       ArrowRight: () => choose("reject", "keep"),
       ArrowUp: () => choose("maybe", "maybe"),
       ArrowDown: () => choose("reject", "reject"),
+      n: () => movePair(1),
+      N: () => movePair(1),
+      p: () => movePair(-1),
+      P: () => movePair(-1),
       " ": toggleImage,
+      c: toggleComments,
+      C: toggleComments,
+      r: load,
+      R: load,
       s: () => setSingle(!state.single),
       S: () => setSingle(!state.single),
       f: toggleFullscreen,
@@ -370,7 +430,7 @@ INDEX = r"""<!doctype html>
 </html>
 """
 
-IMAGE_SUFFIXES = {".png", ".webp", ".jpg", ".jpeg"}
+IMAGE_SUFFIXES = {".png", ".webp", ".avif", ".jpg", ".jpeg"}
 STATUSES = {"", "keep", "maybe", "reject"}
 
 
@@ -399,14 +459,34 @@ def metadata(path):
 
 
 def groups(root):
-    return [
-        path.name for path in
-        sorted(
-            (path for path in root.iterdir() if path.is_dir() and path.name != "@eaDir"),
-            key=lambda path: path.stat().st_mtime,
-            reverse=True,
-        )
-    ]
+    tops = sorted(
+        (path for path in root.iterdir() if path.is_dir() and path.name != "@eaDir"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    options = []
+    for top in tops:
+        candidates = [top / name for name in ("assets", "raw", "qc", "corridorkey")]
+        candidates += [
+            top / screen / name
+            for screen in ("green", "blue")
+            for name in ("assets", "qc", "corridorkey")
+        ]
+        children = [
+            path for path in candidates
+            if path.is_dir()
+            and any(
+                image.is_file() and image.suffix.lower() in IMAGE_SUFFIXES
+                for image in path.rglob("*")
+            )
+        ]
+        for path in children or [top]:
+            value = path.relative_to(root).as_posix()
+            options.append({
+                "value": value,
+                "label": f"{top.name} - {path.relative_to(top).as_posix()}" if children else top.name,
+            })
+    return options
 
 
 def scan(root, group=None):
@@ -414,10 +494,14 @@ def scan(root, group=None):
     folder = root / group if group else root
     for path in sorted(folder.rglob("*")):
         if path.is_file() and "@eaDir" not in path.parts and path.suffix.lower() in IMAGE_SUFFIXES:
-            try:
-                width, height, seed, steps, prompt = metadata(path)
-            except (OSError, ValueError, json.JSONDecodeError):
-                continue
+            if path.suffix.lower() == ".avif":
+                width = height = seed = steps = None
+                prompt = ""
+            else:
+                try:
+                    width, height, seed, steps, prompt = metadata(path)
+                except (OSError, ValueError, json.JSONDecodeError):
+                    continue
             relative = path.relative_to(root).as_posix()
             items.append({
                 "path": relative,
@@ -480,7 +564,7 @@ def handler(root, reviews):
             if parsed.path == "/api/items":
                 group = parse_qs(parsed.query).get("group", [""])[0]
                 folder = (root / group).resolve()
-                if not group or folder.parent != root or not folder.is_dir():
+                if not group or root not in folder.parents or not folder.is_dir():
                     self.send_error(400, "invalid group")
                     return
                 with lock:
@@ -536,8 +620,13 @@ def self_test():
             for marker in (
                 "Auto-keep viewed", "IntersectionObserver", "Pair review",
                 "requestFullscreen", "ArrowLeft", "Toggle A/B",
+                "pair-choice.tie", "pair-choice.neither", "pair-comments-toggle",
+                "n: () => movePair(1)", "p: () => movePair(-1)",
+                "r: load", 'event.key === "Escape"',
+                'event.key === "Enter"', "!event.shiftKey",
             )
         )
+        assert ".avif" in IMAGE_SUFFIXES
         assert all(valid_apparent_age(value) for value in (None, 18, 34, 90))
         assert not any(valid_apparent_age(value) for value in (True, 17, 91, 34.5, "34"))
         root = Path(directory)
@@ -555,11 +644,30 @@ def self_test():
         Image.new("RGB", (1, 1)).save(thumbnail / "SYNOPHOTO_THUMB_XL.jpg")
         items = scan(root)
         assert len(items) == 1
-        assert groups(root) == ["experiment"]
+        assert groups(root) == [{"value": "experiment", "label": "experiment"}]
         assert scan(root, "experiment") == items
         assert (items[0]["path"], items[0]["width"], items[0]["height"]) == ("experiment/01.png", 2, 3)
         assert items[0]["bytes"] > 0
         assert (items[0]["group"], items[0]["seed"], items[0]["steps"], items[0]["prompt"]) == ("experiment", 7, 6, "test prompt")
+        assets = root / "assets"
+        assets.mkdir()
+        (assets / "performer-001.avif").write_bytes(b"avif")
+        avif = scan(root, "assets")
+        assert len(avif) == 1 and avif[0]["width"] is None
+        production = root / "production"
+        (production / "assets").mkdir(parents=True)
+        (production / "raw").mkdir()
+        (production / "green" / "qc").mkdir(parents=True)
+        (production / "assets" / "performer-001.avif").write_bytes(b"avif")
+        Image.new("RGB", (2, 3)).save(production / "raw" / "01.png", pnginfo=info)
+        Image.new("RGB", (2, 3)).save(production / "green" / "qc" / "performer-001.png")
+        options = groups(root)
+        assert {"value": "production/assets", "label": "production - assets"} in options
+        assert {"value": "production/raw", "label": "production - raw"} in options
+        assert {
+            "value": "production/green/qc", "label": "production - green/qc",
+        } in options
+        assert len(scan(root, "production/assets")) == 1
         reviews = root / "reviews.json"
         write_review(reviews, items[0]["path"], "keep", "good", 34)
         saved = read_reviews(reviews)[items[0]["path"]]

@@ -1,0 +1,156 @@
+[
+  {
+    "number": 1,
+    "id": "bg-r001-sunlit-conservatory",
+    "category": "replacement-001",
+    "scene": "bright glass conservatory lounge with abundant healthy green plants, pale stone flooring, and restrained side seating",
+    "style": "contemporary natural",
+    "compatibility": ["casual", "smart-casual", "summer"],
+    "time": "soft morning daylight",
+    "palette": "fresh greens, pale stone, and warm oak",
+    "camera": "eye-level medium-wide framing"
+  },
+  {
+    "number": 2,
+    "id": "bg-r002-resort-lobby",
+    "category": "replacement-002",
+    "scene": "airy open-sided resort lobby with pale masonry, tropical garden views, and sparse lounge seating kept toward the sides",
+    "style": "quiet coastal luxury",
+    "compatibility": ["summer", "glamorous", "date-night"],
+    "time": "bright midday daylight",
+    "palette": "cream, limestone, and leafy green",
+    "camera": "standing eye-level wide framing"
+  },
+  {
+    "number": 3,
+    "id": "bg-r011-coastal-grassland-v3",
+    "category": "replacement-011",
+    "scene": "open coastal grassland overlook with low windswept green grasses, softly rolling dunes, and a distant sea horizon",
+    "style": "documentary location photography",
+    "compatibility": ["casual", "summer", "date-night"],
+    "time": "soft late-afternoon daylight",
+    "palette": "coastal green, sand, and muted blue",
+    "camera": "eye-level medium-wide framing"
+  },
+  {
+    "number": 4,
+    "id": "bg-r015-riverside-promenade",
+    "category": "replacement-015",
+    "scene": "quiet landscaped riverside promenade with mature green trees, broad paving, and distant contemporary architecture",
+    "style": "natural urban",
+    "compatibility": ["casual", "smart-casual", "summer"],
+    "time": "bright overcast daylight",
+    "palette": "leafy green, pale gray, and warm stone",
+    "camera": "eye-level medium-wide framing"
+  },
+  {
+    "number": 5,
+    "id": "bg-r017-green-forest",
+    "category": "replacement-017",
+    "scene": "real temperate forest clearing with lush green ferns, moss, irregular mature tree bark, and a softly receding natural trail",
+    "style": "documentary location photography",
+    "compatibility": ["casual", "summer", "winter"],
+    "time": "soft cloudy daylight",
+    "palette": "natural layered greens and earthy brown",
+    "camera": "eye-level medium-wide framing"
+  },
+  {
+    "number": 6,
+    "id": "bg-r021-bright-airport",
+    "category": "replacement-021",
+    "scene": "bright premium airport lounge with floor-to-ceiling windows, pale side seating, and distant runway views",
+    "style": "contemporary",
+    "compatibility": ["professional", "smart-casual"],
+    "time": "high-key midday daylight",
+    "palette": "white, pale oak, and light gray",
+    "camera": "eye-level medium-wide framing"
+  },
+  {
+    "number": 7,
+    "id": "bg-r022-sunlit-yacht",
+    "category": "replacement-022",
+    "scene": "sunlit luxury yacht deck with white surfaces, side railings, restrained pale seating, and an open blue sea horizon",
+    "style": "coastal luxury",
+    "compatibility": ["summer", "glamorous"],
+    "time": "bright late-morning daylight",
+    "palette": "white, pale teak, and clear blue",
+    "camera": "standing eye-level wide framing"
+  },
+  {
+    "number": 8,
+    "id": "bg-r024-stocked-bookstore",
+    "category": "replacement-024",
+    "scene": "welcoming independent bookstore with fully stocked colorful bookshelves framing the sides, a clear central aisle, and a few low display tables",
+    "style": "warm contemporary",
+    "compatibility": ["casual", "smart-casual", "winter"],
+    "time": "warm diffuse daylight",
+    "palette": "warm walnut, cream, and varied book spines",
+    "camera": "standing eye-level wide framing"
+  },
+  {
+    "number": 9,
+    "id": "bg-v018-green-meadow",
+    "category": "nature-variant",
+    "scene": "green meadow overlook beside a calm lake with abundant grasses, leafy trees, and a broad distant shoreline",
+    "style": "natural",
+    "compatibility": ["casual", "summer", "date-night"],
+    "time": "soft afternoon daylight",
+    "palette": "lush natural greens and soft blue",
+    "camera": "eye-level centered framing"
+  },
+  {
+    "number": 10,
+    "id": "bg-v018-garden-path",
+    "category": "nature-variant",
+    "scene": "wide botanical garden path surrounded by layered green shrubs, mature leafy trees, and natural groundcover",
+    "style": "documentary location photography",
+    "compatibility": ["casual", "summer", "smart-casual"],
+    "time": "soft morning daylight",
+    "palette": "abundant varied greens and natural earth",
+    "camera": "eye-level medium-wide framing"
+  },
+  {
+    "number": 11,
+    "id": "bg-v020-clifftop-terrace",
+    "category": "resort-terrace-variant",
+    "scene": "private Mediterranean clifftop villa terrace with a distant sea view, pale masonry, and sparse side seating",
+    "style": "Mediterranean",
+    "compatibility": ["summer", "date-night", "glamorous"],
+    "time": "bright midday daylight",
+    "palette": "limestone, warm cream, and sea blue",
+    "camera": "standing eye-level wide framing"
+  },
+  {
+    "number": 12,
+    "id": "bg-v020-garden-terrace",
+    "category": "resort-terrace-variant",
+    "scene": "private resort terrace with pale stone, a distant sea view, lush green planting around the edges, and sparse side seating",
+    "style": "Mediterranean coastal luxury",
+    "compatibility": ["summer", "date-night", "glamorous"],
+    "time": "soft late-afternoon daylight",
+    "palette": "pale stone, leafy green, and muted blue",
+    "camera": "standing eye-level wide framing"
+  },
+  {
+    "number": 13,
+    "id": "bg-v023-contemporary-gallery",
+    "category": "gallery-variant",
+    "scene": "large contemporary art gallery with pale walls, restrained abstract paintings placed toward the sides, and a softly polished concrete floor",
+    "style": "minimalist",
+    "compatibility": ["professional", "smart-casual", "glamorous"],
+    "time": "soft diffuse museum lighting",
+    "palette": "warm white, pale gray, and restrained earth-tone artwork",
+    "camera": "eye-level slight three-quarter framing"
+  },
+  {
+    "number": 14,
+    "id": "bg-v023-sculpture-gallery",
+    "category": "gallery-variant",
+    "scene": "spacious modern gallery with pale plaster walls, a few small sculptures and abstract artworks arranged toward the sides, and a broad clear center",
+    "style": "quiet minimalist",
+    "compatibility": ["professional", "smart-casual", "glamorous"],
+    "time": "bright indirect skylight",
+    "palette": "warm white, limestone, and muted art accents",
+    "camera": "eye-level centered framing"
+  }
+]

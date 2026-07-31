@@ -1,0 +1,50 @@
+[
+  {
+    "number": 1,
+    "id": "bg-r017-green-forest",
+    "category": "replacement-017",
+    "scene": "real temperate forest clearing with lush green ferns, moss, irregular mature tree bark, and a softly receding natural trail",
+    "style": "documentary location photography",
+    "compatibility": ["casual", "summer", "winter"],
+    "time": "soft cloudy daylight",
+    "palette": "natural layered greens and earthy brown",
+    "camera": "eye-level medium-wide framing",
+    "seed": 2026596645
+  },
+  {
+    "number": 2,
+    "id": "bg-v018-green-meadow",
+    "category": "nature-variant",
+    "scene": "green meadow overlook beside a calm lake with abundant grasses, leafy trees, and a broad distant shoreline",
+    "style": "natural",
+    "compatibility": ["casual", "summer", "date-night"],
+    "time": "soft afternoon daylight",
+    "palette": "lush natural greens and soft blue",
+    "camera": "eye-level centered framing",
+    "seed": 2027015561
+  },
+  {
+    "number": 3,
+    "id": "bg-v018-garden-path",
+    "category": "nature-variant",
+    "scene": "wide botanical garden path surrounded by layered green shrubs, mature leafy trees, and natural groundcover",
+    "style": "documentary location photography",
+    "compatibility": ["casual", "summer", "smart-casual"],
+    "time": "soft morning daylight",
+    "palette": "abundant varied greens and natural earth",
+    "camera": "eye-level medium-wide framing",
+    "seed": 2027120290
+  },
+  {
+    "number": 4,
+    "id": "bg-r015-riverside-promenade",
+    "category": "replacement-015",
+    "scene": "quiet landscaped riverside promenade with mature green trees, broad paving, and distant contemporary architecture",
+    "style": "natural urban",
+    "compatibility": ["casual", "smart-casual", "summer"],
+    "time": "bright overcast daylight",
+    "palette": "leafy green, pale gray, and warm stone",
+    "camera": "eye-level medium-wide framing",
+    "seed": 2026491916
+  }
+]

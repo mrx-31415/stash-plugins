@@ -1,0 +1,109 @@
+{
+  "source_root": "/mnt/Misc/sd/cover-story/scenes",
+  "themes": {
+    "viking": {
+      "actors": [
+        {
+          "id": "actor-01-left",
+          "persona_id": "actor-004",
+          "source": "viking/actor-004-left-alpha.png",
+          "source_sha256": "aa1831bb66f13206d02bebfe34f987b8b544f1daa3401fc763a4f2362eccf35c",
+          "output": "actor-01-left.webp"
+        },
+        {
+          "id": "actor-01-right",
+          "persona_id": "actor-004",
+          "source": "viking/actor-004-right-alpha.png",
+          "source_sha256": "faaac6ed8be291ee56930454c305329de47178e7fed554c6d43df0884afea7d4",
+          "output": "actor-01-right.webp"
+        },
+        {
+          "id": "actor-02-left",
+          "persona_id": "actor-154",
+          "source": "viking/actor-154-left-alpha.png",
+          "source_sha256": "3afdf2f2e002716be6fcb9a6e32b6f09692e8c848670b094b5589397cf0c0c76",
+          "output": "actor-02-left.webp"
+        },
+        {
+          "id": "actor-02-right",
+          "persona_id": "actor-154",
+          "source": "viking/actor-154-right-alpha.png",
+          "source_sha256": "d2c974cd814b77d9c2bd7e8f9d2c8e0a10a0a7ca527912a43e700813d3763d53",
+          "output": "actor-02-right.webp"
+        }
+      ],
+      "backgrounds": [
+        {
+          "id": "day-centered-01",
+          "source": "viking/day-centered-01-source.png",
+          "source_sha256": "cc52f18904b91bf86533a50317b08ce6e2c014aa923a73fcf014ecc556b05504",
+          "output": "day-centered-01.webp"
+        },
+        {
+          "id": "day-left-01",
+          "source": "viking/day-left-01-source.png",
+          "source_sha256": "b612f64934bb451e23dda9dd5dab6f746fae147659a260e6382afe0458c2f78e",
+          "output": "day-left-01.webp"
+        },
+        {
+          "id": "warm-right-01",
+          "source": "viking/warm-right-01-source.png",
+          "source_sha256": "0ebff9ec817950af4124e0ccb2979c671f387796b1099a4fd7c260a43db8bbf6",
+          "output": "warm-right-01.webp"
+        },
+        {
+          "id": "night-centered-01",
+          "source": "viking/night-centered-01-source.png",
+          "source_sha256": "d0291394c86ec0d3cd62eab86851de0bdb384b3eb6f6f8d508811f4884e1cc8d",
+          "output": "night-centered-01.webp"
+        }
+      ],
+      "covers": [
+        {
+          "output": "cover-01.webp",
+          "background": "day-centered-01",
+          "actors": [["actor-01-right", 280], ["actor-02-left", 920]]
+        },
+        {
+          "output": "cover-02.webp",
+          "background": "day-centered-01",
+          "actors": [["actor-01-left", 570]]
+        },
+        {
+          "output": "cover-03.webp",
+          "background": "day-left-01",
+          "actors": [["actor-01-right", 170]]
+        },
+        {
+          "output": "cover-04.webp",
+          "background": "day-left-01",
+          "actors": [["actor-02-right", 170]]
+        },
+        {
+          "output": "cover-05.webp",
+          "background": "warm-right-01",
+          "grade": "warm",
+          "actors": [["actor-01-left", 980]]
+        },
+        {
+          "output": "cover-06.webp",
+          "background": "warm-right-01",
+          "grade": "warm",
+          "actors": [["actor-02-left", 980]]
+        },
+        {
+          "output": "cover-07.webp",
+          "background": "night-centered-01",
+          "grade": "night",
+          "actors": [["actor-01-right", 280], ["actor-02-left", 920]]
+        },
+        {
+          "output": "cover-08.webp",
+          "background": "night-centered-01",
+          "grade": "night",
+          "actors": [["actor-02-right", 570]]
+        }
+      ]
+    }
+  }
+}
