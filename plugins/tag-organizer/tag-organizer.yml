@@ -1,6 +1,6 @@
 name: Tag Organizer
-description: Find remote tag gaps and add matching local tags to linked scenes.
-version: 1.4.0
+description: Find remote tag gaps, sync matching tags, and review tag cleanup safely.
+version: 1.5.0
 url: https://github.com/mrx-31415/stash-plugins
 exec:
   - python
@@ -13,6 +13,10 @@ ui:
     - tag-organizer.js
 
 settings:
+  duplicateSimilarityCutoff:
+    displayName: Duplicate similarity cutoff
+    description: Minimum direct name or alias similarity for duplicate suggestions (0.7–1.0). Default 0.85; higher values are more conservative. Stored scores let this update existing new-format plans immediately.
+    type: NUMBER
   syncOnTagCreate:
     displayName: Sync when a tag is created
     description: Scan every scene after creating a local tag. This can be slow on large libraries.

@@ -13,6 +13,18 @@ the saved progress. Scans and full syncs batch remote scene lookups to reduce
 StashDB requests. Adding a result creates the local tag and applies it to the
 verified linked scenes.
 
+Use the **Pull Remote Tags** tab to run the all-provider sync from the page.
+It keeps the latest run's progress and changed or failed scene rows, including
+added canonical local tag names and scene links.
+
+Use **Clean Up Tags** for a persisted, review-first cleanup plan. It lists all
+tags with per-object usage counts, suggests fuzzy duplicate groups, and shows
+remote evidence for splitting aliases into child tags. Select the survivor and
+source tags explicitly, choose each split action, then create the required
+database-only backup before applying changes. Deletes are attempted
+individually, so marker-primary failures are reported without stopping the
+remaining review.
+
 Select one or more results with the checkboxes and click **Add selected** to
 process them in one operation. A failed tag does not prevent the remaining
 selected tags from being processed; failed tags remain selected for retry.
@@ -28,6 +40,11 @@ Optional plugin settings are off by default:
 
 Remote tags with no unique local name/alias match are ignored. Configure each
 metadata provider and its API key in Stash before running the plugin.
+
+Cleanup review plans are persisted under Stash's plugin configuration
+directory. A successful backup is required again after a page reload. Cleanup
+revalidates tag IDs, names, aliases, remote IDs, and hierarchy before every
+tag mutation; scene split updates change scene tag assignments only.
 
 ## Upgrading from Pull Remote Tags
 
