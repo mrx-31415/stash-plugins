@@ -46,6 +46,10 @@
     return ["FINISHED", "FAILED", "CANCELLED"].includes(status);
   }
 
+  function pollStreakExceeded(streak, limit) {
+    return streak >= limit;
+  }
+
   const PULL_PLACEHOLDER = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 160 90'%3E%3Crect width='160' height='90' fill='%23343a40'/%3E%3Ctext x='80' y='48' fill='white' text-anchor='middle' font-size='12'%3ENo screenshot%3C/text%3E%3C/svg%3E";
 
   function pullRows(state) {
@@ -144,6 +148,7 @@
         action: candidate.action || "child-only",
         child_name: candidate.child_name || candidate.remote_name || candidate.alias || "",
         remove_alias: true,
+        scene_count: Number(candidate.scene_count) || 0,
       };
       choices[index >= 0 ? index : choices.length] = Object.assign({}, index >= 0 ? choices[index] : base, changes || {});
     }
@@ -157,6 +162,10 @@
       choice && choice.survivor_id && choice.source_ids && choice.source_ids.length &&
       (!(group.conflicts || []).length || choice.override_remote_ids)
     );
+  }
+
+  function duplicateChoiceResolved(choice) {
+    return !choice || !choice.has_conflicts || Boolean(choice.override_remote_ids);
   }
 
   function cleanupApplyArgs(token, backupReady, junkIds, duplicateChoices, splitChoices) {
@@ -190,10 +199,11 @@
     };
   }
 
-  function cleanupCanApply(state, token, backupReady, hasSelections) {
+  function cleanupCanApply(state, token, backupReady, hasSelections, duplicateChoices) {
     return Boolean(
       token && backupReady && hasSelections && state &&
-      ["completed", "applied"].includes(state.status)
+      ["completed", "applied"].includes(state.status) &&
+      Object.values(duplicateChoices || {}).every(duplicateChoiceResolved)
     );
   }
 
@@ -206,6 +216,69 @@
       end: Math.min(page * perPage, total),
       hasPrevious: page > 1,
       hasNext: page * perPage < total,
+    };
+  }
+
+  function cleanupSelectionSummary(state, junkIds, duplicateChoices, splitChoices) {
+    const duplicateValues = Object.values(duplicateChoices || {});
+    const splitTagIds = Object.keys(splitChoices || {});
+    let splitCandidateCount = 0;
+    let sceneUpdateEstimate = 0;
+    splitTagIds.forEach(function (tagId) {
+      (splitChoices[tagId] || []).forEach(function (candidate) {
+        splitCandidateCount += 1;
+        sceneUpdateEstimate += Number(candidate.scene_count) || 0;
+      });
+    });
+    return {
+      deleteCount: (junkIds && junkIds.size) || 0,
+      mergeCount: duplicateValues.filter(function (choice) {
+        return choice.survivor_id && choice.source_ids && choice.source_ids.length;
+      }).length,
+      splitCandidateCount: splitCandidateCount,
+      sceneUpdateEstimate: sceneUpdateEstimate,
+      unresolvedConflictCount: duplicateValues.filter(function (choice) {
+        return choice.has_conflicts && !choice.override_remote_ids;
+      }).length,
+      reviewedDuplicates: duplicateValues.filter(duplicateChoiceResolved).length,
+      totalDuplicates: Number(state && state.duplicate_count) || 0,
+      reviewedSplits: splitTagIds.length,
+      totalSplits: Number(state && state.split_count) || 0,
+    };
+  }
+
+  function cleanupReviewStateArgs(token, junkIds, duplicateChoices, splitChoices, section, splitParentId, views) {
+    return {
+      mode: "cleanup_review_state_save",
+      cleanup_token: token,
+      junk_ids: Array.from(junkIds || []).map(String),
+      duplicates: duplicateChoices || {},
+      splits: Object.keys(splitChoices || {}).reduce(function (accumulator, tagId) {
+        accumulator[tagId] = (splitChoices[tagId] || []).map(function (candidate) {
+          return {
+            candidate_id: candidate.candidate_id,
+            action: candidate.action || "child-only",
+            child_name: candidate.child_name || "",
+            remove_alias: candidate.remove_alias !== false,
+            scene_count: Number(candidate.scene_count) || 0,
+          };
+        });
+        return accumulator;
+      }, {}),
+      section: section,
+      split_parent_id: String(splitParentId || ""),
+      views: views,
+    };
+  }
+
+  function cleanupReviewStateFromSaved(saved) {
+    return {
+      junk: new Set((saved && saved.junk_ids || []).map(String)),
+      duplicates: (saved && saved.duplicates) || {},
+      splits: (saved && saved.splits) || {},
+      section: (saved && saved.section) || "tags",
+      splitParentId: (saved && saved.split_parent_id) || "",
+      views: (saved && saved.views) || null,
     };
   }
 
@@ -263,6 +336,8 @@
       assert.equal(markLocalNames(merged, ["another"])[2].is_local, true);
       assert.equal(terminalJobStatus("FINISHED"), true);
       assert.equal(terminalJobStatus("RUNNING"), false);
+      assert.equal(pollStreakExceeded(5, 6), false);
+      assert.equal(pollStreakExceeded(6, 6), true);
       const pull = {
         status: "completed",
         scanned: 3,
@@ -315,6 +390,10 @@
       assert.equal(retained["parent-2"][0].candidate_id, "page-2");
       assert.equal(duplicateReviewed({ conflicts: [] }, { survivor_id: "1", source_ids: ["2"] }), true);
       assert.equal(duplicateReviewed({ conflicts: [{}] }, { survivor_id: "1", source_ids: ["2"] }), false);
+      assert.equal(duplicateChoiceResolved(null), true);
+      assert.equal(duplicateChoiceResolved({ has_conflicts: false }), true);
+      assert.equal(duplicateChoiceResolved({ has_conflicts: true }), false);
+      assert.equal(duplicateChoiceResolved({ has_conflicts: true, override_remote_ids: true }), true);
       const cleanupArgs = cleanupApplyArgs(
         "cleanup-token",
         true,
@@ -324,18 +403,67 @@
       );
       assert.deepEqual(cleanupArgs.duplicates[0].source_ids, ["2"]);
       assert.equal(cleanupArgs.splits[0].candidates[0].action, "child-only");
-      assert.equal(cleanupCanApply(cleanup, "cleanup-token", true, true), true);
-      assert.equal(cleanupCanApply(cleanup, "cleanup-token", false, true), false);
+      const resolvedDuplicates = { "duplicate-1-2": { survivor_id: "1", source_ids: ["2"], has_conflicts: false } };
+      const unresolvedDuplicates = { "duplicate-1-2": { survivor_id: "1", source_ids: ["2"], has_conflicts: true, override_remote_ids: false } };
+      assert.equal(cleanupCanApply(cleanup, "cleanup-token", true, true, resolvedDuplicates), true);
+      assert.equal(cleanupCanApply(cleanup, "cleanup-token", false, true, resolvedDuplicates), false);
+      assert.equal(cleanupCanApply(cleanup, "cleanup-token", true, true, unresolvedDuplicates), false);
       assert.deepEqual(cleanupPageInfo({ page: 1, per_page: 1, total: 72 }), {
         start: 1, end: 1, hasPrevious: false, hasNext: true,
       });
+      const summary = cleanupSelectionSummary(
+        { duplicate_count: 2, split_count: 2 },
+        new Set(["1", "2"]),
+        {
+          "duplicate-1-2": { survivor_id: "1", source_ids: ["2"], has_conflicts: false },
+          "duplicate-3-4": { survivor_id: "", source_ids: [], has_conflicts: true, override_remote_ids: false },
+        },
+        { "5": [{ candidate_id: "a", scene_count: 3 }, { candidate_id: "b", scene_count: 1 }] }
+      );
+      assert.deepEqual(summary, {
+        deleteCount: 2,
+        mergeCount: 1,
+        splitCandidateCount: 2,
+        sceneUpdateEstimate: 4,
+        unresolvedConflictCount: 1,
+        reviewedDuplicates: 1,
+        totalDuplicates: 2,
+        reviewedSplits: 1,
+        totalSplits: 2,
+      });
+      const reviewStateArgs = cleanupReviewStateArgs(
+        "cleanup-token",
+        new Set(["1"]),
+        { "duplicate-1-2": { survivor_id: "1", source_ids: ["2"], has_conflicts: false } },
+        { "5": [{ candidate_id: "a", child_name: "Child", scene_count: 3 }] },
+        "splits",
+        "5",
+        { tags: { page: 1, query: "", filter: "unused", sort: "usage_desc" } }
+      );
+      assert.deepEqual(reviewStateArgs.junk_ids, ["1"]);
+      assert.equal(reviewStateArgs.splits["5"][0].scene_count, 3);
+      assert.equal(reviewStateArgs.split_parent_id, "5");
+      const hydrated = cleanupReviewStateFromSaved({
+        junk_ids: ["1", "2"],
+        duplicates: { "duplicate-1-2": { survivor_id: "1", source_ids: ["2"] } },
+        splits: { "5": [{ candidate_id: "a" }] },
+        section: "duplicates",
+        split_parent_id: "5",
+        views: { tags: { page: 2, query: "", filter: "all", sort: "name_asc" } },
+      });
+      assert.deepEqual(Array.from(hydrated.junk).sort(), ["1", "2"]);
+      assert.equal(hydrated.section, "duplicates");
+      assert.equal(hydrated.splitParentId, "5");
+      assert.equal(hydrated.views.tags.page, 2);
+      assert.deepEqual(cleanupReviewStateFromSaved(null).junk, new Set());
+      assert.equal(cleanupReviewStateFromSaved(null).section, "tags");
       console.log("self-check passed");
     }
     return;
   }
 
   const { React, patch, register, libraries, utils } = api;
-  const { Alert, Badge, Button, Form, Nav, ProgressBar, Spinner, Table } = libraries.Bootstrap;
+  const { Alert, Badge, Button, Form, Modal, Nav, ProgressBar, Spinner, Table } = libraries.Bootstrap;
   const { NavLink } = libraries.ReactRouterDOM;
   const { gql } = libraries.Apollo;
   const { faTags } = libraries.FontAwesomeSolid;
@@ -460,6 +588,10 @@
     const [cleanupSplitParentId, setCleanupSplitParentId] = React.useState("");
     const [cleanupCandidateReview, setCleanupCandidateReview] = React.useState(null);
     const [cleanupCandidateLoading, setCleanupCandidateLoading] = React.useState(false);
+    const [cleanupApplyModalOpen, setCleanupApplyModalOpen] = React.useState(false);
+    const hydratedReviewTokenRef = React.useRef("");
+    const skipNextReviewSaveRef = React.useRef(false);
+    const reviewSaveTimerRef = React.useRef(null);
     const localTags = React.useRef(new Set());
     const filteredRows = visibleRows(rows, search, showLocal, localTags.current);
     const selectedRows = rows.filter(function (row) {
@@ -485,8 +617,10 @@
       cleanupState,
       cleanupToken,
       cleanupBackup,
-      cleanupHasSelections
+      cleanupHasSelections,
+      cleanupDuplicatesChoice
     );
+    const cleanupSummary = cleanupSelectionSummary(cleanupState, cleanupJunk, cleanupDuplicatesChoice, cleanupSplitsChoice);
 
     React.useEffect(function () {
       Promise.all([runOperation({ mode: "providers" }), runOperation({ mode: "pull_status" })])
@@ -528,6 +662,55 @@
     }, []);
 
     React.useEffect(function () {
+      if (!cleanupToken || hydratedReviewTokenRef.current === cleanupToken) return undefined;
+      let stopped = false;
+      runOperation({ mode: "cleanup_review_state_get", cleanup_token: cleanupToken })
+        .then(function (saved) {
+          if (stopped) return;
+          const hydrated = cleanupReviewStateFromSaved(saved);
+          setCleanupJunk(hydrated.junk);
+          setCleanupDuplicatesChoice(hydrated.duplicates);
+          setCleanupSplitsChoice(hydrated.splits);
+          setCleanupSection(hydrated.section);
+          setCleanupSplitParentId(hydrated.splitParentId);
+          if (hydrated.views) setCleanupViews(hydrated.views);
+          hydratedReviewTokenRef.current = cleanupToken;
+          skipNextReviewSaveRef.current = true;
+        })
+        .catch(function () {
+          hydratedReviewTokenRef.current = cleanupToken;
+        });
+      return function () { stopped = true; };
+    }, [cleanupToken]);
+
+    React.useEffect(function () {
+      if (!cleanupToken || hydratedReviewTokenRef.current !== cleanupToken) return undefined;
+      if (!cleanupState || cleanupState.status !== "completed") return undefined;
+      if (skipNextReviewSaveRef.current) {
+        skipNextReviewSaveRef.current = false;
+        return undefined;
+      }
+      if (reviewSaveTimerRef.current) clearTimeout(reviewSaveTimerRef.current);
+      reviewSaveTimerRef.current = setTimeout(function () {
+        runOperation(cleanupReviewStateArgs(
+          cleanupToken,
+          cleanupJunk,
+          cleanupDuplicatesChoice,
+          cleanupSplitsChoice,
+          cleanupSection,
+          cleanupSplitParentId,
+          cleanupViews
+        )).catch(function () { /* best-effort; the next edit retries the save */ });
+      }, 800);
+      return function () {
+        if (reviewSaveTimerRef.current) clearTimeout(reviewSaveTimerRef.current);
+      };
+    }, [
+      cleanupToken, cleanupState && cleanupState.status, cleanupJunk, cleanupDuplicatesChoice,
+      cleanupSplitsChoice, cleanupSection, cleanupSplitParentId, cleanupViews,
+    ]);
+
+    React.useEffect(function () {
       const saved = storedScan();
       if (saved && saved.token) {
         setJob(saved);
@@ -539,6 +722,16 @@
       let stopped = false;
       let timer = null;
       let polls = 0;
+      let waitingStreak = 0;
+      let errorStreak = 0;
+
+      function giveUp(message) {
+        setBusy("");
+        setStatus("");
+        setError(message);
+        setJob(null);
+        window.localStorage.removeItem("tag-organizer.scan");
+      }
 
       async function poll() {
         try {
@@ -550,6 +743,13 @@
             include_rows: includeRows,
           });
           polls += 1;
+          errorStreak = 0;
+          waitingStreak = scanState.status === "waiting" ? waitingStreak + 1 : 0;
+          if (pollStreakExceeded(waitingStreak, 6)) {
+            if (stopped) return;
+            giveUp("The scan could not be found on the server after several attempts. It may have failed to start; please try scanning again.");
+            return;
+          }
           const nativeStatus = nativeJob && nativeJob.status;
           const terminal = terminalJobStatus(nativeStatus) ||
             scanState.status === "completed" || scanState.status === "failed";
@@ -599,6 +799,11 @@
           }
         } catch (pollError) {
           if (stopped) return;
+          errorStreak += 1;
+          if (pollStreakExceeded(errorStreak, 6)) {
+            giveUp("The scan status check kept failing: " + errorMessage(pollError) + ". Please try scanning again.");
+            return;
+          }
           setError(errorMessage(pollError));
           timer = setTimeout(poll, 5000);
         }
@@ -615,16 +820,33 @@
       if (!pullState || pullState.status !== "running" || pullBusy) return undefined;
       let stopped = false;
       let timer = null;
+      let waitingStreak = 0;
+      let errorStreak = 0;
 
       async function pollPull() {
         try {
           const next = await runOperation({ mode: "pull_status" });
           if (stopped) return;
+          errorStreak = 0;
+          waitingStreak = next.status === "waiting" ? waitingStreak + 1 : 0;
+          if (pollStreakExceeded(waitingStreak, 10)) {
+            setPullState(Object.assign({}, next, { status: "failed", error: "The pull job could not be found on the server after several attempts. It may have failed to start; please try again." }));
+            setPullError("");
+            return;
+          }
           setPullState(next);
           setPullError("");
           if (next.status === "running") timer = setTimeout(pollPull, 3000);
         } catch (pollError) {
           if (stopped) return;
+          errorStreak += 1;
+          if (pollStreakExceeded(errorStreak, 10)) {
+            setPullState(function (current) {
+              return Object.assign({}, current, { status: "failed", error: "The pull status check kept failing: " + errorMessage(pollError) });
+            });
+            setPullError("");
+            return;
+          }
           setPullError(errorMessage(pollError));
           timer = setTimeout(pollPull, 5000);
         }
@@ -641,12 +863,21 @@
       if (!cleanupToken || !cleanupState || cleanupState.status !== "running" || cleanupBusy) return undefined;
       let stopped = false;
       let timer = null;
+      let waitingStreak = 0;
+      let errorStreak = 0;
 
       async function pollCleanup() {
         try {
           const nativeJob = cleanupJob && cleanupJob.id ? await getJob(cleanupJob.id) : null;
           const next = await runOperation({ mode: "cleanup_status", cleanup_token: cleanupToken });
           if (stopped) return;
+          errorStreak = 0;
+          waitingStreak = next.status === "waiting" ? waitingStreak + 1 : 0;
+          if (pollStreakExceeded(waitingStreak, 10)) {
+            setCleanupState(Object.assign({}, next, { status: "failed", error: "The cleanup scan could not be found on the server after several attempts. It may have failed to start; please try again." }));
+            setCleanupError("");
+            return;
+          }
           setCleanupState(next);
           setCleanupError("");
           const nativeTerminal = nativeJob && terminalJobStatus(nativeJob.status);
@@ -657,6 +888,14 @@
           }
         } catch (pollError) {
           if (stopped) return;
+          errorStreak += 1;
+          if (pollStreakExceeded(errorStreak, 10)) {
+            setCleanupState(function (current) {
+              return Object.assign({}, current, { status: "failed", error: "The cleanup status check kept failing: " + errorMessage(pollError) });
+            });
+            setCleanupError("");
+            return;
+          }
           setCleanupError(errorMessage(pollError));
           timer = setTimeout(pollCleanup, 5000);
         }
@@ -735,6 +974,8 @@
         setJob(next);
       } catch (scanError) {
         setError(errorMessage(scanError));
+        setJob(null);
+        window.localStorage.removeItem("tag-organizer.scan");
       } finally {
         setBusy("");
       }
@@ -760,6 +1001,7 @@
       setCleanupMessage("");
       setCleanupWarning("");
       setCleanupBackup(false);
+      setCleanupApplyModalOpen(false);
       setCleanupJob(null);
       setCleanupJunk(new Set());
       setCleanupDuplicatesChoice({});
@@ -802,6 +1044,7 @@
 
     async function applyCleanup() {
       if (!cleanupReady) return;
+      setCleanupApplyModalOpen(false);
       setCleanupBusy(true);
       setCleanupError("");
       setCleanupMessage("");
@@ -958,6 +1201,7 @@
       setCleanupDuplicatesChoice(function (current) {
         const next = Object.assign({}, current);
         const choice = Object.assign({ survivor_id: "", source_ids: [], override_remote_ids: false }, next[group.id] || {});
+        choice.has_conflicts = Boolean((group.conflicts || []).length);
         if (field === "survivor_id") {
           choice.survivor_id = value;
           choice.source_ids = choice.source_ids.filter(function (id) { return id !== value; });
@@ -2022,6 +2266,19 @@
               null,
               React.createElement(
                 "div",
+                { className: "position-sticky bg-body border rounded p-2 mb-3 small", style: { bottom: 0, zIndex: 10 } },
+                "Selected: " + cleanupSummary.deleteCount + " delete, " + cleanupSummary.mergeCount + " merge, " +
+                  cleanupSummary.splitCandidateCount + " split candidate(s)" +
+                  (cleanupSummary.sceneUpdateEstimate ? " (≥" + cleanupSummary.sceneUpdateEstimate + " scene update(s) from alias splits)" : ""),
+                React.createElement("br"),
+                "Reviewed: duplicates " + cleanupSummary.reviewedDuplicates + "/" + cleanupSummary.totalDuplicates +
+                  ", splits " + cleanupSummary.reviewedSplits + "/" + cleanupSummary.totalSplits,
+                cleanupSummary.unresolvedConflictCount
+                  ? React.createElement(Badge, { variant: "warning", className: "ml-2" }, cleanupSummary.unresolvedConflictCount + " unresolved conflict(s)")
+                  : null
+              ),
+              React.createElement(
+                "div",
                 { className: "border-top mt-4 pt-3 d-flex align-items-center" },
                 React.createElement(
                   Button,
@@ -2037,7 +2294,7 @@
                   Button,
                   {
                     variant: "danger",
-                    onClick: applyCleanup,
+                    onClick: function () { setCleanupApplyModalOpen(true); },
                     disabled: !cleanupReady || cleanupState.status === "applied",
                   },
                   cleanupBusy ? "Applying…" : "Apply reviewed cleanup"
@@ -2045,7 +2302,41 @@
               ),
               !cleanupBackup
                 ? React.createElement("p", { className: "small text-muted mt-2" }, "A fresh database-only backup is required before applying. This gate resets after a page reload.")
-                : null
+                : null,
+              React.createElement(
+                Modal,
+                { show: cleanupApplyModalOpen, onHide: function () { setCleanupApplyModalOpen(false); } },
+                React.createElement(Modal.Header, { closeButton: true }, React.createElement(Modal.Title, null, "Confirm cleanup apply")),
+                React.createElement(
+                  Modal.Body,
+                  null,
+                  React.createElement("p", null,
+                    cleanupSummary.deleteCount + " tag(s) will be deleted, " +
+                      cleanupSummary.mergeCount + " duplicate group(s) will be merged, and " +
+                      cleanupSummary.splitCandidateCount + " alias-split candidate(s) will be applied."
+                  ),
+                  cleanupSummary.sceneUpdateEstimate
+                    ? React.createElement("p", null, "At least " + cleanupSummary.sceneUpdateEstimate + " scene(s) will have tags updated by alias splits.")
+                    : null,
+                  React.createElement("p", null, "Alias splitting only changes scene tag assignments; other objects such as images, galleries, and performers are untouched."),
+                  React.createElement("p", null,
+                    "Duplicates reviewed: " + cleanupSummary.reviewedDuplicates + " of " + cleanupSummary.totalDuplicates + ". " +
+                      "Splits reviewed: " + cleanupSummary.reviewedSplits + " of " + cleanupSummary.totalSplits + "."
+                  ),
+                  cleanupSummary.unresolvedConflictCount
+                    ? React.createElement(Alert, { variant: "warning" }, cleanupSummary.unresolvedConflictCount + " selected duplicate group(s) still have an unresolved remote identity conflict and will not be merged until the override is checked.")
+                    : null,
+                  React.createElement("p", { className: cleanupBackup ? "text-success" : "text-danger" },
+                    cleanupBackup ? "A fresh database backup is ready." : "No fresh database backup for this session yet."
+                  )
+                ),
+                React.createElement(
+                  Modal.Footer,
+                  null,
+                  React.createElement(Button, { variant: "secondary", onClick: function () { setCleanupApplyModalOpen(false); } }, "Cancel"),
+                  React.createElement(Button, { variant: "danger", onClick: applyCleanup, disabled: !cleanupReady || cleanupBusy }, "Apply reviewed cleanup")
+                )
+              )
             )
           : null
       )

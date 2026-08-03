@@ -192,6 +192,27 @@ def read_cleanup_state(server, token=None):
         return None
 
 
+def cleanup_review_state_path(server):
+    config_dir = server.get("Dir")
+    if not config_dir:
+        raise RuntimeError("Stash config directory is unavailable")
+    return Path(config_dir) / "tag-organizer" / "cleanup-review.json"
+
+
+def write_cleanup_review_state(server, state):
+    write_scan_state(cleanup_review_state_path(server), state)
+
+
+def read_cleanup_review_state(server, token):
+    path = cleanup_review_state_path(server)
+    try:
+        with path.open(encoding="utf-8") as source:
+            state = json.load(source)
+            return state if state.get("cleanup_token") == token else None
+    except FileNotFoundError:
+        return None
+
+
 def cleanup_overview(state, token=None, duplicate_cutoff=DUPLICATE_FUZZY_CUTOFF):
     if state is None:
         return {
@@ -397,6 +418,147 @@ def cleanup_candidates(state, args):
         "per_page": per_page,
         "total": len(candidates),
     }
+
+
+CLEANUP_REVIEW_STATE_DEFAULTS = {
+    "junk_ids": [],
+    "duplicates": {},
+    "splits": {},
+    "section": "tags",
+    "split_parent_id": "",
+    "views": {
+        "tags": {"page": 1, "query": "", "filter": "unused", "sort": "usage_desc"},
+        "duplicates": {"page": 1, "per_page": 1, "query": "", "filter": "all", "sort": "score_desc"},
+        "splits": {"page": 1, "query": "", "filter": "all", "sort": "name_asc"},
+    },
+}
+
+CLEANUP_REVIEW_VIEW_OPTIONS = {
+    "tags": {"filter": {"unused", "all", "selected"}, "sort": {"usage_desc", "usage_asc", "name_asc", "name_desc"}},
+    "duplicates": {"filter": {"all", "conflicts", "selected"}, "sort": {"score_desc", "name_asc"}},
+    "splits": {"filter": {"all", "selected"}, "sort": {"name_asc", "aliases_desc", "scenes_desc"}},
+}
+
+
+def cleanup_review_state_view(value):
+    if not isinstance(value, dict):
+        raise ValueError("view must be an object")
+    page = value.get("page", 1)
+    if isinstance(page, bool) or not isinstance(page, int) or page < 1:
+        raise ValueError("view page must be a positive integer")
+    query = value.get("query", "")
+    if not isinstance(query, str):
+        raise ValueError("view query must be text")
+    view = {"page": page, "query": query, "filter": value.get("filter"), "sort": value.get("sort")}
+    if "per_page" in value:
+        per_page = value.get("per_page")
+        if isinstance(per_page, bool) or not isinstance(per_page, int) or not 1 <= per_page <= 100:
+            raise ValueError("view per_page must be between 1 and 100")
+        view["per_page"] = per_page
+    return view
+
+
+def cleanup_review_state_views(value):
+    if not isinstance(value, dict):
+        raise ValueError("views must be an object")
+    views = {}
+    for section, options in CLEANUP_REVIEW_VIEW_OPTIONS.items():
+        view = cleanup_review_state_view(value.get(section) or CLEANUP_REVIEW_STATE_DEFAULTS["views"][section])
+        if view["filter"] not in options["filter"]:
+            raise ValueError(f"invalid {section} filter")
+        if view["sort"] not in options["sort"]:
+            raise ValueError(f"invalid {section} sort")
+        views[section] = view
+    return views
+
+
+def cleanup_review_state_duplicates(value):
+    if not isinstance(value, dict):
+        raise ValueError("duplicates must be an object")
+    duplicates = {}
+    for group_id, choice in value.items():
+        if not isinstance(choice, dict):
+            raise ValueError("duplicate choice must be an object")
+        source_ids = choice.get("source_ids") or []
+        if not isinstance(source_ids, list) or any(not isinstance(item, (str, int)) for item in source_ids):
+            raise ValueError("duplicate source_ids must be a list")
+        duplicates[str(group_id)] = {
+            "survivor_id": str(choice.get("survivor_id") or ""),
+            "source_ids": [str(item) for item in source_ids],
+            "override_remote_ids": bool(choice.get("override_remote_ids")),
+            "has_conflicts": bool(choice.get("has_conflicts")),
+        }
+    return duplicates
+
+
+def cleanup_review_state_splits(value):
+    if not isinstance(value, dict):
+        raise ValueError("splits must be an object")
+    splits = {}
+    for tag_id, candidates in value.items():
+        if not isinstance(candidates, list):
+            raise ValueError("split candidates must be a list")
+        items = []
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                raise ValueError("split candidate must be an object")
+            action = candidate.get("action") or "child-only"
+            if action not in {"child-only", "parent-only", "parent-plus-child", "skip"}:
+                raise ValueError("invalid split candidate action")
+            candidate_id = candidate.get("candidate_id")
+            if not isinstance(candidate_id, (str, int)) or not str(candidate_id):
+                raise ValueError("split candidate_id is required")
+            scene_count = candidate.get("scene_count", 0)
+            if isinstance(scene_count, bool) or not isinstance(scene_count, int):
+                raise ValueError("split candidate scene_count must be an integer")
+            items.append({
+                "candidate_id": str(candidate_id),
+                "action": action,
+                "child_name": str(candidate.get("child_name") or ""),
+                "remove_alias": bool(candidate.get("remove_alias", True)),
+                "scene_count": scene_count,
+            })
+        splits[str(tag_id)] = items
+    return splits
+
+
+def cleanup_review_state_payload(args):
+    junk_ids = args.get("junk_ids") or []
+    if not isinstance(junk_ids, list) or any(not isinstance(item, (str, int)) for item in junk_ids):
+        raise ValueError("junk_ids must be a list")
+    section = args.get("section", "tags")
+    if section not in CLEANUP_REVIEW_VIEW_OPTIONS:
+        raise ValueError("section must be tags, duplicates, or splits")
+    return {
+        "junk_ids": sorted({str(item) for item in junk_ids}),
+        "duplicates": cleanup_review_state_duplicates(args.get("duplicates") or {}),
+        "splits": cleanup_review_state_splits(args.get("splits") or {}),
+        "section": section,
+        "split_parent_id": str(args.get("split_parent_id") or ""),
+        "views": cleanup_review_state_views(args.get("views") or CLEANUP_REVIEW_STATE_DEFAULTS["views"]),
+    }
+
+
+def cleanup_review_state_get(server, token):
+    if not valid_scan_token(token):
+        raise ValueError("cleanup token is required")
+    state = read_cleanup_review_state(server, token)
+    if state is None:
+        return dict(CLEANUP_REVIEW_STATE_DEFAULTS, cleanup_token=token)
+    return state
+
+
+def cleanup_review_state_save(server, args):
+    token = args.get("cleanup_token") or args.get("scan_token")
+    if not valid_scan_token(token):
+        raise ValueError("cleanup token is required")
+    plan = read_cleanup_state(server, token)
+    if plan is None or plan.get("status") != "completed":
+        raise ValueError("review state can only be saved while the cleanup plan is completed")
+    payload = cleanup_review_state_payload(args)
+    payload["cleanup_token"] = token
+    write_cleanup_review_state(server, payload)
+    return {"ok": True}
 
 
 def graphql(url, query, variables=None, headers=None):
@@ -1970,6 +2132,11 @@ def run_operation(args, configuration, local_url, local_headers, server):
         if state is None:
             raise ValueError("complete a cleanup scan before loading split candidates")
         return cleanup_candidates(state, args)
+    if mode == "cleanup_review_state_get":
+        token = args.get("cleanup_token") or args.get("scan_token")
+        return cleanup_review_state_get(server, token)
+    if mode == "cleanup_review_state_save":
+        return cleanup_review_state_save(server, args)
     if mode == "cleanup_scan":
         token = args.get("cleanup_token") or args.get("scan_token")
         return cleanup_scan_all(
@@ -2671,6 +2838,60 @@ def self_test():
             )
             assert len(bounded_review["items"]) == 100 and bounded_review["total"] == 150
             assert read_cleanup_state({"Dir": cleanup_dir})["splits"][0]["candidates"][0]["scene_ids"] == ["scene"]
+            default_review_state = run_operation(
+                {"mode": "cleanup_review_state_get", "cleanup_token": "cleanup-test"},
+                {"general": {"stashBoxes": []}}, "local", {}, {"Dir": cleanup_dir},
+            )
+            assert default_review_state["junk_ids"] == [] and default_review_state["section"] == "tags"
+            saved_review_state = run_operation(
+                {
+                    "mode": "cleanup_review_state_save",
+                    "cleanup_token": "cleanup-test",
+                    "junk_ids": ["3", 3],
+                    "duplicates": {"duplicate-1-2": {"survivor_id": "1", "source_ids": ["2"], "override_remote_ids": True, "has_conflicts": True}},
+                    "splits": {"1": [{"candidate_id": "candidate", "action": "child-only", "child_name": "Child", "remove_alias": True, "scene_count": 2}]},
+                    "section": "splits",
+                    "split_parent_id": "1",
+                    "views": {
+                        "tags": {"page": 1, "query": "", "filter": "unused", "sort": "usage_desc"},
+                        "duplicates": {"page": 1, "per_page": 1, "query": "", "filter": "all", "sort": "score_desc"},
+                        "splits": {"page": 2, "query": "child", "filter": "all", "sort": "name_asc"},
+                    },
+                },
+                {"general": {"stashBoxes": []}}, "local", {}, {"Dir": cleanup_dir},
+            )
+            assert saved_review_state == {"ok": True}
+            reloaded_review_state = cleanup_review_state_get({"Dir": cleanup_dir}, "cleanup-test")
+            assert reloaded_review_state["junk_ids"] == ["3"]
+            assert reloaded_review_state["duplicates"]["duplicate-1-2"]["source_ids"] == ["2"]
+            assert reloaded_review_state["duplicates"]["duplicate-1-2"]["has_conflicts"] is True
+            assert reloaded_review_state["splits"]["1"][0]["scene_count"] == 2
+            assert reloaded_review_state["split_parent_id"] == "1"
+            assert reloaded_review_state["views"]["splits"]["page"] == 2
+            assert reloaded_review_state["views"]["duplicates"]["per_page"] == 1
+            assert "per_page" not in reloaded_review_state["views"]["tags"]
+            assert read_cleanup_review_state({"Dir": cleanup_dir}, "other-token") is None
+            try:
+                cleanup_review_state_save({"Dir": cleanup_dir}, {"cleanup_token": "cleanup-test", "junk_ids": "not-a-list"})
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("invalid junk_ids shape was accepted")
+            try:
+                cleanup_review_state_save({"Dir": cleanup_dir}, {
+                    "cleanup_token": "cleanup-test",
+                    "splits": {"1": [{"candidate_id": "candidate", "action": "not-a-real-action"}]},
+                })
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("invalid split action was accepted")
+            try:
+                cleanup_review_state_save({"Dir": cleanup_dir}, {"cleanup_token": "missing-token-000000"})
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("review state was saved without a completed cleanup plan")
             try:
                 cleanup_apply("local", {}, {"Dir": cleanup_dir}, {"cleanup_token": "cleanup-test"})
             except ValueError as error:
@@ -2694,6 +2915,12 @@ def self_test():
             assert cleanup_store["2"]["parents"] == [{"id": "1"}]
             assert cleanup_scene["tags"] == [{"id": "2"}]
             assert cleanup_store["1"]["aliases"] == []
+            try:
+                cleanup_review_state_save({"Dir": cleanup_dir}, {"cleanup_token": "cleanup-test", "junk_ids": []})
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("review state was saved after the cleanup plan was applied")
     finally:
         graphql = real_cleanup_graphql
     assert any(call[0] == TAG_DESTROY_MUTATION for call in cleanup_calls)
