@@ -7,7 +7,8 @@ import os
 import re
 import tempfile
 from pathlib import Path
-from urllib import request
+import time
+from urllib import error, request
 
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageOps, ImageStat
 
@@ -45,6 +46,10 @@ CONFIG_TEMPLATE = {
     "runpod_api_key": "RUNPODAPIKEY",
 }
 PLACEHOLDERS = ("HOST", "PORT", "TOKEN", "ENDPOINTID", "RUNPODAPIKEY")
+# The RunPod proxy 404s for a window after ComfyUI restarts; long enough to cover it, short enough
+# that a genuinely dead server still fails the run rather than hanging it.
+SERVER_RETRIES = 5
+SERVER_RETRY_WAIT = 10
 CARRIER_PROMPT = (
     "Full-body centered frontal bald woman in a natural relaxed standing pose on a seamless evenly lit matte "
     "chroma-key blue background. She has a slender, feminine, statuesque hourglass figure, and ample cleavage. "
@@ -188,15 +193,45 @@ def save_png(image, path):
     production.save_png(image, path)
 
 
-def soft_free(server):
-    """Release ComfyUI weights without restarting the service or clearing output history."""
-    req = request.Request(
-        endpoint(server, "/free"),
-        data=b'{"unload_models":true,"free_memory":true}',
-        headers={"Content-Type": "application/json", "User-Agent": "CoverStoryComfy/1.0"},
-    )
-    with request.urlopen(req, timeout=60):
-        pass
+def soft_free(server, drop_from_ram=False):
+    """Free VRAM, keeping the weights in system RAM so the next load is a PCIe copy, not a re-read.
+
+    ComfyUI's two /free flags are not two intensities of the same thing (main.py, the block that
+    reads `q.get_flags()`):
+
+      unload_models -> unload_all_models() -> detach() -> unpatch_model(offload_device).
+                       Weights move to CPU RAM. VRAM is freed, the RAM copy survives.
+      free_memory   -> e.reset(), which wipes the execution cache. That drops the last reference to
+                       the ModelPatcher, so the RAM copy is collected too and the next run re-reads
+                       the model from disk -- 19 GiB for the edit model.
+
+    This used to send both, which is why alternating the edit model with SAM was so slow. The pod
+    has 186 GB of RAM against ~36 GB of weights, so there is no reason to pay that.
+
+    Note the second half of the same problem lives in ComfyUI's launch flags, not here: the default
+    HierarchicalCache calls clean_unused() after every prompt and evicts node outputs absent from
+    the *current* prompt, so a SAM graph still evicts the edit model's loader. --cache-lru N keeps
+    them both. Fixing this end alone helps repeated runs of one graph, not alternation.
+    """
+    payload = b'{"unload_models":true,"free_memory":true}' if drop_from_ram \
+        else b'{"unload_models":true,"free_memory":false}'
+    # Retried because the pod is reached through the RunPod proxy, which answers 404 for a short
+    # window after ComfyUI restarts -- the backend is listening on the pod before the proxy has
+    # reconnected to it. A run that dies here has usually already spent a long time generating.
+    for attempt in range(SERVER_RETRIES):
+        req = request.Request(
+            endpoint(server, "/free"),
+            data=payload,
+            headers={"Content-Type": "application/json", "User-Agent": "CoverStoryComfy/1.0"},
+        )
+        try:
+            with request.urlopen(req, timeout=60):
+                return
+        except (error.HTTPError, error.URLError) as failure:
+            if attempt == SERVER_RETRIES - 1:
+                raise
+            print(f"  /free failed ({failure}); retrying in {SERVER_RETRY_WAIT}s", flush=True)
+            time.sleep(SERVER_RETRY_WAIT)
 
 
 def image_from(path):
@@ -253,16 +288,34 @@ def generate_carrier(server, path, work, force):
     save_png(Image.open(production.pick(result, "-raw")).convert("RGB"), path)
 
 
-def edit(server, source, prompt, mask, reference, seed, prefix, output, work, force):
+def control_image(server, source, kind, prefix, output, work, force):
+    """Derive a ControlNet control image (SDPose skeleton or Canny edges) from `source`."""
+    if output.is_file() and not force:
+        return output
+    graph = {"openpose": production.pose_graph, "canny": production.canny_graph}[kind]
+    remote = upload_image(server, source, subfolder="cover-story/qwen2512-skin-head-clothes/input")
+    result_dir = Path(tempfile.mkdtemp(prefix=f"{kind}-", dir=work))
+    result = run(server, graph(remote, prefix), result_dir, 1800)
+    save_png(Image.open(production.pick(result, f"-{kind}")).convert("RGB"), output)
+    return output
+
+
+def edit(server, source, prompt, mask, reference, seed, prefix, output, work, force,
+         control=None, control_type="canny", control_strength=1.0):
     """mask=None runs a full-image, prompt-only edit (no ImageCompositeMasked paste boundary);
-    output is then just the decoded result. A mask still produces a debug '-raw' sibling."""
+    output is then just the decoded result. A mask still produces a debug '-raw' sibling.
+
+    control= a local control image path; see production.edit_graph for what it does."""
     if output.is_file() and not force:
         return
     remote_source = upload_image(server, source, subfolder="cover-story/qwen2512-skin-head-clothes/input")
     remote_mask = upload_image(server, mask, subfolder="cover-story/qwen2512-skin-head-clothes/input") if mask else None
     remote_reference = upload_image(server, reference, subfolder="cover-story/qwen2512-skin-head-clothes/input") if reference else None
+    remote_control = upload_image(server, control, subfolder="cover-story/qwen2512-skin-head-clothes/input") if control else None
     result_dir = Path(tempfile.mkdtemp(prefix="edit-", dir=work))
-    result = run(server, production.edit_graph(remote_source, prompt, seed, prefix, remote_reference, remote_mask), result_dir, 2400)
+    result = run(server, production.edit_graph(remote_source, prompt, seed, prefix, remote_reference,
+                                               remote_mask, remote_control, control_type,
+                                               control_strength), result_dir, 2400)
     raw = Image.open(production.pick(result, "-raw")).convert("RGB")
     if mask:
         save_png(raw, output.with_name(f"{output.stem}-raw.png"))
@@ -1008,14 +1061,13 @@ def main():
         return print(root)
 
     print("[envelope]", flush=True)
-    # Qwen and SAM are both large; release the carrier weights before loading SAM.
-    soft_free(server)
+    # No free before SAM: ComfyUI's load_models_gpu evicts enough of the LRU model itself, and with
+    # weights kept in RAM (see soft_free) the eviction it does is a PCIe copy rather than a re-read.
+    # The only transition ComfyUI cannot see coming is the one into CorridorKey, below.
     hints = build_hints(carrier, root / "masks")
     bootstrap_envelope(server, carrier, root, work, args.force)
     report(root, "envelope", envelope_checks(carrier, root / "masks" / "identity-head-mask.png",
                                              root / "masks" / "clothes-body-mask.png"))
-    # CorridorKey runs remotely, but the next local graph needs Qwen edit memory.
-    soft_free(server)
     if done("envelope"):
         return print(root)
 
@@ -1054,6 +1106,8 @@ def main():
          CLOTHES_PROMPT.format(aperture=APERTURE_COLOR[CLOTHES_KEY_COLOR], screen=CLOTHES_KEY_COLOR),
          envelope["clothes_mask"], None,
          production.seed_for("qwen2512:clothes-victorian"), "cover-story/qwen2512-skin-head-clothes/clothes", clothes, work, args.force)
+    # The one free that has to be explicit: [extract] runs CorridorKey as a separate process on the
+    # same GPU, and ComfyUI has no way to know it needs to give the VRAM back.
     soft_free(server)
     report(root, "clothes", [
         *masked_edit_checks(clothes_carrier, clothes, envelope["clothes_mask"], screen=CLOTHES_KEY_COLOR),

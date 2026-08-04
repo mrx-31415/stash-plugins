@@ -371,6 +371,247 @@ Also noted: `CLOTHES_PROMPT` asks for a high collar and the model produced a
 wide boat neckline, exposing more aperture than intended. The skin plate backs
 it correctly, so this is cosmetic.
 
+### Identity transfer, 2026-08-04 — measured, not solved
+
+The bar is that a composite must match the already-shipped portrait
+(`plugins/cover-story/assets/performers/actor-NNN.avif`). `actor-266` is Laura
+Everly: pale blue-gray eyes, fair skin, narrow face. The accepted plate is a
+broad-faced, tanned, dark-eyed woman — a different person.
+
+`identity_metrics.py` scores a candidate head against that portrait; see its
+docstring for the calibration and why skin tone is reported but not scored.
+Runner is `run_identity_ab.py`; outputs in
+`.../cover-story-qwen2512-identity-ab` and `.../cover-story-qwen2512-mannequin-probe`.
+
+**Establish the noise floor before believing any ranking.** One construction
+across four seeds spans ~8.7 points of score and 18 points of iris warmth —
+larger than the gap between most constructions. Six single-sample attempts were
+ranked before this was measured, and that ranking did not survive it. Only rows
+with n=4 below are trustworthy; `altmodel` is the one single sample far enough
+out (36.82) to survive the caveat, and the alternate edit model is genuinely
+worse.
+
+| construction | n | score mean | iris mean | face mean | kept carrier's eyes |
+|---|---|---|---|---|---|
+| headcrop | 4 | 20.75 | -20.5 | 29.07 | 2/4 |
+| blank-head carrier | 4 | 22.50 | -16.8 | ~37 | 1/4 |
+| soft-face carrier | 4 | 22.58 | -15.5 | 37.00 | 0/4 |
+| baseline | 4 | 23.01 | -26.8 | 32.94 | 3/4 |
+
+Reference is score 0, iris b-r +6. The carrier reads about -29.
+
+**What works.** A head-only performer crop as image 2 beats the full body on all
+three signals — the reference document's own probe log said so and the PoC was
+passing the whole body. Softening the carrier's face removes the dominant
+failure mode: the carrier's eyes reasserting themselves, 3/4 at baseline down to
+0-1/4. Both effects are real; neither is sufficient.
+
+**What does not work.** Two-stage (33.71 against baseline 34.56, i.e. nothing),
+reference alignment, and the alternate edit model. Making the carrier head
+*blanker* than "softened" adds nothing — the benefit saturates.
+
+**Superseded by the inverted transfer below.** Everything in this table paints
+the performer's face *into* the carrier and competes with the face already
+there. None of it reliably produces the right person.
+
+### Inverted transfer, 2026-08-04 — identity solved
+
+`run_phase3_probe.py`. The performer is image 1, the mask covers her *body*, and
+her head sits **outside** it, where `ImageCompositeMasked` is bit-exact. Identity
+cannot drift because nothing repaints it; the body is repainted into the
+carrier's silhouette instead.
+
+| construction | n | score mean | range | iris mean | heads bit-exact |
+|---|---|---|---|---|---|
+| **inverted transfer** | 2 | **12.71** | 12.71-12.71 | **-6.0** | **2/2** |
+| *(ceiling: preprocessed)* | - | *12.33* | - | - | - |
+| headless carrier | 4 | 17.46 | 15.9-18.5 | -11.0 | - |
+| head-crop reference | 4 | 20.75 | 17.4-26.1 | -20.5 | - |
+| baseline | 4 | 23.01 | 19.8-25.3 | -26.8 | - |
+
+Within 0.38 of the ceiling, so repainting the body costs almost nothing in
+identity, and `outside_mask_unchanged` is 0 on every seed. The spread is the
+point: 0.00 here against 8.7 for the best generative construction. Copying the
+head instead of generating it removes the lottery, which no amount of prompt or
+reference tuning did.
+
+**Alignment is the hard part, and cost two runs.** Matching bounding boxes
+between two images silently compares different objects. First the performer's
+head box was matched against `masks/identity-head-mask.png`, which is not a head
+but the identity *envelope* dilated 97 px to cover shoulders and upper chest —
+350x436 against a real head of ~150x190, scaling her up 2.3x. Then head-to-head:
+the carrier is *bald*, so its head box is a bare skull (147 px) while hers
+includes hair past the shoulders (210 px), shrinking her to 0.700 and putting her
+feet off the frame. Faces are the same object in both images and give 1.070.
+The guard now checks the *outcome* — silhouette heights must match within 12%
+after alignment — because the first guard tested the input scale ratio, which is
+the quantity that was wrong, and passed 0.700 happily.
+
+**Mask feathering is not cosmetic.** The repaint mask must be asymmetric: the
+outer boundary dilated 25 px into flat background and feathered 8 px, the inner
+boundary against the preserved head left hard. A hard outer edge leaves a pale
+contour tracing the figure, because the regenerated background is not quite the
+same blue as the original. That artifact also *inflated the drift measurement* —
+`silhouette_box` counted the contour as figure, reporting 65 px of pose drift
+where the feathered version reports 14 px. Feathering the inner boundary instead
+would blend generated pixels into the head and lose the bit-exactness the whole
+approach rests on.
+
+**Open: pose registration.** Worst silhouette drift is 14 px against the
+reference document's 2 px limit, concentrated at the feet — the residue of a 7%
+alignment error. This is the cost the plan predicted for abandoning the frozen
+carrier. See the control-image entry below for what that residue actually is and
+why a ControlNet does not remove it.
+
+**Prompt trap worth remembering.** "Mannequin head" in a carrier prompt
+propagates to the whole figure — the first attempt produced a shop dummy with
+joint seams and no navel, unusable because that body is also what the clothing
+plate drapes onto. The word belongs in the *negative* prompt with `shop dummy,
+doll, plastic, joint seams, ball joints, segmented limbs, glossy skin`, while
+the face is described positively by what it lacks. `featureless body` must stay
+out of that negative: it argues against the blank face. Both lists are needed at
+once — supplying either alone loses what the other fixed.
+
+### Control images on the repaint, 2026-08-04 — negative result
+
+Output root: `.../cover-story-qwen2512-phase3-probe`, runs `phase3-canny-*` and
+`phase3-openpose-*`, same two seeds as the uncontrolled run so the control image
+is the only variable.
+
+**The ControlNet works, but only above strength ~1.** At strength 1.0 it has no
+authority; at 3.0 it tracks the control image to within a pixel.
+
+| run | control demands | feet land at | delta vs uncontrolled |
+|---|---|---|---|
+| uncontrolled, **different seed** | — | 1194 | **0.92** |
+| canny, strength 1.0 | y=1183 | 1195 | 0.43 |
+| openpose, strength 1.0 | — | 1195 | 0.36 |
+| canny, strength 1.0, control squashed to 0.8 | **y=1001** | 1195 | 0.44 |
+| canny, strength 3.0, control squashed to 0.8 | **y=1001** | **1002** | **7.01** |
+
+**Read the first three rows alone and the honest-looking conclusion is "the
+ControlNet is inert" — and that conclusion was written here before the fourth
+and fifth rows existed. It was wrong.** Those controls described roughly what
+the model was going to draw anyway, so a working ControlNet and a dead one
+produce the same near-zero delta. A control that *disagrees* is the only
+measurement that separates them: squashing it to 0.8 asks for feet 194 px above
+where the model lands unaided. Strength 1.0 ignored that; strength 3.0 obeyed it
+to 1 px.
+
+The general lesson is worth more than the result: **a control experiment whose
+control agrees with the expected output cannot fail, and therefore cannot tell
+you anything.** Distort the control and confirm the model follows before
+concluding anything from a null result. The civitai notes for this ControlNet
+quote strength 1.0–1.5 against Qwen Image Edit; on this pairing 1.0 is simply
+below the threshold where it bites.
+
+**What the 14 px actually is, which matters more than the null result.**
+Measuring the inputs rather than only the outputs:
+
+```
+carrier                     (217,  87, 518, 1181)   height 1094
+performer-aligned (image 1) (210,  76, 517, 1247)   height 1171   feet clipped at the frame edge
+output                      (222,  76, 516, 1195)
+```
+
+Aligning her *face* to the carrier's face leaves her 77 px taller than the
+carrier, with her feet 66 px lower. The sampler already reconciles 52 of those
+66 px; the 14 px is what is left of a conflict present in the input. It is
+structural: her height-to-face ratio is not the carrier's, so a scale and a
+translation cannot satisfy "head lands on the carrier's head" and "feet land on
+the carrier's feet" at once, and the repaint mask genuinely extends to 1247
+because it is the union of both silhouettes.
+
+A control image at sufficient strength overrides that geometry rather than
+inheriting it, and doing so fixes the registration outright:
+
+| run | left | right | bottom | identity score |
+|---|---|---|---|---|
+| no control | 5 | 2 | **14** | 12.71 |
+| canny, strength 3.0 | 1 | 2–3 | **1–2** | 12.66 |
+| openpose, strength 3.0 | 1 | 2–3 | **2–7** | 12.51 |
+
+*(ceiling 12.33; `outside_mask_unchanged: 0` and heads bit-exact on every run)*
+
+**Registration is inside the reference document's ±2 px with canny at strength
+3.0**, down from 14 px, at no cost to identity and none to anatomy — thighs,
+knees and feet were compared side by side against the uncontrolled run and are
+equivalent. The feared failure, a taller woman squashed into a shorter carrier's
+outline, did not happen.
+
+Canny holds the silhouette tighter than openpose (worst 2 px against 7), which
+is expected: it states the outline where a skeleton states only joints. Openpose
+scores marginally better on identity, but its range (12.36–12.66) overlaps
+canny's and n=2, so that ordering is **not** established — do not repeat the
+earlier mistake of ranking constructions off single samples.
+
+The upstream alternative remains available and may still be cleaner: generate
+`preprocessed.png` under the carrier's pose so her proportions are the carrier's
+from the start, at which point face-aligned implies feet-aligned and the repaint
+has nothing to reconcile. It is no longer *needed* for registration.
+
+**The drift metric was reporting a floor it could never reach.** `top` is not
+drift — the carrier is bald and her hair falls past her shoulders, so their
+silhouettes legitimately begin at different heights, and including it made a run
+whose real worst error was 2 px report 11. The probe now reports body drift
+(left/right/bottom) with the head offset alongside it.
+
+**Still open, and unrelated to control:** hands render soft, with fingers barely
+separated against the carrier's crisp ones, in *every* inverted-transfer run
+including uncontrolled. A faint pale band also survives beside the figure in all
+of them. Both predate the control work and neither has been investigated.
+
+**Also fixed here:** `edit_graph`'s `control_type` was passing `"canny"`, which
+`SetUnionControlNetType` rejects — its options are strings like
+`"canny/lineart/anime_lineart/mlsd"`. `production.CONTROL_TYPES` now maps short
+names to the node's literal options. The graph would have failed validation on
+first use.
+
+**SDPose is on the pod.** `sdpose_wholebody_fp16.safetensors` (1.9 GB,
+Comfy-Org/SDPose) in `models/checkpoints/`, driving `SDPoseKeypointExtractor` +
+`SDPoseDrawKeypoints` via `production.pose_graph()`. It is a checkpoint, not a
+diffusion model, because the extractor needs a MODEL and a VAE and reads a
+`heatmap_head` that only that file carries. Pose extraction on the carrier works
+and is fast; it is the ControlNet downstream of it that does nothing.
+
+**Canny on a chroma-key plate finds nothing.** ComfyUI's `Canny` node returned
+795 lit pixels for a whole standing figure: matte green paint on a matte blue
+screen is nearly isoluminant (luma 95 against 71), so a luminance gradient
+detector has almost no edge to find. The probe derives the outline from
+`screen_foreground()` instead, which separates them on colour and whose boundary
+*is* the silhouette — 18,553 px, and the only geometry a uniformly painted body
+has to offer anyway.
+
+### GPU memory: what `/free` actually does, 2026-08-04
+
+`soft_free()` was sending `{"unload_models": true, "free_memory": true}`. Those
+are not two intensities of one thing (ComfyUI `main.py`, the `q.get_flags()`
+block):
+
+- `unload_models` → `unload_all_models()` → `detach()` →
+  `unpatch_model(offload_device)`. Weights move to **CPU RAM**; VRAM is freed
+  and the RAM copy survives.
+- `free_memory` → `e.reset()`, which wipes the execution cache. That drops the
+  last reference to the ModelPatcher, so the RAM copy is collected too and the
+  next run re-reads the model from disk — 19 GiB for the edit model.
+
+Sending both is what made alternating the edit model with SAM slow. The pod has
+186 GB of RAM against roughly 36 GB of weights, so `free_memory` now defaults
+off (`soft_free(server, drop_from_ram=True)` restores the old behaviour).
+
+The other half is a launch flag, not code: the default `HierarchicalCache` calls
+`clean_unused()` after every prompt and evicts node outputs absent from the
+*current* prompt, so a SAM graph still evicts the edit model's loader even with
+`free_memory` off. `--cache-lru 20` keeps them both; `pod_bootstrap.sh` step 6
+restarts ComfyUI with it when missing, and `CUSTOM_ARGS="--cache-lru 20"` on the
+RunPod template is the tidier equivalent (`/start.sh` appends it).
+
+**Only one `soft_free` is structurally necessary**, and it is the one before
+`[extract]`: CorridorKey is a separate process on the same GPU and ComfyUI
+cannot know it needs the VRAM back. The calls around the envelope stage were
+removed — `load_models_gpu` evicts its own LRU model when it needs room, and
+with weights kept in RAM that eviction is a PCIe copy rather than a re-read.
+
 ### Green-key probe, 2026-08-04 — the catalog was right
 
 Output root: `.../cover-story-qwen2512-skin-head-clothes-poc-v2/green-key-probe`.

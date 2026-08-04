@@ -33,6 +33,25 @@ CARRIER_MODEL = "qwen_image_2512_fp8_e4m3fn.safetensors"
 TEXT_ENCODER = "qwen_2.5_vl_7b_fp8_scaled.safetensors"
 VAE = "qwen_image_vae.safetensors"
 SAM_MODEL = "sam3.1_multiplex_fp16.safetensors"
+# InstantX Qwen-Image ControlNet Union. Only used when edit_graph() is given a control image.
+CONTROL_NET = "qwen_image_controlnet_union_instantx.safetensors"
+# SDPose, a diffusion-based whole-body keypoint estimator shipped in ComfyUI core
+# (comfy_extras/nodes_sdpose.py). Loaded as a checkpoint because SDPoseKeypointExtractor wants both
+# a MODEL and a VAE, and reads a heatmap_head off the diffusion model that only this file carries.
+POSE_MODEL = "sdpose_wholebody_fp16.safetensors"
+# SetUnionControlNetType's own option strings, not friendly names: the node validates against this
+# exact list and rejects "canny". Keyed by the short name callers actually want to say.
+CONTROL_TYPES = {
+    "auto": "auto",
+    "openpose": "openpose",
+    "depth": "depth",
+    "canny": "canny/lineart/anime_lineart/mlsd",
+    "scribble": "hed/pidi/scribble/ted",
+    "normal": "normal",
+    "segment": "segment",
+    "tile": "tile",
+    "repaint": "repaint",
+}
 NEGATIVE = "低分辨率，低画质，肢体畸形，手指畸形，画面过饱和，蜡像感，人脸无细节，过度光滑，画面具有AI感。构图混乱。文字模糊，扭曲"
 SETTINGS = {
     "edit": {
@@ -412,7 +431,26 @@ def generation_graph(prompt, seed, prefix, size=(1328, 1328), canonical=True, ne
     return graph
 
 
-def edit_graph(image1, prompt, seed, prefix, image2=None, mask=None):
+def edit_graph(image1, prompt, seed, prefix, image2=None, mask=None,
+               control=None, control_type="canny", control_strength=1.0):
+    """control= a control image applied through the Qwen Union ControlNet.
+
+    Additive: every existing caller keeps today's graph exactly. The point of the control path is
+    that it states target geometry directly, instead of the caller pre-registering two images by
+    matching bounding boxes — which failed twice, once by comparing a head box against a dilated
+    envelope and once by comparing a bald skull against a head with hair.
+
+    `control_type` is a short name from CONTROL_TYPES, not the node's literal option string —
+    SetUnionControlNetType validates against its own list and rejects a bare "canny".
+
+    `canny` is the default because it needs nothing installed and states the silhouette directly:
+    an outline says where the edge of the body is, where a skeleton only says where the joints are.
+    `openpose` needs POSE_MODEL on the pod and comes from pose_graph().
+
+    Strength 1.0-1.5 is the range documented for this ControlNet against Qwen Image Edit
+    (civitai 1966651), whose author also pairs it with CFG 2.5 / 20 steps; this graph keeps the
+    handover's CFG 4 / 40 steps so that the control image is the only variable being changed.
+    """
     nodes = {
         "1": {"class_type": "UNETLoader", "inputs": {"unet_name": EDIT_MODEL, "weight_dtype": "default"}},
         "2": {"class_type": "CLIPLoader", "inputs": {"clip_name": TEXT_ENCODER, "type": "qwen_image", "device": "default"}},
@@ -443,7 +481,51 @@ def edit_graph(image1, prompt, seed, prefix, image2=None, mask=None):
             "21": {"class_type": "SaveImage", "inputs": {"images": ["20", 0], "filename_prefix": f"{prefix}-masked"}},
         })
         nodes["13"]["inputs"]["latent_image"] = ["19", 0]
+    if control:
+        nodes.update({
+            "22": {"class_type": "ControlNetLoader", "inputs": {"control_net_name": CONTROL_NET}},
+            "23": {"class_type": "SetUnionControlNetType",
+                   "inputs": {"control_net": ["22", 0], "type": CONTROL_TYPES[control_type]}},
+            "24": {"class_type": "LoadImage", "inputs": {"image": control}},
+            # Both conditionings go through together: ControlNetApplyAdvanced returns the pair, and
+            # applying it to the positive alone would leave the negative unguided.
+            "25": {"class_type": "ControlNetApplyAdvanced",
+                   "inputs": {"positive": ["10", 0], "negative": ["9", 0], "control_net": ["23", 0],
+                              "image": ["24", 0], "strength": control_strength,
+                              "start_percent": 0.0, "end_percent": 1.0, "vae": ["3", 0]}},
+        })
+        nodes["13"]["inputs"]["positive"] = ["25", 0]
+        nodes["13"]["inputs"]["negative"] = ["25", 1]
     return nodes
+
+
+def pose_graph(image, prefix, draw_face=False, draw_head=False, draw_feet=True):
+    """An OpenPose-format skeleton drawn from SDPose keypoints, for the union ControlNet.
+
+    Face and head default off. The control image is applied to the whole canvas, but in the inverted
+    transfer the head is preserved outside the noise mask, so head keypoints could only argue with
+    pixels the sampler is not allowed to change. Feet default on for the opposite reason — the
+    silhouette drift being chased is at the ankles, and the node omits them by default."""
+    return {
+        "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": POSE_MODEL}},
+        "2": {"class_type": "LoadImage", "inputs": {"image": image}},
+        "3": {"class_type": "SDPoseKeypointExtractor",
+              "inputs": {"model": ["1", 0], "vae": ["1", 2], "image": ["2", 0], "batch_size": 1}},
+        "4": {"class_type": "SDPoseDrawKeypoints",
+              "inputs": {"keypoints": ["3", 0], "draw_body": True, "draw_hands": True,
+                         "draw_face": draw_face, "draw_feet": draw_feet, "draw_head": draw_head,
+                         "stick_width": 4, "face_point_size": 3, "score_threshold": 0.3}},
+        "5": {"class_type": "SaveImage", "inputs": {"images": ["4", 0], "filename_prefix": f"{prefix}-pose"}},
+    }
+
+
+def canny_graph(image, prefix, low=0.4, high=0.8):
+    """Edge map for the union ControlNet. Loads no model, so it is cheap enough to run inline."""
+    return {
+        "1": {"class_type": "LoadImage", "inputs": {"image": image}},
+        "2": {"class_type": "Canny", "inputs": {"image": ["1", 0], "low_threshold": low, "high_threshold": high}},
+        "3": {"class_type": "SaveImage", "inputs": {"images": ["2", 0], "filename_prefix": f"{prefix}-canny"}},
+    }
 
 
 def sam_graph(image, prompts, prefix):
