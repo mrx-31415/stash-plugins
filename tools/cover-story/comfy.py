@@ -12,6 +12,8 @@ import uuid
 from pathlib import Path
 from urllib import error, parse, request
 
+USER_AGENT = "CoverStoryComfy/1.0"
+
 
 def retry_refused(operation, timeout, poll=5):
     deadline = time.monotonic() + timeout
@@ -45,7 +47,7 @@ def endpoint(server, path, query=None):
 
 def api(server, path, payload=None, timeout=30):
     data = None if payload is None else json.dumps(payload).encode()
-    req = request.Request(endpoint(server, path), data=data)
+    req = request.Request(endpoint(server, path), data=data, headers={"User-Agent": USER_AGENT})
     if data:
         req.add_header("Content-Type", "application/json")
     try:
@@ -71,7 +73,7 @@ def upload_image(server, path, subfolder="cover-story/corridorkey", timeout=300)
         + path.read_bytes() + b"\r\n"
     )
     parts.append(f"--{boundary}--\r\n".encode())
-    req = request.Request(endpoint(server, "/upload/image"), data=b"".join(parts))
+    req = request.Request(endpoint(server, "/upload/image"), data=b"".join(parts), headers={"User-Agent": USER_AGENT})
     req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
     def send():
         with request.urlopen(req, timeout=60) as response:
@@ -174,7 +176,7 @@ def run(server, workflow, output_dir, timeout, poll=2, queued_event=None):
         }
         for attempt in range(5):
             try:
-                with request.urlopen(endpoint(server, "/view", query), timeout=30) as response:
+                with request.urlopen(request.Request(endpoint(server, "/view", query), headers={"User-Agent": USER_AGENT}), timeout=30) as response:
                     data = response.read()
                 break
             except error.HTTPError:

@@ -1,0 +1,137 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CorridorKey wardrobe-layer test</title>
+<style>
+:root {
+  color-scheme: dark;
+  --bg: #111318;
+  --panel: #1b1e25;
+  --line: #343946;
+  --muted: #9ca3b1;
+  --accent: #8dd6ff;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  padding: 28px;
+  background: var(--bg);
+  color: #f3f5f7;
+  font: 14px/1.45 system-ui, sans-serif;
+}
+header, main { max-width: 1500px; margin: 0 auto; }
+h1, h2, h3, p { margin: 0; }
+h1 { font-size: 24px; }
+h2 { margin-top: 28px; font-size: 18px; }
+h3 { font-size: 14px; font-weight: 600; }
+.muted { color: var(--muted); }
+.hero {
+  display: grid;
+  grid-template-columns: minmax(260px, 430px) 1fr;
+  gap: 24px;
+  align-items: start;
+  margin-top: 22px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel);
+}
+.stage, .checker {
+  background-color: #363941;
+  background-image:
+    linear-gradient(45deg, #4b4f59 25%, transparent 25%),
+    linear-gradient(-45deg, #4b4f59 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #4b4f59 75%),
+    linear-gradient(-45deg, transparent 75%, #4b4f59 75%);
+  background-size: 28px 28px;
+  background-position: 0 0, 0 14px, 14px -14px, -14px 0;
+}
+.stage { position: relative; aspect-ratio: 2 / 3; overflow: hidden; border-radius: 10px; }
+.stage img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+.stage .head { z-index: 1; }
+.stage .wardrobe { z-index: 2; }
+.stages { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.assembly-card { min-width: 0; }
+.assembly-card p { margin-top: 8px; color: var(--muted); font-size: 12px; }
+.legend { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.pill { padding: 4px 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); }
+.gallery { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 14px; }
+.card { min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+.card > h3 { margin-bottom: 10px; }
+.panels { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+figure { margin: 0; min-width: 0; }
+figure img { display: block; width: 100%; aspect-ratio: 2 / 3; object-fit: contain; border-radius: 6px; background: #282b31; }
+figcaption { padding-top: 5px; color: var(--muted); font-size: 12px; }
+.source img { background: #252831; }
+.note { margin-top: 12px; padding: 12px 14px; border-left: 3px solid var(--accent); color: var(--muted); background: #171a20; }
+@media (max-width: 900px) {
+  body { padding: 16px; }
+  .hero { grid-template-columns: 1fr; }
+  .stages { grid-template-columns: 1fr; }
+  .gallery { grid-template-columns: 1fr; }
+}
+</style>
+
+<header>
+  <h1>CorridorKey wardrobe-layer test</h1>
+  <p class="muted">Green-body head carrier plus green-body wardrobe passes. CSS-only review; no runtime composition.</p>
+</header>
+
+<main>
+  <section class="hero">
+    <div class="stages">
+      <div class="assembly-card">
+        <div class="stage" aria-label="assembled head and 00008 wardrobe preview">
+          <img class="head" src="rgba/Qwen_Edit_2511_00009.png" alt="head carrier">
+          <img class="wardrobe" src="rgba/Qwen_Edit_2511_00008.png" alt="00008 wardrobe layer">
+        </div>
+        <p>00009 head + 00008 wardrobe</p>
+      </div>
+      <div class="assembly-card">
+        <div class="stage" aria-label="assembled head and 00007 wardrobe preview">
+          <img class="head" src="rgba/Qwen_Edit_2511_00009.png" alt="head carrier">
+          <img class="wardrobe" src="rgba/Qwen_Edit_2511_00007.png" alt="00007 wardrobe layer">
+        </div>
+        <p>00009 head + 00007 wardrobe</p>
+      </div>
+    </div>
+    <div>
+      <h2>Assembled concepts</h2>
+      <p class="muted">The same face/hair carrier is placed below each wardrobe alpha. Helmet, fur, cape, and armor stay above it; transparent face/body areas reveal the identity layer.</p>
+      <div class="note">This is an alignment and matte preview only. The two Qwen passes still need actor-specific fitting before they qualify as reusable runtime layers.</div>
+    </div>
+  </section>
+
+  <h2>Pass review</h2>
+  <section class="gallery">
+    <article class="card">
+      <h3>00007 · Viking armor</h3>
+      <div class="panels">
+        <figure class="source"><img src="source/Qwen_Edit_2511_00007.png" alt="source 00007"><figcaption>source</figcaption></figure>
+        <figure><img src="preview/Qwen_Edit_2511_00007.png" alt="preview 00007"><figcaption>checkerboard preview</figcaption></figure>
+        <figure><img src="matte/Qwen_Edit_2511_00007.png" alt="matte 00007"><figcaption>matte</figcaption></figure>
+        <figure><img src="rgba/Qwen_Edit_2511_00007.png" alt="RGBA 00007" class="checker"><figcaption>RGBA</figcaption></figure>
+      </div>
+    </article>
+
+    <article class="card">
+      <h3>00008 · Fur cape</h3>
+      <div class="panels">
+        <figure class="source"><img src="source/Qwen_Edit_2511_00008.png" alt="source 00008"><figcaption>source</figcaption></figure>
+        <figure><img src="preview/Qwen_Edit_2511_00008.png" alt="preview 00008"><figcaption>checkerboard preview</figcaption></figure>
+        <figure><img src="matte/Qwen_Edit_2511_00008.png" alt="matte 00008"><figcaption>matte</figcaption></figure>
+        <figure><img src="rgba/Qwen_Edit_2511_00008.png" alt="RGBA 00008" class="checker"><figcaption>RGBA</figcaption></figure>
+      </div>
+    </article>
+
+    <article class="card">
+      <h3>00009 · Head carrier</h3>
+      <div class="panels">
+        <figure class="source"><img src="source/Qwen_Edit_2511_00009.png" alt="source 00009"><figcaption>source</figcaption></figure>
+        <figure><img src="preview/Qwen_Edit_2511_00009.png" alt="preview 00009"><figcaption>checkerboard preview</figcaption></figure>
+        <figure><img src="matte/Qwen_Edit_2511_00009.png" alt="matte 00009"><figcaption>matte</figcaption></figure>
+        <figure><img src="rgba/Qwen_Edit_2511_00009.png" alt="RGBA 00009" class="checker"><figcaption>RGBA</figcaption></figure>
+      </div>
+    </article>
+  </section>
+</main>

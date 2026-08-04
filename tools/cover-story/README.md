@@ -120,6 +120,54 @@ Open `/mnt/Misc/sd/cover-story/performer-screen-poc-20260728/review.html`.
 Each row shows the raw screen image, CorridorKey QC pass and transparent AVIF.
 Set `COVER_STORY_OUTPUT_DIR` and `COVER_STORY_LABEL` together for another fresh run.
 
+## Qwen 2512 skin/head/clothes PoC
+
+This isolated runner generates a fresh blue-screen carrier, derives SAM masks,
+recolors the complete carrier body first, transfers performer identity only in
+the loose head/neck/shoulder mask, then generates clothing independently from
+the original carrier. CorridorKey contributes alpha only; source RGB is kept
+for compositing.
+
+```sh
+python3 tools/cover-story/run_qwen2512_skin_head_clothes_poc.py --init-config
+# fill in ~/.config/cover-story/instance.json (written mode 600), then:
+python3 tools/cover-story/run_qwen2512_skin_head_clothes_poc.py --stop-after preflight
+```
+
+Instance settings live in `~/.config/cover-story/instance.json`, outside any git
+worktree so the Comfy token and SSH details cannot be committed. Resolution
+order is flag, then config file, then environment; the run prints the source of
+every setting with the token redacted.
+
+The runner is divided into gated stages — `preflight`, `carrier`, `envelope`,
+`skin`, `identity`, `clothes`, `extract`, `composite`. Each writes its automatic
+check results to `checks.json` and refuses to continue on failure. Run
+`--stop-after preflight` first: it verifies `SAM3_Detect`, the edit model, SSH
+reachability and the standalone CorridorKey install before any GPU time is
+spent.
+
+### Migrating to a new pod
+
+Only `/workspace` survives a pod being recreated, so CorridorKey's venv arrives
+with a dangling interpreter symlink into the ephemeral `/root`. Put the new SSH
+host, port and proxy URL in `instance.json` and run:
+
+```sh
+python3 tools/cover-story/run_qwen2512_skin_head_clothes_poc.py --stop-after preflight
+```
+
+`preflight` uploads `pod_bootstrap.sh` and runs it, which re-points uv's data
+directory at the volume, reinstalls `rsync`, and gates on CorridorKey importing
+`torch`. It is idempotent and repairs the pod rather than rebuilding the 9.4 GB
+venv. Run the script directly on the pod to repair one by hand.
+
+Outputs default to `/tmp/cover-story-qwen2512-skin-head-clothes-poc`; use
+`--output-dir` to choose another writable directory. The runner is resumable;
+`--force` regenerates existing stages. Check the graph wiring without a server:
+`python3 tools/cover-story/run_qwen2512_skin_head_clothes_poc.py --self-test`.
+The Comfy client sends an explicit user-agent because RunPod's proxy rejects
+Python's default `urllib` user-agent on API POST requests.
+
 ## Required ComfyUI assets
 
 The saved API workflow is `workflows/krea2-turbo-fp8.json`. ComfyUI must have:
