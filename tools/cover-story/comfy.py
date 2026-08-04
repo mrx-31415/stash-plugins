@@ -130,9 +130,34 @@ def image_info(data):
     raise ValueError("response is not a recognized image")
 
 
+def unique_outputs(workflow):
+    """Give every SaveImage in `workflow` a per-submission filename, returning a modified copy.
+
+    ComfyUI reports outputs only for nodes it actually *executed*. A SaveImage served from cache
+    re-emits nothing, so an identical resubmission finishes in 0.02s with an empty outputs dict and
+    run() correctly reports "completed without images".
+
+    This was rare while ComfyUI ran its default HierarchicalCache, which calls clean_unused() after
+    every prompt and so evicted anything absent from the current one -- repeats quietly
+    re-executed. Under --cache-lru entries survive across prompts indefinitely, which is the point
+    of the flag, and identical graphs became the normal case rather than an accident.
+
+    Only the filename changes, so the loaders and the sampler upstream still hit cache: the model
+    stays resident, and only the save re-runs. Markers are matched with `in` (see production.pick,
+    poc.sam_hints), so a suffix does not disturb them."""
+    nonce = uuid.uuid4().hex[:8]
+    modified = {}
+    for key, node in workflow.items():
+        inputs = node.get("inputs", {})
+        if "filename_prefix" in inputs:
+            node = {**node, "inputs": {**inputs, "filename_prefix": f"{inputs['filename_prefix']}-{nonce}"}}
+        modified[key] = node
+    return modified
+
+
 def run(server, workflow, output_dir, timeout, poll=2, queued_event=None):
     queued = retry_refused(
-        lambda: api(server, "/prompt", {"prompt": workflow}),
+        lambda: api(server, "/prompt", {"prompt": unique_outputs(workflow)}),
         timeout, poll,
     )
     prompt_id = queued.get("prompt_id")
@@ -179,8 +204,14 @@ def run(server, workflow, output_dir, timeout, poll=2, queued_event=None):
                 with request.urlopen(request.Request(endpoint(server, "/view", query), headers={"User-Agent": USER_AGENT}), timeout=30) as response:
                     data = response.read()
                 break
-            except error.HTTPError:
-                raise
+            except error.HTTPError as failure:
+                # The RunPod proxy answers 404 for a window after ComfyUI restarts -- the backend
+                # is listening on the pod before the proxy has reconnected -- and 5xx when it is
+                # briefly overloaded. Both look identical to a genuinely missing file here, so
+                # retry them; a real miss just costs five attempts before failing anyway.
+                if failure.code not in (404, 429, 500, 502, 503, 504) or attempt == 4:
+                    raise
+                time.sleep(poll * (attempt + 1))
             except (error.URLError, TimeoutError, ConnectionError):
                 if attempt == 4:
                     raise

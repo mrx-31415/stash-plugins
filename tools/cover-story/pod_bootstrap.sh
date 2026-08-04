@@ -81,4 +81,37 @@ fi
 [ -d "$CORRIDORKEY/CorridorKeyModule/checkpoints" ] \
     && say checkpoints "present" || fail checkpoints "missing"
 
+# 6. ComfyUI's node-output cache. The default HierarchicalCache calls clean_unused() after every
+#    prompt and drops any node output not present in the *current* prompt, so alternating an edit
+#    graph with a SAM graph evicts each model's loader output in turn -- and evicting the loader
+#    drops the last reference to the ModelPatcher, so the weights leave system RAM and the next run
+#    re-reads them from disk. --cache-lru keeps N node results across prompts instead. This pod has
+#    186 GB of RAM against roughly 36 GB of weights, so the trade is free.
+#
+#    The tidier fix is CUSTOM_ARGS="--cache-lru 20" on the RunPod template, which /start.sh appends
+#    to its own args; that survives recreation without this block having to restart anything. This
+#    exists because the template is not always ours to edit, and it is a no-op once the flag is set.
+COMFY_DIR=$VOLUME/ComfyUI
+if pgrep -f 'main\.py.*--cache-lru' >/dev/null 2>&1; then
+    say comfy_cache "--cache-lru already set"
+elif ! pid=$(pgrep -f "$COMFY_DIR.*main\.py" || pgrep -f 'python main\.py'); then
+    say comfy_cache "ComfyUI not running; skipped"
+else
+    args=$(tr '\0' ' ' < "/proc/$pid/cmdline" | sed 's/^[^ ]* *main\.py *//')
+    kill "$pid" 2>/dev/null || true
+    # ComfyUI is a child of /start.sh, whose `wait` returns into a message and `sleep infinity`
+    # rather than a restart, so it has to be relaunched here.
+    i=0; while [ $i -lt 30 ] && kill -0 "$pid" 2>/dev/null; do sleep 1; i=$((i + 1)); done
+    (cd "$COMFY_DIR" && PATH="$COMFY_DIR/.venv-cu128/bin:$PATH" VIRTUAL_ENV="$COMFY_DIR/.venv-cu128" \
+        nohup python main.py $args --cache-lru 20 >/workspace/comfyui.log 2>&1 &)
+    i=0
+    while [ $i -lt 120 ]; do
+        curl -fsS -o /dev/null "http://127.0.0.1:8188/system_stats" 2>/dev/null && break
+        sleep 2; i=$((i + 1))
+    done
+    pgrep -f 'main\.py.*--cache-lru' >/dev/null 2>&1 \
+        && say comfy_cache "restarted with --cache-lru 20" \
+        || fail comfy_cache "restart failed; see /workspace/comfyui.log"
+fi
+
 exit $status
