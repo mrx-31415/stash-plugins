@@ -19,6 +19,7 @@ PAGE_SIZE = 100
 SCAN_PAGE_SIZE = 25
 REMOTE_BATCH_SIZE = 25
 CLEANUP_TAG_PAGE_SIZE = 25
+CLEANUP_SCENE_PAGE_SIZE = 1000
 LOCAL_BATCH_SIZE = 100
 SCAN_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 FUZZY_CUTOFF = 0.72
@@ -81,7 +82,6 @@ query ScenesByIds($ids: [ID!]!) {
 CLEANUP_SCENES_BY_TAGS_QUERY = """
 query CleanupScenesByTags($filter: FindFilterType, $scene_filter: SceneFilterType) {
   findScenes(filter: $filter, scene_filter: $scene_filter) {
-    count
     scenes { id tags { id } stash_ids { endpoint stash_id } }
   }
 }
@@ -767,28 +767,77 @@ def fuzzy_similarity(left, right):
 
 
 def duplicate_similarity_edges(tags, minimum=DUPLICATE_SIMILARITY_FLOOR, progress_callback=None):
-    """Calculate compact direct-similarity edges once for runtime filtering."""
+    """Calculate compact direct-similarity edges once for runtime filtering.
+
+    Optimized to stay exact: pairs that cannot reach the floor are skipped via
+    (1) a length gate, (2) a 64-bit character-mask disjointness check, and
+    (3) the exact multiset upper bound on SequenceMatcher's matched-character
+    count (it can never match more characters than the two strings share, so
+    ``2 * shared / (len_a + len_b) < minimum`` proves the pair is below the
+    floor without running difflib). Repeated name pairs are memoized.
+    """
     snapshots = sorted(
         (cleanup_tag_snapshot(tag) if "counts" not in tag else tag for tag in tags),
         key=lambda tag: (-int(tag.get("usage") or 0), tag["name"].casefold()),
     )
-    normalized_names = [
-        [normalized_tag_name(name) for name in [tag["name"], *tag.get("aliases", [])] if normalized_tag_name(name)]
+    normalized = [
+        [
+            normalized_tag_name(name)
+            for name in [tag["name"], *tag.get("aliases", [])]
+            if normalized_tag_name(name)
+        ]
         for tag in snapshots
     ]
+    masks = []
+    multisets = []
+    lengths = []
+    for tag_names in normalized:
+        tag_mask = 0
+        tag_counts = []
+        tag_lengths = []
+        for name in tag_names:
+            mask = 0
+            counts = {}
+            for char in name:
+                mask |= 1 << (ord(char) & 63)
+                counts[char] = counts.get(char, 0) + 1
+            tag_mask |= mask
+            tag_counts.append(counts)
+            tag_lengths.append(len(name))
+        masks.append(tag_mask)
+        multisets.append(tag_counts)
+        lengths.append(tag_lengths)
     edges = []
+    ratio_cache = {}
     # ponytail: store only scores >= 0.70; lower scores are too noisy and dense to tune safely.
     progress_step = max(1, len(snapshots) // 100)
     if progress_callback:
         progress_callback(0, len(snapshots))
     for index, anchor in enumerate(snapshots):
         for candidate_index, candidate in enumerate(snapshots[index + 1:], index + 1):
+            if not (masks[index] & masks[candidate_index]):
+                continue
             score = 0
-            for left_name in normalized_names[index]:
-                for right_name in normalized_names[candidate_index]:
-                    if 2 * min(len(left_name), len(right_name)) / (len(left_name) + len(right_name)) < minimum:
+            for left_name, left_counts, left_len in zip(normalized[index], multisets[index], lengths[index]):
+                for right_name, right_counts, right_len in zip(
+                    normalized[candidate_index], multisets[candidate_index], lengths[candidate_index]
+                ):
+                    if 2 * min(left_len, right_len) / (left_len + right_len) < minimum:
                         continue
-                    score = max(score, difflib.SequenceMatcher(None, left_name, right_name).ratio())
+                    shared = 0
+                    for char, left_count in left_counts.items():
+                        right_count = right_counts.get(char)
+                        if right_count:
+                            shared += left_count if left_count < right_count else right_count
+                    if 2 * shared / (left_len + right_len) < minimum:
+                        continue
+                    pair = (left_name, right_name) if left_name <= right_name else (right_name, left_name)
+                    value = ratio_cache.get(pair)
+                    if value is None:
+                        value = difflib.SequenceMatcher(None, left_name, right_name).ratio()
+                        ratio_cache[pair] = value
+                    if value > score:
+                        score = value
                     if score == 1:
                         break
                 if score == 1:
@@ -922,31 +971,45 @@ def union_hierarchy(tags, target_id, source_ids):
 def cleanup_scenes_for_tags(local_url, local_headers, parent_ids, ancestors, progress_callback=None):
     parent_ids = {str(tag_id) for tag_id in parent_ids}
     scenes_by_parent = {tag_id: [] for tag_id in parent_ids}
-    page = 1
-    total = 0
-    while True:
-        result = graphql(
+    scene_filter = {"tags": {"value": sorted(parent_ids), "modifier": "INCLUDES"}}
+    try:
+        # one request for the whole result set; the filter dominates the query
+        # cost, so paging through it 25 scenes at a time is orders of magnitude
+        # slower than fetching everything at once
+        batch = graphql(
             local_url,
             CLEANUP_SCENES_BY_TAGS_QUERY,
-            {
-                "filter": {"page": page, "per_page": SCAN_PAGE_SIZE},
-                "scene_filter": {"tags": {"value": sorted(parent_ids), "modifier": "INCLUDES"}},
-            },
+            {"filter": {"per_page": -1}, "scene_filter": scene_filter},
             local_headers,
-        )["findScenes"]
-        batch = result.get("scenes") or []
-        total = result.get("count") or 0
-        if progress_callback:
-            progress_callback(min((page - 1) * SCAN_PAGE_SIZE + len(batch), total), total)
-        for scene in batch:
-            matching_parents = set()
-            for tag in scene.get("tags") or []:
-                matching_parents.update(ancestors.get(str(tag["id"]), {str(tag["id"])}))
-            for parent_id in matching_parents & parent_ids:
-                scenes_by_parent[parent_id].append(scene)
-        if not batch or page * SCAN_PAGE_SIZE >= total:
-            break
-        page += 1
+        )["findScenes"].get("scenes") or []
+    except RuntimeError:
+        # per_page -1 unsupported or the result is too large for one request:
+        # fall back to paging (the query carries no count, so stop on an empty page)
+        batch = []
+        page = 1
+        while True:
+            result = graphql(
+                local_url,
+                CLEANUP_SCENES_BY_TAGS_QUERY,
+                {
+                    "filter": {"page": page, "per_page": CLEANUP_SCENE_PAGE_SIZE},
+                    "scene_filter": scene_filter,
+                },
+                local_headers,
+            )["findScenes"]
+            page_batch = result.get("scenes") or []
+            if not page_batch:
+                break
+            batch.extend(page_batch)
+            page += 1
+    if progress_callback:
+        progress_callback(len(batch), len(batch))
+    for scene in batch:
+        matching_parents = set()
+        for tag in scene.get("tags") or []:
+            matching_parents.update(ancestors.get(str(tag["id"]), {str(tag["id"])}))
+        for parent_id in matching_parents & parent_ids:
+            scenes_by_parent[parent_id].append(scene)
     return scenes_by_parent
 
 
@@ -1760,7 +1823,8 @@ def cleanup_scan_all(local_url, local_headers, providers, server, token, duplica
         for index, split in enumerate(plan["splits"], 1):
             state["splits"].append(split)
             state["scanned"] = index
-            write_cleanup_state(server, state)
+            if index % 5 == 0 or index == len(plan["splits"]):
+                write_cleanup_state(server, state)
             stash_progress(index, len(plan["splits"]))
         state["status"] = "completed"
         state["progress_phase"] = "complete"
@@ -2890,8 +2954,12 @@ def self_test():
                 {"id": "scene-2", "tags": [{"id": "1"}, {"id": "4"}], "stash_ids": []},
             ]
             per_page = variables["filter"]["per_page"]
-            start = (variables["filter"]["page"] - 1) * per_page
-            return {"findScenes": {"count": len(scenes), "scenes": scenes[start:start + per_page]}}
+            if per_page == -1:
+                batch = scenes
+            else:
+                start = (variables["filter"]["page"] - 1) * per_page
+                batch = scenes[start:start + per_page]
+            return {"findScenes": {"scenes": batch}}
         if query == TAG_DESTROY_MUTATION:
             tag_id = variables["input"]["id"]
             if tag_id == "3":
@@ -2954,7 +3022,7 @@ def self_test():
             (1.0, 2, "plan", "Parent (2/2 scenes)"),
             (2.0, 2, "plan", "Parent 2 (1/1 scenes)"),
         ]
-        assert sum(query == CLEANUP_SCENES_BY_TAGS_QUERY for query, _ in cleanup_calls) == 2
+        assert sum(query == CLEANUP_SCENES_BY_TAGS_QUERY for query, _ in cleanup_calls) == 1
         with tempfile.TemporaryDirectory() as cleanup_dir:
             cleanup_snapshot_tags = [cleanup_tag_snapshot(tag) for tag in cleanup_store.values()]
             cleanup_snapshot_tags[2]["usage"] = 0
