@@ -20,7 +20,9 @@ production recipe without visual review.
 
 ## 1. Freeze pose carriers
 
-Generate one canonical carrier per pose on a 1024×1024 canvas. The carrier
+Generate one canonical carrier per pose on an 832×1248 canvas — 2:3, matching
+the 1024×1536 source portraits and the 600×900 card, so the card crop is a
+scale rather than a choice about what to discard. The carrier
 defines the head aperture, pose, body placement, floor contact, and scale.
 Freeze it before generating performer or costume variants.
 
@@ -94,10 +96,11 @@ Reject assets with:
 - alpha holes through the clothed body;
 - missing hands or shoes;
 - green/blue residue;
-- translation greater than 2 px or scale change greater than 0.5% at 1024²;
+- translation greater than 2 px or scale change greater than 0.5% on the
+  canonical canvas, measured per image and across performers on one pose;
 - obvious identity or visual-quality failures.
 
-Review both the full 1024² composite and the final 600×900 card crop.
+Review both the full 832×1248 composite and the final 600×900 card crop.
 
 ## Important preflight
 

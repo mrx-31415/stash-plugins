@@ -23,7 +23,7 @@ import json
 import statistics
 from pathlib import Path
 
-from PIL import Image, ImageChops, ImageFilter, ImageOps
+from PIL import Image
 
 import identity_metrics
 import layered_costume_production as production
@@ -32,124 +32,16 @@ import run_qwen2512_skin_head_clothes_poc as poc
 
 DEFAULT_SOURCE = Path("/mnt/Misc/sd/cover-story/cover-story-qwen2512-skin-head-clothes-poc-v2")
 DEFAULT_ROOT = Path("/mnt/Misc/sd/cover-story/cover-story-qwen2512-phase3-probe")
-# image 2 is the skin plate, not the raw carrier: same pose and silhouette but natural skin, so the
-# body being painted has nothing green to copy.
-BODY_PROMPT = (
-    "Keep image 1's head, face and hair completely unchanged. Change her body below the neck to the bare "
-    "standing body, pose and proportions of image 2, with the same matte chroma key blue background."
-)
-HEAD_SAM_PROMPT = "head, face, ears and hair"
-# Alignment matches faces, not heads. The carrier is bald, so its head box is a bare skull
-# (147 px tall) while the performer's includes hair falling past her shoulders (210 px) —
-# comparing them shrank her to 0.700 and left her 794 px tall against the carrier's 1094,
-# feet off the bottom of the frame. A face is the same object in both images.
-FACE_SAM_PROMPT = "face"
-# Both images are full-body frames of a standing woman, so after alignment their silhouettes
-# must be nearly the same height. This is the check that matters: the earlier guard tested the
-# input scale ratio, which is the quantity that was wrong, so it passed 0.700 happily.
-SILHOUETTE_HEIGHT_TOLERANCE = 0.12
-PERSON_SAM_PROMPT = "the whole person"
-# Enough overlap at the neck that the repainted body meets the preserved head without a seam, but
-# not so much that the mask reaches the jaw and starts repainting the face.
-NECK_OVERLAP = 15
-# Far enough out that the mask boundary sits in flat background rather than beside the
-# performer's original outline, and feathered so the join between regenerated and original
-# background is a gradient instead of a contour.
-OUTER_MARGIN = 25
-OUTER_FEATHER = 8
-# Thickness of the silhouette outline handed to the ControlNet. The union model works on an 8x
-# downsampled latent, so a 1 px FIND_EDGES line would land on well under one latent cell.
-OUTLINE_WIDTH = 5
 SEEDS = 4
-
-
-def sam_box(server, image, prompt, work, prefix):
-    mask = identity_metrics.binary(poc.sam_hints(server, image, [prompt], prefix, work)[0])
-    box = mask.getbbox()
-    if box is None:
-        raise RuntimeError(f"SAM found no '{prompt}' in {image}")
-    return mask, box
-
-
-def aligned_performer(server, preprocessed, carrier, root, work):
-    """Scale and translate the performer so her head lands on the carrier's head.
-
-    Alignment is on the head box specifically, not the whole figure: the head is the part being
-    preserved, so it is the part that has to land in the right place. The preprocess stage already
-    arrives at roughly the right scale (measured 0.99 x 1.036 against the carrier), so this is a
-    small correction rather than a rescue.
-
-    Both boxes come from SAM asking for a head. The first version of this used
-    masks/identity-head-mask.png as the target, which is not a head: it is the identity *envelope*,
-    dilated by IDENTITY_DILATION (97 px) to cover neck, clavicles, shoulders and upper chest, with a
-    350x436 box against a real head of roughly 150x190. That scaled the performer up about 2.3x."""
-    path = root / "performer-aligned.png"
-    if path.is_file():
-        return path
-    _, performer_head = sam_box(server, preprocessed, FACE_SAM_PROMPT, work, "cover-story/phase3/face")
-    _, target = sam_box(server, carrier, FACE_SAM_PROMPT, work, "cover-story/phase3/carrier-face")
-    image = poc.image_from(preprocessed)
-    with Image.open(carrier) as opened:
-        size = opened.size
-    scale = (target[3] - target[1]) / max(1, performer_head[3] - performer_head[1])
-    scaled = image.resize((max(1, round(image.width * scale)), max(1, round(image.height * scale))),
-                          Image.Resampling.LANCZOS)
-    head_centre = (round((performer_head[0] + performer_head[2]) / 2 * scale),
-                   round((performer_head[1] + performer_head[3]) / 2 * scale))
-    target_centre = ((target[0] + target[2]) // 2, (target[1] + target[3]) // 2)
-    canvas = Image.new("RGB", size, poc.image_from(carrier).getpixel((8, 8)))
-    canvas.paste(scaled, (target_centre[0] - head_centre[0], target_centre[1] - head_centre[1]))
-    poc.save_png(canvas, path)
-    print(f"  aligned: performer face {performer_head} -> carrier face {target}, "
-          f"scale {scale:.3f}", flush=True)
-    carrier_box, aligned_box = silhouette_box(carrier), silhouette_box(path)
-    carrier_height = carrier_box[3] - carrier_box[1]
-    ratio = (aligned_box[3] - aligned_box[1]) / max(1, carrier_height)
-    print(f"  silhouette height {aligned_box[3] - aligned_box[1]} vs carrier {carrier_height} "
-          f"(ratio {ratio:.3f})", flush=True)
-    if abs(ratio - 1) > SILHOUETTE_HEIGHT_TOLERANCE:
-        path.unlink(missing_ok=True)
-        raise RuntimeError(
-            f"aligned figure is {ratio:.2f}x the carrier's height, outside "
-            f"+/-{SILHOUETTE_HEIGHT_TOLERANCE:.0%}. Alignment matched the wrong feature: "
-            f"performer face {performer_head}, carrier face {target}, scale {scale:.3f}")
-    return path
-
-
-def body_mask(server, aligned, carrier, root, work):
-    """Everything to repaint: the carrier's silhouette plus any performer body outside it, minus the
-    head being preserved.
-
-    The union matters. Masking only the carrier's silhouette would leave the performer's own
-    shoulders and arms standing outside it, untouched, because everything outside the mask survives
-    exactly — the same property that protects the head would preserve her original body too."""
-    path = root / "phase3-body-mask.png"
-    preserve_path = root / "phase3-preserved-head.png"
-    if path.is_file():
-        return path, preserve_path
-    performer_person, _ = sam_box(server, aligned, PERSON_SAM_PROMPT, work, "cover-story/phase3/person")
-    performer_head, _ = sam_box(server, aligned, HEAD_SAM_PROMPT, work, "cover-story/phase3/aligned-head")
-    carrier_person, _ = sam_box(server, carrier, PERSON_SAM_PROMPT, work, "cover-story/phase3/carrier-person")
-    # Asymmetric by necessity. The OUTER boundary is pushed into flat background and feathered:
-    # inside the mask the background is regenerated, outside it the original survives, and the two
-    # blues are not identical, so a hard edge there reads as a pale contour tracing the figure —
-    # visible in the first run, running alongside the aligned performer's original outline.
-    # The INNER boundary against the preserved head stays hard, because a feathered edge there
-    # would blend generated pixels into the head and lose outside_mask_unchanged == 0, which is the
-    # entire premise of this approach.
-    preserve = poc.dilate(performer_head, NECK_OVERLAP)
-    union = ImageChops.lighter(performer_person, carrier_person)
-    outer = poc.dilate(union, OUTER_MARGIN).filter(ImageFilter.GaussianBlur(OUTER_FEATHER))
-    repaint = ImageChops.subtract(outer, preserve)
-    poc.save_png(repaint, path)
-    poc.save_png(preserve, preserve_path)
-    print(f"  mask: repaint {sum(repaint.histogram()[1:])} px, preserved head "
-          f"{sum(preserve.histogram()[1:])} px", flush=True)
-    return path, preserve_path
-
-
-def silhouette_box(path):
-    return poc.screen_foreground(poc.image_from(path)).getbbox()
+# The construction this probe established now lives in the pipeline: the prompt and the three build
+# steps are the PoC's identity stage, and the geometry under them is in the production module. The
+# probe keeps only what is probe-specific -- multiple seeds, scoring, and the distortion diagnostic
+# -- so it cannot drift away from what actually ships.
+BODY_PROMPT = poc.IDENTITY_PROMPT
+aligned_performer = poc.aligned_performer
+body_mask = poc.body_masks
+control_for = poc.identity_control
+silhouette_box = production.silhouette_box
 
 
 def distorted_control(path, factor, root):
@@ -169,39 +61,6 @@ def distorted_control(path, factor, root):
     print(f"  control distorted x{factor:g} about y={top}: bbox {box} -> "
           f"{canvas.convert('L').point(lambda v: 255 if v > 32 else 0).getbbox()}", flush=True)
     return out
-
-
-def control_for(server, kind, carrier, preserve, root, work, force):
-    """Build the control image from the *carrier*, since the carrier is the pose being targeted.
-
-    The preserved head is cut out of it either way. Nothing inside that region can be repainted —
-    it sits outside the noise mask — so head geometry in the control image can only argue with
-    pixels the sampler is not allowed to touch. For openpose that is free (the node has draw_head
-    and draw_face switches); for canny the bald skull outline has to be erased by hand, otherwise
-    the control asks for a scalp edge exactly where the performer's hair is."""
-    raw = root / f"control-{kind}-raw.png"
-    path = root / f"control-{kind}.png"
-    if path.is_file() and not force:
-        return path
-    if kind == "canny":
-        # Not ComfyUI's Canny node, which finds almost nothing here: the carrier is matte green
-        # paint on a matte blue screen, and those are nearly isoluminant (luma 95 against 71), so a
-        # luminance gradient detector returned 795 lit pixels for a whole standing figure. The
-        # screen-key foreground already separates them on colour, and its boundary *is* the
-        # silhouette -- which is the only geometry a uniformly painted body has to offer anyway.
-        figure = poc.screen_foreground(poc.image_from(carrier))
-        outline = ImageChops.subtract(poc.dilate(figure, OUTLINE_WIDTH),
-                                      ImageOps.invert(poc.dilate(ImageOps.invert(figure), OUTLINE_WIDTH)))
-        poc.save_png(outline.convert("RGB"), raw)
-    else:
-        poc.control_image(server, carrier, kind, f"cover-story/phase3/control-{kind}", raw, work, force)
-    image = poc.image_from(raw)
-    head = Image.open(preserve).convert("L").resize(image.size, Image.Resampling.NEAREST)
-    image.paste(Image.new("RGB", image.size, (0, 0, 0)), (0, 0), poc.dilate(head, 9))
-    poc.save_png(image, path)
-    kept = sum(1 for pixel in image.convert("L").getdata() if pixel > 32)
-    print(f"  control {kind}: {kept} lit px after clearing the preserved head", flush=True)
-    return path
 
 
 def main():

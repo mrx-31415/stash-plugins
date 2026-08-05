@@ -4,7 +4,7 @@
   "source_root": "/mnt/Misc/sd/cover-story/static-performer-production-blur-q60-v3",
   "base_seed": 2026080100,
   "settings": {
-    "canvas": [1024, 1024],
+    "canvas": [832, 1248],
     "card": [600, 900],
     "layer_order": ["background", "skin", "clothing-body", "hair"],
     "automatic_retry_seeds": 2,

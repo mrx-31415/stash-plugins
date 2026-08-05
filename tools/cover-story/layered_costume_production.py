@@ -5,6 +5,7 @@ import argparse
 import html
 import json
 import os
+import statistics
 import subprocess
 import tempfile
 from pathlib import Path
@@ -23,12 +24,20 @@ CATALOG_PATH = TOOL_ROOT / "layered-costume-catalog.json"
 DEFAULT_ROOT = Path("/mnt/Misc/sd/cover-story/layered-costume-production-v20d")
 RUN_ID = "layered-costume-production-v20d"
 VERSION = 3
-CANVAS = (1024, 1024)
+# 2:3, matching the 1024x1536 source portraits and the 600x900 card, so the card crop is a scale
+# rather than a decision about what to throw away. This was 1024x1024 -- what the reference document
+# and the catalog's settings.canvas both said -- while every measured result ran at 832x1248, which
+# registration() could not score at all.
+CANVAS = (832, 1248)
 CARD = (600, 900)
 MAX_AUTOMATIC_RETRIES = 2
 EDGE_CLEANUP = "corridorkey-alpha-only-v20"
 BASE_SEED = 2026080100
-EDIT_MODEL = "qwen_image_edit_2511_int8_convrot.safetensors"
+# fp8mixed, not the int8_convrot variant comfy-bootstrap.json declares: that one cannot load on
+# ComfyUI 0.26.2, whose QUANT_ALGOS covers only float8_e4m3fn/float8_e5m2/nvfp4, and it dies with
+# KeyError: 'int8_tensorwise' at UNETLoader. Same 2511 model from the same Comfy-Org repository,
+# header declaring float8_e4m3fn only. The sibling comfy-bootstrap repo still needs the same edit.
+EDIT_MODEL = "qwen_image_edit_2511_fp8mixed.safetensors"
 CARRIER_MODEL = "qwen_image_2512_fp8_e4m3fn.safetensors"
 TEXT_ENCODER = "qwen_2.5_vl_7b_fp8_scaled.safetensors"
 VAE = "qwen_image_vae.safetensors"
@@ -52,6 +61,37 @@ CONTROL_TYPES = {
     "tile": "tile",
     "repaint": "repaint",
 }
+# Inverted identity transfer: the performer is image 1, the mask covers her body, and her head sits
+# outside it where ImageCompositeMasked is bit-exact. Identity cannot drift because nothing
+# repaints it. These are the geometry constants that transfer needs; see face_align(),
+# body_repaint_mask() and silhouette_outline() for what each one is defending against.
+FACE_ALIGN_TOLERANCE = 0.12
+NECK_OVERLAP = 15
+OUTER_MARGIN = 25
+OUTER_FEATHER = 8
+OUTLINE_WIDTH = 5
+# Strength, not presence, is what makes the control work, and this nearly cost the result. At 1.0
+# the union ControlNet is below the threshold where it has authority over Qwen-Image-Edit: a
+# control demanding feet 194 px higher was ignored outright. At 3.0 the same control was followed
+# to within 1 px, and silhouette drift on a real transfer closed from 14 px to 1-2.
+CONTROL_STRENGTH = 3.0
+# Deterministic body construction, 2026-08-05: paste the performer's head onto the carrier's own
+# body instead of asking diffusion to regenerate a body that only approximates the carrier's
+# proportions, and recolor that body from the carrier's own pixels rather than an independently
+# diffused skin.png, so registration holds by construction rather than by control-strength tuning
+# or by chance. See head_transplant() and deterministic_skin_recolor(). HEAD_BLEND_FEATHER is
+# deliberately small -- most of the head must stay bit-exact; only the join at the neck should
+# blend.
+HEAD_BLEND_FEATHER = 8
+# Margin around the actual blended band, giving a follow-up smoothing edit some working room beyond
+# the seam's own thin line without opening up so much of the shoulders/chest that it risks the
+# geometry those regions are supposed to hold bit-exact.
+SEAM_EDIT_MARGIN = 15
+# The reference document's cross-performer pose limits, treated as a hard gate: several performers
+# rendered on the same pose must land on the same silhouette to within these. See
+# silhouette_spread().
+SPREAD_TRANSLATION_PX = 2
+SPREAD_SCALE = 0.005
 NEGATIVE = "低分辨率，低画质，肢体畸形，手指畸形，画面过饱和，蜡像感，人脸无细节，过度光滑，画面具有AI感。构图混乱。文字模糊，扭曲"
 SETTINGS = {
     "edit": {
@@ -100,6 +140,205 @@ def save_png(image, path):
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def image_from(path):
+    with Image.open(path) as opened:
+        return opened.convert("RGB").copy()
+
+
+def dilate(mask, size):
+    """Identical to MaxFilter(size) for the square structuring elements used here, but O(px * k)
+    instead of O(px * k**2): a 97px dilation of an 832x1248 mask drops from ~27s to ~5s."""
+    for _ in range(size // 2):
+        mask = mask.filter(ImageFilter.MaxFilter(3))
+    return mask
+
+
+def erode(mask, size):
+    """dilate()'s inverse: shrink a mask's interior instead of growing it."""
+    return ImageOps.invert(dilate(ImageOps.invert(mask), size))
+
+
+def screen_foreground(image, screen="blue"):
+    """Raw foreground estimate from key-channel dominance; a hint input, never final alpha.
+
+    Parameterised by screen because the clothing plate keys green while skin and identity stay on
+    blue. Hardcoded blue counts a green background as *figure*."""
+    red, green, blue = image.convert("RGB").split()
+    key, others = (green, (red, blue)) if screen == "green" else (blue, (red, green))
+    dominance = ImageChops.subtract(key, ImageChops.lighter(*others))
+    return ImageOps.invert(dominance.point(lambda value: 255 if value >= 12 else 0))
+
+
+def silhouette_box(path, screen="blue"):
+    return screen_foreground(image_from(path), screen).getbbox()
+
+
+def face_align(performer, performer_face, carrier_face, size, background):
+    """Scale and translate the performer so her face lands on the carrier's face.
+
+    Alignment is on the *face* box, not the head box. The carrier is bald, so its head box is a bare
+    skull (147 px tall) while the performer's includes hair past her shoulders (210 px); comparing
+    those shrank her to 0.700 and left her 794 px tall against the carrier's 1094, feet off the
+    bottom of the frame. A face is the same object in both images.
+
+    Returns (aligned image, scale). The caller checks the silhouette height ratio -- see
+    aligned_height_check() -- because that is the quantity that was wrong, and an input-scale guard
+    passed 0.700 happily."""
+    scale = (carrier_face[3] - carrier_face[1]) / max(1, performer_face[3] - performer_face[1])
+    scaled = performer.resize((max(1, round(performer.width * scale)),
+                               max(1, round(performer.height * scale))), Image.Resampling.LANCZOS)
+    face_centre = (round((performer_face[0] + performer_face[2]) / 2 * scale),
+                   round((performer_face[1] + performer_face[3]) / 2 * scale))
+    target = ((carrier_face[0] + carrier_face[2]) // 2, (carrier_face[1] + carrier_face[3]) // 2)
+    canvas = Image.new("RGB", size, background)
+    canvas.paste(scaled, (target[0] - face_centre[0], target[1] - face_centre[1]))
+    return canvas, scale
+
+
+def aligned_height_check(aligned_box, carrier_box, tolerance=FACE_ALIGN_TOLERANCE):
+    """Both images are full-body frames of a standing woman, so after alignment their silhouettes
+    must be nearly the same height. This is the check that catches a mismatched anchor feature."""
+    height = max(1, carrier_box[3] - carrier_box[1])
+    ratio = (aligned_box[3] - aligned_box[1]) / height
+    return {"name": "aligned_silhouette_height", "passed": abs(ratio - 1) <= tolerance,
+            "detail": {"ratio": round(ratio, 3), "aligned_px": aligned_box[3] - aligned_box[1],
+                       "carrier_px": height, "tolerance": tolerance}}
+
+
+def body_repaint_mask(performer_person, performer_head, carrier_person,
+                      neck_overlap=NECK_OVERLAP, outer_margin=OUTER_MARGIN,
+                      outer_feather=OUTER_FEATHER):
+    """The inverted transfer's two masks: everything to repaint, and the head to preserve.
+
+    Repaint covers the carrier's silhouette *unioned with* the performer's own. Masking only the
+    carrier's would leave her shoulders and arms standing outside it, untouched, because everything
+    outside the mask survives exactly -- the same property that protects the head.
+
+    Asymmetric by necessity. The OUTER boundary is pushed into flat background and feathered:
+    inside the mask the background is regenerated, outside it the original survives, and the two
+    blues are not identical, so a hard edge there reads as a pale contour tracing the figure. The
+    INNER boundary against the preserved head stays hard, because a feathered edge would blend
+    generated pixels into the head and lose outside_mask_unchanged == 0, which is the entire
+    premise of this approach."""
+    preserve = dilate(performer_head, neck_overlap)
+    union = ImageChops.lighter(performer_person, carrier_person)
+    outer = dilate(union, outer_margin).filter(ImageFilter.GaussianBlur(outer_feather))
+    return ImageChops.subtract(outer, preserve), preserve
+
+
+def silhouette_outline(foreground, width=OUTLINE_WIDTH):
+    """Silhouette boundary as a control image, `width` px thick.
+
+    Not ComfyUI's Canny node, which finds almost nothing here: the carrier is matte green paint on
+    a matte blue screen, and those are nearly isoluminant (luma 95 against 71), so a luminance
+    gradient detector returned 795 lit pixels for a whole standing figure against 18553 for this.
+    The screen key already separates them on colour, and its boundary *is* the silhouette -- the
+    only geometry a uniformly painted body has to offer anyway.
+
+    OUTLINE_WIDTH is 5 rather than 1 because the union ControlNet works on an 8x downsampled
+    latent, where a 1 px line lands on well under one cell."""
+    return ImageChops.subtract(dilate(foreground, width),
+                               ImageOps.invert(dilate(ImageOps.invert(foreground), width)))
+
+
+def region_tone(image, box, mask=None):
+    """Average RGB within `box`, restricted to `mask` if given (ImageStat ignores pixels where the
+    mask is 0). Used to sample a small patch of skin colour, not to characterise a whole region."""
+    crop = image.crop(box)
+    stat = ImageStat.Stat(crop, mask=mask.crop(box)) if mask else ImageStat.Stat(crop)
+    return tuple(round(value) for value in stat.mean[:3])
+
+
+def inset(box, margin):
+    x0, y0, x1, y1 = box
+    dx, dy = round((x1 - x0) * margin), round((y1 - y0) * margin)
+    return (x0 + dx, y0 + dy, x1 - dx, y1 - dy)
+
+
+def deterministic_skin_recolor(image, foreground, target_rgb, paint_channel="green"):
+    """Recolor `foreground` pixels to `target_rgb`, tinted by the image's own per-pixel shading --
+    `paint_channel`'s own brightness at that point -- so photographed highlights, shadows and
+    muscle definition survive a hue change that a diffusion regeneration cannot guarantee stays
+    registered to the source. Background pixels are untouched.
+
+    `paint_channel` names the figure's own paint colour (green, for this project's carriers) --
+    deliberately not called `screen`, which screen_foreground() already uses for the *opposite*
+    end of the same image, the background colour being keyed out. The carrier is matte body paint
+    on a real photographed figure, so its paint channel's raw value already *is* a shading map:
+    brighter paint reads as a highlight, darker a shadow, for the same reason screen_foreground()
+    can key on that channel's dominance at all. An earlier construction recolored via a separate
+    diffusion pass (skin.png) instead; that pass carries its own independent registration drift
+    against the carrier (measured up to 7px), which a downstream clothes plate built from the
+    carrier's own bit-exact pixels would inherit. This has none, because it never leaves the
+    carrier's own pixel grid."""
+    channel = image.split()[{"green": 1, "blue": 2}[paint_channel]]
+    reference = ImageStat.Stat(channel, mask=foreground).mean[0]
+    if reference <= 0:
+        raise ValueError("foreground mask is empty or the key channel is entirely zero within it")
+    bands = [channel.point(lambda value, target=target: max(0, min(255, round(target * (value / reference)))))
+             for target in target_rgb]
+    recolored = Image.merge("RGB", bands)
+    return Image.composite(recolored, image, foreground)
+
+
+def head_transplant(head_source, body, head_mask, feather=HEAD_BLEND_FEATHER):
+    """Paste `head_source`'s pixels onto `body` wherever `head_mask` is set, blended over a thin band
+    at the mask's own boundary so the join isn't a razor seam.
+
+    Blurring the mask directly, rather than a separately-feathered outer ring the way
+    body_repaint_mask() protects its *outer* boundary, is enough here: this mask has no second
+    boundary of its own to keep hard, and blurring leaves its interior at full opacity while only
+    softening near the edge -- which is exactly where a real head meets a real body anyway."""
+    alpha = head_mask.filter(ImageFilter.GaussianBlur(feather))
+    return Image.composite(head_source, body, alpha)
+
+
+def blend_zone(head_mask, feather=HEAD_BLEND_FEATHER, margin=SEAM_EDIT_MARGIN):
+    """The band head_transplant() actually blended for this exact head_mask -- where its alpha
+    (the same Gaussian blur, recomputed identically) is strictly between 0 and 255 -- dilated by
+    `margin` so a follow-up edit has some working room around the seam itself, not just the seam's
+    own thin line.
+
+    A masked edit here is far lower-risk than the abandoned body-repaint construction's mask: this
+    one is a narrow band with bit-exact, fully-formed content on both sides (a real head above, a
+    real body below in the same reference image) for the model to reconcile, not most of a body to
+    invent from a silhouette outline."""
+    alpha = head_mask.filter(ImageFilter.GaussianBlur(feather))
+    band = alpha.point(lambda value: 255 if 0 < value < 255 else 0)
+    return dilate(band, margin)
+
+
+def silhouette_spread(boxes, translation_limit=SPREAD_TRANSLATION_PX, scale_limit=SPREAD_SCALE):
+    """Do several performers on the same pose land on the same silhouette?
+
+    This is the cost the inverted transfer has to justify. The carrier exists to freeze pose across
+    20 performers x 4 poses; here the pose reaches the sampler through a mask and a control image
+    rather than through the image being edited, so consistency is a measured property rather than a
+    structural guarantee.
+
+    `boxes` maps a label to a silhouette bbox. The top edge is excluded deliberately and for the
+    same reason it is excluded from the per-image drift check: it is hair, which legitimately
+    differs between performers. Spread is peak-to-peak, not standard deviation -- with three or four
+    samples the outlier *is* the result."""
+    if len(boxes) < 2:
+        return {"name": "silhouette_spread", "passed": True, "detail": "fewer than two performers"}
+    edges = {name: [box[0], box[2], box[3]] for name, box in boxes.items()}
+    spread = [max(values) - min(values) for values in zip(*edges.values())]
+    # Width only. Height is measured from the top edge, which is hair, so it varies by tens of
+    # pixels between performers for reasons that have nothing to do with pose -- an early version
+    # of this check read 4% scale spread off three silhouettes that agreed to within 2 px.
+    widths = [box[2] - box[0] for box in boxes.values()]
+    scale = (max(widths) - min(widths)) / max(1, statistics.mean(widths))
+    worst = max(spread)
+    return {
+        "name": "silhouette_spread",
+        "passed": worst <= translation_limit and scale <= scale_limit,
+        "detail": {"left_right_bottom_px": spread, "worst_px": worst,
+                   "scale_spread": round(scale, 5), "boxes": {k: list(v) for k, v in boxes.items()},
+                   "limits": {"translation_px": translation_limit, "scale": scale_limit}},
+    }
 
 
 def relative(path, root):
@@ -332,8 +571,15 @@ def carrier_checks(path):
 
 
 def registration(reference, candidate):
-    boxes = {"torso": (300, 420, 724, 690), "hands": (90, 430, 934, 770),
-             "crotch": (350, 600, 674, 790), "feet": (250, 820, 774, 1020)}
+    # Fractions of the canvas, not pixels. These were written as 1024-square coordinates and could
+    # only score a 1024x1024 asset -- everything else returned "canvas mismatch", including the
+    # 832x1248 the pipeline actually runs at. They are coarse patches for a difference score, not
+    # anatomical landmarks, so a full-body figure filling either frame puts them in the same place.
+    boxes = {"torso": (0.293, 0.410, 0.707, 0.674), "hands": (0.088, 0.420, 0.912, 0.752),
+             "crotch": (0.342, 0.586, 0.658, 0.771), "feet": (0.244, 0.801, 0.756, 0.996)}
+    boxes = {name: (round(box[0] * CANVAS[0]), round(box[1] * CANVAS[1]),
+                    round(box[2] * CANVAS[0]), round(box[3] * CANVAS[1]))
+             for name, box in boxes.items()}
     try:
         with Image.open(reference) as opened:
             ref = opened.convert("RGB")
@@ -342,30 +588,38 @@ def registration(reference, candidate):
     except (OSError, ValueError) as exc:
         return {"accepted": False, "reason": str(exc)}
     if ref.size != CANVAS or current.size != CANVAS:
-        return {"accepted": False, "reason": "canvas mismatch"}
+        return {"accepted": False, "reason": f"canvas mismatch: wanted {CANVAS}, "
+                                             f"reference {ref.size}, candidate {current.size}"}
     best = None
     for scale in (0.995, 0.9975, 1.0, 1.0025, 1.005):
-        side = round(1024 * scale)
-        scaled = current.resize((side, side), Image.Resampling.BICUBIC)
+        size = (round(CANVAS[0] * scale), round(CANVAS[1] * scale))
+        scaled = current.resize(size, Image.Resampling.BICUBIC)
         canvas = Image.new("RGB", CANVAS)
-        origin = ((1024 - side) // 2, (1024 - side) // 2)
-        canvas.paste(scaled, origin)
+        canvas.paste(scaled, ((CANVAS[0] - size[0]) // 2, (CANVAS[1] - size[1]) // 2))
         for dy in range(-2, 3):
             for dx in range(-2, 3):
                 scores = []
                 for box in boxes.values():
                     shifted = (box[0] + dx, box[1] + dy, box[2] + dx, box[3] + dy)
-                    if min(shifted) < 0 or shifted[2] > 1024 or shifted[3] > 1024:
+                    if min(shifted) < 0 or shifted[2] > CANVAS[0] or shifted[3] > CANVAS[1]:
                         continue
                     scores.append(sum(ImageStat.Stat(ImageChops.difference(ref.crop(box), canvas.crop(shifted))).mean))
                 score = sum(scores) if scores else 10 ** 9
                 if best is None or score < best[0]:
                     best = (score, scale, dx, dy)
     _, scale, dx, dy = best
+    # The search only covers +/-2 px and +/-0.5%, so `abs(dx) <= 2` was tautological: it tested the
+    # loop bounds, not the images. A candidate shifted 8 px reported "accepted, translation [2, 2]"
+    # -- the best offset available, sitting hard against the edge of the window, with the true
+    # optimum somewhere outside it. An interior minimum is the evidence that the window contained
+    # the answer; a boundary one is evidence that it did not.
+    interior = abs(dx) < 2 and abs(dy) < 2 and 0.995 < scale < 1.005
     return {
-        "accepted": abs(dx) <= 2 and abs(dy) <= 2 and round(abs(scale - 1), 5) <= 0.005,
+        "accepted": interior,
         "translation_px": [dx, dy], "scale_change": round(scale - 1, 5),
         "limits": {"translation_px": 2, "scale_change": 0.005},
+        "reason": None if interior else "best alignment sits on the search boundary; the true "
+                                        "offset is outside +/-2 px or +/-0.5%",
         "method": "fixed-canvas brute-force comparison; no correction applied",
     }
 
@@ -1257,6 +1511,12 @@ def self_test():
         image.save(second)
         result = registration(first, second)
         assert result["accepted"] and result["translation_px"] == [0, 0]
+        # And it must actually reject: the search is +/-2 px, so an 8 px shift is out of reach.
+        shifted = Image.new("RGB", CANVAS, "black")
+        ImageDraw.Draw(shifted).rectangle((308, 428, 732, 908), fill="white")
+        third = root / "third.png"
+        shifted.save(third)
+        assert not registration(first, third)["accepted"], registration(first, third)
         carrier = root / "carrier.png"
         Image.new("RGB", CANVAS, (0, 255, 0)).save(carrier)
         assert screen_color(carrier) == "green"
@@ -1287,6 +1547,84 @@ def self_test():
         assert normalized_key_input(Image.new("RGB", (1, 1), (20, 90, 30)), "green").getpixel((0, 0)) == (0, 255, 0)
         assert normalized_key_input(Image.new("RGB", (1, 1), (200, 10, 10)), "green", Image.new("L", (1, 1), 255)).getpixel((0, 0)) == (0, 255, 0)
         assert despill_source(Image.new("RGB", (1, 1), (20, 90, 30)), "green").getpixel((0, 0))[1] == 30
+    # Inverted identity transfer geometry.
+    assert screen_foreground(Image.new("RGB", (4, 4), (0, 0, 255))).getbbox() is None
+    assert screen_foreground(Image.new("RGB", (4, 4), (0, 255, 0))).getbbox() == (0, 0, 4, 4)
+    # A performer whose face is half the carrier's must scale 2x, and land centred on it.
+    performer = Image.new("RGB", (100, 200), "black")
+    ImageDraw.Draw(performer).rectangle((40, 20, 60, 40), fill="white")
+    aligned, scale = face_align(performer, (40, 20, 60, 40), (150, 100, 190, 140), (300, 400), "black")
+    assert abs(scale - 2.0) < 1e-9, scale
+    face = aligned.convert("L").point(lambda value: 255 if value > 127 else 0).getbbox()
+    assert abs((face[0] + face[2]) // 2 - 170) <= 1 and abs((face[1] + face[3]) // 2 - 120) <= 1, face
+    assert aligned_height_check((0, 0, 10, 100), (0, 0, 10, 100))["passed"]
+    assert not aligned_height_check((0, 0, 10, 70), (0, 0, 10, 100))["passed"]
+    # Cross-performer pose gate. Top edges differ by 40 px (hair) and must be ignored; a 3 px
+    # bottom spread must fail, because the limit is 2.
+    tight = {"a": (200, 100, 600, 1100), "b": (201, 140, 601, 1101), "c": (200, 120, 599, 1099)}
+    assert silhouette_spread(tight)["passed"], silhouette_spread(tight)
+    loose = dict(tight, d=(200, 120, 600, 1103))
+    assert not silhouette_spread(loose)["passed"]
+    assert silhouette_spread({"only": (0, 0, 1, 1)})["passed"]
+    # Deterministic body construction: tone sampling, the additive shift, and the head transplant.
+    swatch = Image.new("RGB", (40, 40), (200, 150, 100))
+    assert region_tone(swatch, (0, 0, 40, 40)) == (200, 150, 100)
+    half_mask = Image.new("L", (40, 40))
+    ImageDraw.Draw(half_mask).rectangle((0, 0, 19, 39), fill=255)
+    two_tone = Image.new("RGB", (40, 40), (0, 0, 0))
+    ImageDraw.Draw(two_tone).rectangle((20, 0, 39, 39), fill=(100, 100, 100))
+    assert region_tone(two_tone, (0, 0, 40, 40), mask=half_mask) == (0, 0, 0)
+    box = inset((0, 0, 40, 40), 0.25)
+    assert box == (10, 10, 30, 30)
+    # Two foreground shades (dim/bright green) plus an untouched background, so the recolor's
+    # reference (the mean green over the mask) and its per-pixel scaling are both independently
+    # checkable by hand: mean is (64+192)/2 = 128, so the dim half scales the target by 0.5 and the
+    # bright half by 1.5, clamped where that overflows.
+    paint = Image.new("RGB", (40, 60), (5, 20, 90))
+    draw = ImageDraw.Draw(paint)
+    draw.rectangle((0, 20, 19, 59), fill=(5, 64, 5))
+    draw.rectangle((20, 20, 39, 59), fill=(5, 192, 5))
+    fg = Image.new("L", (40, 60))
+    ImageDraw.Draw(fg).rectangle((0, 20, 39, 59), fill=255)
+    recolored = deterministic_skin_recolor(paint, fg, (200, 150, 100))
+    assert recolored.getpixel((5, 40)) == (100, 75, 50), "dim half must scale the target down"
+    assert recolored.getpixel((25, 40)) == (255, 225, 150), "bright half must scale up, clamped at 255"
+    assert recolored.getpixel((5, 5)) == (5, 20, 90), "background must be untouched"
+    head_source = Image.new("RGB", (60, 60), (255, 0, 0))
+    body = Image.new("RGB", (60, 60), (0, 0, 255))
+    head_mask = Image.new("L", (60, 60))
+    ImageDraw.Draw(head_mask).ellipse((10, 10, 50, 50), fill=255)
+    grafted = head_transplant(head_source, body, head_mask, feather=4)
+    assert grafted.getpixel((30, 30)) == (255, 0, 0), "head interior must be bit-exact"
+    assert grafted.getpixel((0, 0)) == (0, 0, 255), "far outside the head must be bit-exact body"
+    edge = grafted.getpixel((10, 30))
+    assert edge != (255, 0, 0) and edge != (0, 0, 255), "the boundary itself must actually blend"
+    solid = Image.new("L", (60, 60))
+    ImageDraw.Draw(solid).rectangle((20, 20, 39, 39), fill=255)
+    eroded = erode(solid, 8)
+    assert eroded.getpixel((29, 29)) == 255 and eroded.getpixel((21, 21)) == 0
+    band = blend_zone(head_mask, feather=4, margin=0)
+    assert band.getpixel((30, 30)) == 0, "deep interior of the mask is not part of the blend band"
+    assert band.getpixel((0, 0)) == 0, "far outside the mask is not part of the blend band either"
+    assert band.getpixel((10, 30)) == 255, "the boundary itself, where alpha is fractional, must be"
+    widened = blend_zone(head_mask, feather=4, margin=6)
+    assert sum(widened.histogram()[1:]) > sum(band.histogram()[1:]), "margin must actually widen the band"
+    # Repaint must cover carrier-only body, exclude the preserved head, and preserve must overhang
+    # the head by the neck overlap so the join has something to blend into.
+    person = Image.new("L", (200, 300))
+    ImageDraw.Draw(person).rectangle((80, 40, 120, 260), fill=255)
+    head = Image.new("L", (200, 300))
+    ImageDraw.Draw(head).rectangle((85, 40, 115, 90), fill=255)
+    carrier_person = Image.new("L", (200, 300))
+    ImageDraw.Draw(carrier_person).rectangle((60, 40, 140, 260), fill=255)
+    repaint, preserve = body_repaint_mask(person, head, carrier_person)
+    assert repaint.getpixel((70, 200)) > 200, "carrier-only body must be repainted"
+    assert repaint.getpixel((100, 60)) == 0, "preserved head must be outside the repaint mask"
+    assert preserve.getpixel((100, 60)) == 255
+    assert preserve.getpixel((100, 90 + NECK_OVERLAP // 2)) == 255, "neck overlap missing"
+    ring = silhouette_outline(carrier_person)
+    assert ring.getpixel((100, 150)) == 0 and ring.getpixel((60, 150)) == 255
+    assert sum(ring.histogram()[1:]) < sum(carrier_person.histogram()[1:])
     graph = edit_graph("carrier.png", PROMPTS["identity"], 1, "test", "performer.png", "mask.png")
     assert graph["7"]["inputs"]["image1"] == ["6", 0]
     assert graph["8"]["inputs"]["image2"] == ["16", 0]

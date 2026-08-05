@@ -472,7 +472,7 @@ the face is described positively by what it lacks. `featureless body` must stay
 out of that negative: it argues against the blank face. Both lists are needed at
 once — supplying either alone loses what the other fixed.
 
-### Control images on the repaint, 2026-08-04 — negative result
+### Control images on the repaint, 2026-08-04 — registration solved
 
 Output root: `.../cover-story-qwen2512-phase3-probe`, runs `phase3-canny-*` and
 `phase3-openpose-*`, same two seeds as the uncontrolled run so the control image
@@ -581,6 +581,327 @@ detector has almost no edge to find. The probe derives the outline from
 `screen_foreground()` instead, which separates them on colour and whose boundary
 *is* the silhouette — 18,553 px, and the only geometry a uniformly painted body
 has to offer anyway.
+
+### Promoted into the pipeline, 2026-08-05 — not yet run end to end
+
+The inverted transfer was proven in `run_phase3_probe.py`, which meant the
+pipeline itself still ran the construction that failed five ways: nothing
+downstream of `[identity]` — clothes, extract, composite — had ever seen a
+correct body.
+
+The geometry now lives in `layered_costume_production.py`, where it is covered
+by the self-test and shared by every caller:
+
+| function | what it decides |
+|---|---|
+| `face_align()` | scale and offset from the *face* box, not the head box |
+| `aligned_height_check()` | silhouette height ratio, the guard that catches a wrong anchor |
+| `body_repaint_mask()` | carrier ∪ performer silhouette, minus the preserved head |
+| `silhouette_outline()` | the canny control, from the screen key rather than a luminance gradient |
+| `image_from` / `dilate` / `screen_foreground` / `silhouette_box` | moved up from the PoC; the old names are aliases |
+
+`run_qwen2512_skin_head_clothes_poc.py`'s `[identity]` stage now runs
+`aligned_performer()` → `body_masks()` → `identity_control()` → one masked edit
+with the performer as image 1, the skin plate as image 2, and the canny control
+at `CONTROL_STRENGTH` 3.0. `run_phase3_probe.py` keeps only what is
+probe-specific — multiple seeds, scoring, `distorted_control()` — and aliases
+the rest, so the probe cannot drift away from what ships.
+
+New gate, `identity_registration_checks()`: `body_registration` measures
+left/right/bottom against the carrier and fails above
+`BODY_DRIFT_LIMIT_PX` (4), and `preserved_head_unchanged` asserts the head is
+bit-identical to the aligned input. The top of the silhouette is reported as
+`head_top_offset_px` and not scored — it is the performer's hair against the
+carrier's bald skull, and counting it reported 11 px for a run whose real worst
+error was 2.
+
+`EDIT_MODEL` now defaults to `qwen_image_edit_2511_fp8mixed.safetensors`. The
+int8_convrot name it carried is the one that cannot load on ComfyUI 0.26.2, and
+`CONFIG_TEMPLATE` copies it into every freshly written `instance.json`. The
+sibling `comfy-bootstrap` repo still declares the int8 file.
+
+#### Canvas decided: 832x1248
+
+`CANVAS` is now 2:3, matching the 1024x1536 source portraits and the 600x900
+card, so the card crop is a scale rather than a decision about what to discard.
+The catalog's `settings.canvas` follows. The reference document still says
+1024x1024 and needs the same edit.
+
+`registration()` was the reason this mattered: its comparison boxes were written
+as 1024-square pixel coordinates and it refused anything else outright, so it
+could not score a single asset this pipeline has ever produced. The boxes are
+now fractions of `CANVAS`.
+
+Rewriting it surfaced a second, worse problem. Acceptance read
+`abs(dx) <= 2 and abs(dy) <= 2`, which is the loop's own bound — the search only
+ever covers ±2 px, so that condition tested the loop, not the images. A
+candidate shifted 8 px returned `{"accepted": True, "translation_px": [2, 2]}`:
+the best offset available, pinned against the edge of the window, with the true
+optimum outside it. Acceptance now requires an **interior** minimum, which is
+the only available evidence that the search window contained the answer.
+
+#### Pose consistency is a hard gate
+
+Confirmed as a requirement, not a preference: several performers on one pose
+must land on the same silhouette to within ±2 px and ±0.5%.
+`silhouette_spread()` measures it, peak-to-peak rather than by standard
+deviation — at three or four samples the outlier is the result.
+
+Scale spread is read off **width only**. Height is measured from the top edge,
+which is hair, and varies by tens of pixels between performers for reasons that
+have nothing to do with pose; the first version of the check reported 4% scale
+spread on three silhouettes that agreed to within 2 px.
+
+`BODY_DRIFT_LIMIT_PX` drops from 4 to 2 to match. The best measured run is 1–2
+px on two sides and 2–3 on the third, so a seed can legitimately fail this gate.
+That is the gate working. It is not to be widened to make a run pass.
+
+**Unverified.** All of this is offline work: both self-tests pass and the
+imports are clean, but no stage has been run against a GPU since the promotion.
+The first pod run is a correctness check, not a result. The existing v19/v20d
+output roots are 1024² and will now fail `check_image` — they predate the
+identity fix and are superseded, but nothing has been deleted.
+
+### Pod verification: the ghost-foot investigation, 2026-08-05
+
+New pod, `instance.json` repointed, `pod_bootstrap.sh` clean
+(`--cache-lru` already set, CorridorKey imports torch). Output root
+`.../cover-story-qwen2512-skin-head-clothes-poc-v3`, since v2 still held the
+*old* construction's `identity.png` and resuming into it would have silently
+reused a file the promotion was meant to replace.
+
+`[preflight]` through `[preprocess]` passed clean at the new canvas.
+`[identity]` failed its own gate: `body_registration` at 6 px worst drift
+against the 2 px limit, on the pipeline's own fixed seed
+(`qwen2512:identity-body`) — never run before, distinct from the seed family
+(`run_identity_ab.SEED_LABEL`) every earlier "good" number in this document was
+measured on. A characterization run (4 seeds, same construction) clustered at
+3–4 px, worse than yesterday's 1–2 but not wildly so — consistent with normal
+seed variance on a harder carrier, not obviously broken.
+
+**Then it turned out to be worse than the metric said.** The full `identity.png`
+showed a body visibly smaller than the carrier's, and a close crop of the feet
+showed why: a faint, foot-shaped double exposure sitting *below* the real feet,
+tracing roughly where the carrier's own feet are. `screen_foreground()`'s bbox
+metric was counting that faint region as figure, which is why 6 px measured as
+"close" to a defect that, by eye, was not close at all. The same shape existed,
+fainter, in *yesterday's accepted* canny-s3 runs — this was not a regression
+from the promotion, it was the long-standing "faint pale band … never
+investigated" line finally large enough to see clearly, because this carrier's
+alignment mismatch (34 px) was bigger than the typical case.
+
+**Hypothesis 1, reference/control conflict — tested and wrong.** `edit_graph`
+feeds `image1` whole and unmasked to `TextEncodeQwenImageEditPlus`, so the
+model sees the aligned performer's real (mismatched) foot position as a
+reference even inside the repaint mask. `blank_reference_excess()` painted that
+excess strip to background before upload. The ghost did not move — a before/
+after crop of the exact same feet is pixel-for-pixel the same defect. Since
+`denoise=1.0` re-noises the masked region from the latent, the model was never
+drawing on that reference content in the first place; the theory was wrong, not
+just unhelpful.
+
+**Hypothesis 2, weak ControlNet edge — tested and made it worse.** An offline
+proxy (box-downsampling the canny outline to the ControlNet's ~8× working
+resolution) showed the true boundary row at 76–163/255, not a confident edge.
+Widening `OUTLINE_WIDTH` from 5 to 24 px to test this directly produced a
+harsh black silhouette burned around the legs (worst drift 15 px, up from 5–6)
+— a clearly worse result, not a fix. The proxy measurement was real; the
+inference drawn from it was not.
+
+**The user's idea, tested properly this time — worked.** Guide `[preprocess]`
+itself on the carrier's silhouette (canny, carrier's own head excluded via a
+fresh SAM box), so the performer's proportions track the carrier's *before*
+`aligned_performer()`'s face-based scale ever runs, rather than reconciling a
+mismatch after the fact. This had been raised the previous session and set
+aside once repaint-stage control closed the registration gap — "no longer
+*needed*" was read as "not worth testing," which was the wrong call. Openpose
+was tried first here and made the mismatch *worse* (height ratio 1.072 against
+uncontrolled 1.048): a skeleton states joints, not silhouette extent. Canny,
+tested next, measured 1.016 and visibly removed the ghost. Promoted into
+`[preprocess]` as `PREPROCESS_CONTROL`.
+
+**Then the user looked closer and found two more defects the metric had
+missed.** A dark line running down the thigh gap, and a chest visibly smaller
+than the carrier's. Neither was in yesterday's accepted work, nor in this
+carrier's own pre-fix runs — new since the two fixes above. A five-way
+isolation (canny-preprocess × reference-blanking, all four combinations, plus
+a same-seed no-fix control) untangled them:
+
+| combination | thigh line | chest matches carrier |
+|---|---|---|
+| neither fix (this seed) | absent | **absent** |
+| reference-blanking alone | absent | absent |
+| canny-preprocess alone | absent | absent |
+| **both together** | **present** | absent |
+
+The thigh line was an interaction: it needed both fixes at once and appeared
+in no other combination. Moot once reference-blanking came out (below). The
+chest, though, was absent in *every* combination including the true control —
+every test that day had used the pipeline's own fixed seed, while every
+"good" chest in this document had been measured on the `SEED_LABEL` family.
+**It was seed variance, not a construction defect** — a confound this
+document's own noise-floor warning (four seeds spanning 8.7 points of score)
+should have flagged sooner.
+
+**Reference-blanking: no benefit, and a real cost.** It never closed the
+ghost. It also measurably shrank the chest in every test where it was
+active, despite never touching a chest pixel — editing part of the unmasked
+reference image appears to shift the model's *global* proportion read of the
+whole figure, not just the region actually painted over. Reverted:
+`blank_reference_excess()` and its wiring removed from `body_masks()`,
+`[identity]`, and the probe scripts, along with its self-test coverage.
+
+**Canny-guided preprocess: also reverted, once it stopped mattering.** Its
+whole purpose was registering the performer's *body* to the carrier before a
+repaint. Once the repaint itself was removed (next section), nothing
+downstream reads `preprocessed.png`'s body at all — only its face, for
+`aligned_performer()`'s scale and position. Keeping the control bought
+nothing and cost a SAM call plus a ControlNet edit per run.
+`preprocess_control()` and `PREPROCESS_CONTROL` removed; `[preprocess]` is a
+plain unconditioned edit again.
+
+### The real fix: deterministic body construction, 2026-08-05
+
+The user's framing, mid-investigation: *"We are still not getting the correct
+body. We need to take a step back… I want the same body to ensure that the
+clothes fit."* That reframes the requirement correctly. Diffusion regenerating
+a body to *approximately* match the carrier is fundamentally the wrong
+mechanism for a downstream clothes plate that needs *exact* agreement — the
+chest-size confound above is proof by example: the same seed that produces a
+registration-passing body can still produce the wrong proportions, because
+nothing in the construction forces proportions to be preserved, only silhouette
+edges.
+
+`[identity]` no longer runs an edit at all for the body. `compose_identity()`
+(new, `run_qwen2512_skin_head_clothes_poc.py`) does three things, in order:
+
+1. `aligned_performer()` — unchanged, still the only GPU-adjacent step (one SAM
+   call for her face box), still exists purely to place her head at the right
+   scale and position.
+2. A second SAM call for her head box on the aligned image, dilated by
+   `NECK_OVERLAP` — the paste mask.
+3. `production.deterministic_skin_recolor()` — recolor the **carrier's own
+   pixels**, not a separately-generated plate, to the performer's sampled skin
+   tone. The carrier is matte body paint on a real photographed figure, so its
+   green channel's raw value already *is* a shading map: brighter paint reads
+   as a highlight, darker as a shadow. `new_pixel = target_rgb * (green_value /
+   mean_green_in_figure)`, clamped, applied only inside `screen_foreground()`.
+   Background pixels are untouched.
+4. `production.head_transplant()` — `Image.composite()` of her aligned head
+   onto the toned body, using a Gaussian-blurred version of the head mask as
+   alpha, so the join blends over a narrow band instead of a hard seam.
+
+**Registration by construction, not by tuning.** Below the head-blend band,
+every pixel is the carrier's own pixel. There is no repaint, no ControlNet, no
+ghost, no seed-dependent chest — the only way this construction can fail to
+match the carrier is a bug in the compositing itself, which the checks below
+are built to catch.
+
+**Two real bugs, both caught by the user, both fixed same-session:**
+
+- **Checked against the wrong plate.** The first working version compared
+  `identity.png` against `skin-tone.png` and passed at 0/0/1 px — genuinely
+  bit-exact against *that* plate. But `skin-tone.png` is itself an
+  independently-diffused recolor of the carrier with its own drift (up to 7 px,
+  the `[skin]` stage's own registration check), and the `[clothes]` plate is
+  built from `carrier.png` directly (`carrier_for_screen()`, a bit-exact
+  channel swap). Measuring identity against carrier directly: 3/4/6 px —
+  nearly all of `skin.png`'s own drift, inherited whole. The user caught this
+  by eye ("does it match the carrier exactly, or the skin colour template
+  exactly?") before it was checked. Fixed by recoloring `carrier.png` directly
+  (above) instead of `skin.png`, and by rewriting every check
+  (`silhouette_checks()`, `identity_composite_checks()`) to compare against
+  `carrier`, never `skin`. `skin.png` is no longer read by `[identity]` at
+  all — `[skin]` still runs and still passes its own checks, but is now
+  vestigial for identity purposes; worth removing in a follow-up pass.
+- **`screen_foreground(carrier, "green")` — backwards.** `screen_foreground`'s
+  `screen=` names the *background* colour to key out; for the carrier that is
+  blue, not green, and every other call site in this file already knew that
+  (default, no explicit argument). Passing `"green"` inverted the mask: it
+  recolored the *background* rectangle and left the actual green figure
+  untouched, producing `body_matches_carrier` drift of (217, 314, 67) px and
+  `background_still_blue: green` — an unmissable failure once run, but it
+  shipped on the first attempt after the plate switch. Root cause: a second,
+  unrelated function on the same call (`deterministic_skin_recolor`) also took
+  a `screen=` parameter, meaning the figure's own *paint* colour, the opposite
+  end of the same image. Fixed by correcting the call
+  (`screen_foreground(carrier_image)`, default blue) and by renaming
+  `deterministic_skin_recolor`'s parameter to `paint_channel=`, so the same
+  word cannot mean opposite things on adjacent lines again.
+
+**Verified, both times locally before spending GPU.** Both bugs were caught
+and fixed by re-running the affected check function directly against the
+already-generated pod output in a local Python shell — no GPU needed to
+confirm a pure-PIL fix — before the next full pod run.
+
+**The shoulder seam wasn't excellent, so it got its own small fix.** The
+Gaussian-blend band at the neck/shoulders read slightly soft next to the crisp
+skin either side of it. `smooth_seam()` (new) masks *only* that band —
+`production.blend_zone()`, the pixels where `head_transplant()`'s own alpha is
+strictly between 0 and 255, dilated 15 px (`SEAM_EDIT_MARGIN`) for working
+room — and runs one small masked edit (`SEAM_PROMPT`, denoise 1.0, no
+control) to harmonize tone and texture across it. This is a far lower-risk
+mask than the abandoned repaint construction's: a narrow band with real,
+fully-formed content on both sides for the model to reconcile, not most of a
+body to invent from a silhouette outline. `masked_edit_checks()` confirms
+`outside_mask_unchanged: 0` and `inside_mask_changed` nonzero on every run;
+`silhouette_checks()` re-confirms the smoothing left the silhouette untouched.
+
+One check-writing lesson from building this: the first version of the
+post-composite checks tried to prove bit-exactness using an *eroded/dilated
+approximation* of `head_transplant()`'s alpha (a fixed margin, assumed larger
+than the blur's reach) rather than the real alpha. It failed on real data —
+her hair's outline is concave enough (loose strands, not a smooth oval) that a
+uniform erosion distance from the *outer* boundary does not bound distance
+from every *nearby* boundary, and ~30% of the assumed "core" had already been
+blurred. Recomputing the same Gaussian blur `head_transplant()` uses and
+checking `alpha >= 255` / `alpha <= 0` directly — rather than approximating
+where those values must be — removed the assumption instead of tuning it.
+
+**Final verified result**, this carrier and seed, after all of the above:
+
+| check | result |
+|---|---|
+| `head_region_bit_exact` (composite) | 0 px changed |
+| `body_region_bit_exact` (composite) | 0 px changed |
+| `body_matches_carrier` (composite) | **0/0/0 px** |
+| `outside_mask_unchanged` (seam smoothing) | 0 px changed |
+| `inside_mask_changed` (seam smoothing) | 4799–7150 px (did something) |
+| `body_matches_carrier` (post-smoothing) | **0/0/0 px** |
+| identity score vs shipped portrait | 12.89 (ceiling 12.33; yesterday's best repaint, 12.66–12.71) |
+
+Full pipeline ran clean end to end for the first time on a corrected body:
+`[carrier]` → `[envelope]` → `[skin]` → `[preprocess]` → `[identity]` →
+`[clothes]` → `[extract]` → `[composite]`, all checks passing.
+
+**The composite itself surfaces the next, separate problem.** Body
+registration is solved and proven exact; the clothes/extraction layers are
+not, and this is the first time anyone has looked at them on a correct body
+rather than a mismatched one. Three visible defects, none touched today:
+
+- **Neckline** — a ragged, pixelated edge right at the collar boundary.
+  Likely a CorridorKey alpha-matte quality issue at a sharp skin/dark-fabric
+  contrast line.
+- **Waist** — visible skin slivers on both sides between bodice and hip. A
+  genuine coverage gap, likely the clothes envelope not extending far enough
+  around the body's side profile.
+- **Feet/shoes** — bare feet and shoes both visible, overlapping, with
+  scattered speckled-black noise around the ankles reading as a broken alpha
+  matte rather than a clean shoe extraction. The worst of the three.
+
+None of these are body-registration problems — the body underneath is now
+provably exact — and none were reachable before today, since no prior run
+produced a composite worth looking at closely. Next session's starting point.
+
+**Files from today's investigation**, kept as an audit trail rather than
+cleaned up: `run_preprocess_pose_probe.py` (the openpose-vs-canny preprocess
+test), `run_ghost_foot_comparison.py` / `run_ghost_foot_isolation*.py` (the
+five-way isolation). `run_phase3_probe.py`, `body_masks()`,
+`identity_control()`, `IDENTITY_PROMPT`, `IDENTITY_CONTROL` and the
+`CONTROL_NET`/`POSE_MODEL` machinery all still exist and are still correct —
+they are the abandoned repaint construction, superseded but not deleted,
+since the probe scripts still reference them as the historical construction
+today's numbers are compared against.
 
 ### GPU memory: what `/free` actually does, 2026-08-04
 

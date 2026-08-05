@@ -105,10 +105,41 @@ PREPROCESS_PROMPT = (
 # hair length: "the face and hair of the woman in image 2" already takes hers, and an earlier
 # "let long hair fall behind her shoulders" pushed long hair onto performers who do not have it. The
 # clothing layer covers the shoulder underlap through composite order, not through the prompt.
+# The inverted transfer. Every earlier construction painted the performer's face into the carrier
+# and lost to whatever face was already there, because the carrier's face is the spatial prior at
+# exactly that position. Here she is image 1, the mask covers her body, and her head sits outside
+# it where ImageCompositeMasked is bit-exact: identity cannot drift because nothing repaints it.
+#
+# Image 2 is the skin plate, not the raw carrier: same pose and silhouette but natural skin, so the
+# body being painted has nothing green to copy.
 IDENTITY_PROMPT = (
-    "Keep image 1's pose, body, framing and blue background unchanged. Replace only the masked head and neck "
-    "with the face and hair of the woman in image 2. Keep her head proportional to image 1's body."
+    "Keep image 1's head, face and hair completely unchanged. Change her body below the neck to the bare "
+    "standing body, pose and proportions of image 2, with the same matte chroma key blue background."
 )
+# Alignment matches faces, not heads -- see production.face_align().
+FACE_SAM_PROMPT = "face"
+HEAD_SAM_PROMPT = "head, face, ears and hair"
+PERSON_SAM_PROMPT = "the whole person"
+SAM_PREFIX = "cover-story/qwen2512-skin-head-clothes"
+# A small, local touch-up on compose_identity()'s output: the Gaussian-blended join at the neck and
+# shoulders reads slightly soft next to the crisp skin either side of it. Says nothing about pose,
+# shape or proportions -- the mask (production.blend_zone(), a narrow dilated band around the actual
+# blend) is what keeps this from being able to touch either.
+SEAM_PROMPT = (
+    "Smooth and blend the skin tone, texture and lighting across the masked area where her neck and "
+    "shoulders meet, so the join between them is seamless and natural. Keep her pose, body shape, "
+    "proportions and everything outside the masked area exactly the same."
+)
+# Canny over openpose: measured 1-2 px of silhouette drift against openpose's 2-7. Identity came
+# out equivalent (12.66 against 12.51 with a 12.33 ceiling), but at n=2 those ranges overlap, so
+# only the silhouette result is established.
+# IDENTITY_CONTROL, IDENTITY_PROMPT and the functions below them (body_masks(), identity_control())
+# are the 2026-08-04/05 diffusion-repaint construction: paint the carrier's silhouette onto the
+# performer via a masked edit and a ControlNet. Superseded in the pipeline by compose_identity() --
+# see its docstring -- but kept, and still used by run_phase3_probe.py and the day's
+# run_ghost_foot_*.py comparison scripts, as the historical construction those measurements are
+# against.
+IDENTITY_CONTROL = "canny"
 # The outfit enumeration is the free-form design description the handover calls for, so it stays.
 # What was removed: green "hair" the bald carrier does not have, "green suit" vocabulary belonging
 # to the v20d carrier, and negations that only ever reached the model as positive tokens.
@@ -234,31 +265,11 @@ def soft_free(server, drop_from_ram=False):
             time.sleep(SERVER_RETRY_WAIT)
 
 
-def image_from(path):
-    with Image.open(path) as opened:
-        return opened.convert("RGB").copy()
-
-
-def dilate(mask, size):
-    """Identical to MaxFilter(size) for the square structuring elements used here, but O(px * k)
-    instead of O(px * k**2): a 97px dilation of an 832x1248 mask drops from ~27s to ~5s."""
-    for _ in range(size // 2):
-        mask = mask.filter(ImageFilter.MaxFilter(3))
-    return mask
-
-
-def screen_foreground(image, screen="blue"):
-    """Raw foreground estimate from key-channel dominance; a hint input, never final alpha.
-
-    Parameterised by screen because the clothing plate now keys green while skin and identity stay
-    on blue. Hardcoded blue counted a green background as *figure*, which inflated
-    clothes_no_interior_holes to 778670 and silently handed CorridorKey a hint covering the whole
-    canvas -- defeating the very hint fix this revision exists for."""
-    red, green, blue = image.convert("RGB").split()
-    key, others = (green, (red, blue)) if screen == "green" else (blue, (red, green))
-    dominance = ImageChops.subtract(key, ImageChops.lighter(*others))
-    background = dominance.point(lambda value: 255 if value >= 12 else 0)
-    return ImageOps.invert(background)
+# These three moved to the production module when the inverted identity transfer was promoted out
+# of run_phase3_probe.py; the aliases stay because the probes and the metrics call them as poc.*.
+image_from = production.image_from
+dilate = production.dilate
+screen_foreground = production.screen_foreground
 
 
 def screen_foreground_hint(image, screen="blue", dilation=HINT_DILATION):
@@ -274,6 +285,96 @@ def sam_hints(server, source, prompts, prefix, work):
     if len(paths) != len(prompts):
         raise RuntimeError(f"expected {len(prompts)} SAM hints, found {len(paths)}")
     return [Image.open(path).convert("L").copy() for path in paths]
+
+
+def sam_mask(server, image, prompt, work, prefix):
+    """One SAM region as a hard binary mask, with its bbox."""
+    mask = sam_hints(server, image, [prompt], prefix, work)[0].point(lambda value: 255 if value > 127 else 0)
+    box = mask.getbbox()
+    if box is None:
+        raise RuntimeError(f"SAM found no '{prompt}' in {image}")
+    return mask, box
+
+
+def aligned_performer(server, preprocessed, carrier, root, work):
+    """Put the performer on the carrier's canvas with her face on the carrier's face.
+
+    The preprocess stage already arrives at roughly the right scale (measured 0.99 x 1.036 against
+    the carrier), so this is a small correction rather than a rescue. See production.face_align()
+    for why the anchor is the face box and not the head box."""
+    path = root / "performer-aligned.png"
+    if path.is_file():
+        return path
+    _, face = sam_mask(server, preprocessed, FACE_SAM_PROMPT, work, f"{SAM_PREFIX}/performer-face")
+    _, target = sam_mask(server, carrier, FACE_SAM_PROMPT, work, f"{SAM_PREFIX}/carrier-face")
+    with Image.open(carrier) as opened:
+        size = opened.size
+    aligned, scale = production.face_align(image_from(preprocessed), face, target, size,
+                                           image_from(carrier).getpixel((8, 8)))
+    save_png(aligned, path)
+    check = production.aligned_height_check(production.silhouette_box(path),
+                                            production.silhouette_box(carrier))
+    print(f"  aligned: performer face {face} -> carrier face {target}, scale {scale:.3f}; "
+          f"{check['detail']}", flush=True)
+    if not check["passed"]:
+        path.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"aligned figure is {check['detail']['ratio']}x the carrier's height, outside "
+            f"+/-{production.FACE_ALIGN_TOLERANCE:.0%}. Alignment matched the wrong feature: "
+            f"performer face {face}, carrier face {target}, scale {scale:.3f}")
+    return path
+
+
+def body_masks(server, aligned, carrier, root, work):
+    """Repaint and preserve masks for the diffusion-repaint construction; see
+    production.body_repaint_mask(). Superseded in the pipeline by compose_identity(), which needs no
+    repaint mask at all -- kept for run_phase3_probe.py and the run_ghost_foot_*.py comparison
+    scripts. See LAYERED_COSTUME_PRODUCTION_STATUS.md, 2026-08-05, for why the repaint approach (a
+    ghost limb from a reference/control conflict, then a chest size that turned out to vary by seed
+    regardless of any fix) was abandoned rather than patched further."""
+    repaint_path = root / "masks" / "identity-body-mask.png"
+    preserve_path = root / "masks" / "identity-preserved-head.png"
+    if repaint_path.is_file() and preserve_path.is_file():
+        return repaint_path, preserve_path
+    person, _ = sam_mask(server, aligned, PERSON_SAM_PROMPT, work, f"{SAM_PREFIX}/person")
+    head, _ = sam_mask(server, aligned, HEAD_SAM_PROMPT, work, f"{SAM_PREFIX}/head")
+    carrier_person, _ = sam_mask(server, carrier, PERSON_SAM_PROMPT, work, f"{SAM_PREFIX}/carrier-person")
+    repaint, preserve = production.body_repaint_mask(person, head, carrier_person)
+    save_png(repaint, repaint_path)
+    save_png(preserve, preserve_path)
+    print(f"  mask: repaint {sum(repaint.histogram()[1:])} px, preserved head "
+          f"{sum(preserve.histogram()[1:])} px", flush=True)
+    return repaint_path, preserve_path
+
+
+def identity_control(server, kind, carrier, preserve, root, work, force, outline_width=None):
+    """Control image for the body repaint, built from the *carrier* -- the pose being targeted.
+
+    The preserved head is cut out of it either way. Nothing inside that region can be repainted, so
+    head geometry in the control can only argue with pixels the sampler is not allowed to touch.
+    For openpose that is free (draw_head/draw_face switches); for canny the bald skull outline has
+    to be erased by hand, or the control asks for a scalp edge exactly where the hair is.
+
+    outline_width overrides production.OUTLINE_WIDTH for canny, and is folded into the cache path so
+    a wider test doesn't collide with the default-width file."""
+    suffix = f"-w{outline_width}" if kind == "canny" and outline_width else ""
+    raw = root / f"identity-control-{kind}{suffix}-raw.png"
+    path = root / f"identity-control-{kind}{suffix}.png"
+    if path.is_file() and not force:
+        return path
+    if kind == "canny":
+        outline = production.silhouette_outline(screen_foreground(image_from(carrier)),
+                                                 width=outline_width or production.OUTLINE_WIDTH)
+        save_png(outline.convert("RGB"), raw)
+    else:
+        control_image(server, carrier, kind, f"{SAM_PREFIX}/control-{kind}", raw, work, force)
+    image = image_from(raw)
+    head = Image.open(preserve).convert("L").resize(image.size, Image.Resampling.NEAREST)
+    image.paste(Image.new("RGB", image.size, (0, 0, 0)), (0, 0), dilate(head, 9))
+    save_png(image, path)
+    print(f"  control {kind}{suffix}: {sum(1 for pixel in image.convert('L').getdata() if pixel > 32)} "
+          f"lit px after clearing the preserved head", flush=True)
+    return path
 
 
 def generate_carrier(server, path, work, force):
@@ -602,6 +703,118 @@ def masked_edit_checks(reference, candidate, mask, screen=None):
         checks.append({"name": "no_paint_remnant_in_edit", "passed": residue < 0.05,
                        "detail": {"paint": paint, "fraction": residue}})
     return checks
+
+
+def compose_identity(server, aligned, carrier, root, work):
+    """Build the identity plate by pasting the performer's own head onto the carrier's own body,
+    instead of asking diffusion to regenerate a body that only approximates the carrier's
+    proportions.
+
+    Registration by construction, not by control-strength tuning: below the head-blend band, every
+    pixel of the output is derived directly from carrier.png's own pixel grid (see
+    production.deterministic_skin_recolor()), so its silhouette can only differ from the carrier's
+    by measurement noise, not by seed and not by a second diffusion pass's own drift. An earlier
+    revision recolored via skin.png, a separately-diffused variant, and that pass's own registration
+    error (measured up to 7px against the carrier) passed straight through to identity.png -- exactly
+    the residue a downstream clothes plate, built from the carrier's own bit-exact pixels, cannot
+    absorb. The 2026-08-04/05 repaint construction before that closed drift to 1-3px across several
+    fixes but never reached 0, and a fixed body proportion (chest size, thigh gap) turned out to vary
+    by seed regardless. See LAYERED_COSTUME_PRODUCTION_STATUS.md, 2026-08-05.
+
+    No GPU cost beyond the two SAM calls aligned_performer() already spends and one more for the
+    head mask here -- the compositing and recolor are pure PIL. Writes identity-composite.png, not
+    identity.png: smooth_seam() runs on top of this and its own output is what downstream stages
+    read as the identity plate."""
+    composite = root / "identity-composite.png"
+    preserve_path = root / "masks" / "identity-preserved-head.png"
+    toned_body_path = root / "identity-toned-body.png"
+    if composite.is_file() and preserve_path.is_file() and toned_body_path.is_file():
+        return composite, preserve_path, toned_body_path
+    head, head_box = sam_mask(server, aligned, HEAD_SAM_PROMPT, work, f"{SAM_PREFIX}/head")
+    preserve = dilate(head, production.NECK_OVERLAP)
+    save_png(preserve, preserve_path)
+    aligned_image, carrier_image = image_from(aligned), image_from(carrier)
+    performer_tone = production.region_tone(aligned_image, production.inset(head_box, 0.3))
+    # screen_foreground()'s screen= names the *background* colour to key out (blue, for the
+    # carrier) -- unrelated to deterministic_skin_recolor()'s paint_channel=, which names the
+    # *figure's own paint* colour (green) it reads as a shading map. Same word, opposite ends of
+    # the same image; this collision produced a real bug the first time through -- see
+    # LAYERED_COSTUME_PRODUCTION_STATUS.md, 2026-08-05.
+    body_foreground = screen_foreground(carrier_image)
+    toned_body = production.deterministic_skin_recolor(carrier_image, body_foreground, performer_tone,
+                                                        paint_channel="green")
+    save_png(toned_body, toned_body_path)
+    composed = production.head_transplant(aligned_image, toned_body, preserve)
+    save_png(composed, composite)
+    print(f"  compose: performer tone {performer_tone}", flush=True)
+    return composite, preserve_path, toned_body_path
+
+
+def silhouette_checks(candidate, carrier):
+    """Does the result's silhouette still match the carrier's -- the one thing that has to hold for
+    the clothes plate, built from that same carrier, to fit. Compared against carrier.png directly,
+    not skin.png: an earlier revision compared against skin.png, which is itself an independently
+    diffused recolor with up to 7px of its own drift from the carrier, and that residue passed
+    straight through as if it were not there. Valid at any stage of the identity pipeline, since
+    nothing after compose_identity() is allowed to touch the outer body silhouette (the seam mask
+    sits at the neck/shoulders, nowhere near it)."""
+    candidate_box, carrier_box = production.silhouette_box(candidate), production.silhouette_box(carrier)
+    drift = {"left": abs(candidate_box[0] - carrier_box[0]), "right": abs(candidate_box[2] - carrier_box[2]),
+             "bottom": abs(candidate_box[3] - carrier_box[3])}
+    return [
+        {"name": "body_matches_carrier", "passed": max(drift.values()) <= 1,
+         "detail": {"body_drift_px": drift, "head_top_offset_px": candidate_box[1] - carrier_box[1]}},
+        {"name": "background_still_blue", "passed": production.screen_color(candidate) == "blue",
+         "detail": production.screen_color(candidate)},
+    ]
+
+
+def identity_composite_checks(aligned, carrier, toned_body, candidate, preserve_path):
+    """Did the head survive untouched, did the body outside the blend band survive untouched against
+    the *toned* body it was actually composited from, plus silhouette_checks(). Valid only for
+    compose_identity()'s direct output: it asserts bit-exactness right up to the raw blend boundary,
+    which smooth_seam() is deliberately allowed to cross by SEAM_EDIT_MARGIN for working room -- see
+    masked_edit_checks() for the check that's actually valid after that stage.
+
+    core/outside are derived from the *real* alpha head_transplant() used (a Gaussian blur of
+    `preserve`), not an eroded/dilated approximation of it. The first version used a fixed erosion
+    margin as a proxy for "far enough from the boundary that blur has not reached it" and that proxy
+    failed on this mask: her hair's outline is concave enough (individual strands, not a smooth
+    oval) that a uniform erosion distance from the *outer* boundary does not bound the distance from
+    every *nearby* boundary, and roughly 30% of the supposed "core" on a real run had already been
+    blurred. Checking the alpha directly has no such assumption to get wrong."""
+    with Image.open(preserve_path) as opened:
+        preserve = opened.convert("L")
+    alpha = preserve.filter(ImageFilter.GaussianBlur(production.HEAD_BLEND_FEATHER))
+    core, outside = alpha.point(lambda v: 255 if v >= 255 else 0), alpha.point(lambda v: 255 if v <= 0 else 0)
+    aligned_image, toned_body_image, after = image_from(aligned), image_from(toned_body), image_from(candidate)
+
+    def region_changed(before, region):
+        return sum(ImageChops.multiply(ImageChops.difference(before, after).convert("L")
+                                       .point(lambda value: 255 if value else 0), region).histogram()[1:])
+
+    head_changed = region_changed(aligned_image, core)
+    body_changed = region_changed(toned_body_image, outside)
+    return [
+        {"name": "head_region_bit_exact", "passed": head_changed == 0, "detail": head_changed},
+        {"name": "body_region_bit_exact", "passed": body_changed == 0, "detail": body_changed},
+        *silhouette_checks(candidate, carrier),
+    ]
+
+
+def smooth_seam(server, composite, preserve_path, root, work, force):
+    """A local, masked touch-up on compose_identity()'s output, smoothing the neck/shoulder join
+    without touching anything else. See SEAM_PROMPT and production.blend_zone()."""
+    mask_path = root / "masks" / "identity-seam-mask.png"
+    identity = root / "identity.png"
+    with Image.open(preserve_path) as opened:
+        preserve = opened.convert("L")
+    mask = production.blend_zone(preserve)
+    save_png(mask, mask_path)
+    edit(server, composite, SEAM_PROMPT, mask_path, None,
+         production.seed_for("qwen2512:identity-seam"), f"{SAM_PREFIX}/identity-seam", identity,
+         work, force)
+    return identity, mask_path
 
 
 def alpha_checks(carrier, source, alpha, name, aperture=None, screen="blue"):
@@ -1081,7 +1294,12 @@ def main():
         return print(root)
 
     print("[preprocess]", flush=True)
-    # performer = image 1, no second reference: see PREPROCESS_PROMPT for why.
+    # performer = image 1, no second reference: see PREPROCESS_PROMPT for why. Unconditioned: an
+    # earlier revision guided this on the carrier's silhouette (canny) so the performer's own body
+    # proportions would track the carrier's before alignment -- worth it only while the identity
+    # stage repainted a body from those proportions. Now only her *head* survives past
+    # aligned_performer(); the rest of preprocessed.png is discarded, so matching its body to the
+    # carrier bought nothing and cost a SAM call, a ControlNet edit, and the risk both carried.
     preprocessed = root / "preprocessed.png"
     edit(server, performer, PREPROCESS_PROMPT, None, None, production.seed_for("qwen2512:preprocess"),
          "cover-story/qwen2512-skin-head-clothes/preprocess", preprocessed, work, args.force)
@@ -1091,10 +1309,21 @@ def main():
 
     print("[identity]", flush=True)
     envelope = load_accepted_envelope(root, carrier)
-    identity = root / "identity.png"
-    edit(server, skin, IDENTITY_PROMPT, envelope["head_mask"], preprocessed,
-         production.seed_for("qwen2512:identity-head"), "cover-story/qwen2512-skin-head-clothes/identity", identity, work, args.force)
-    report(root, "identity", masked_edit_checks(skin, identity, envelope["head_mask"]))
+    # Deterministic: her head pasted onto the carrier's own body, not a diffusion repaint. See
+    # compose_identity(). Checked before spending GPU on the seam smoothing below, so a geometry
+    # problem fails fast rather than after an edit call that would only inherit it.
+    aligned = aligned_performer(server, preprocessed, carrier, root, work)
+    composite, preserved_head, toned_body = compose_identity(server, aligned, carrier, root, work)
+    report(root, "identity-composite",
+           identity_composite_checks(aligned, carrier, toned_body, composite, preserved_head))
+    # A small, local touch-up on the join; see smooth_seam(). masked_edit_checks() already proves
+    # outside its (wider) seam mask is bit-exact vs the composite, and the composite's own check
+    # above already proved it bit-exact vs aligned/toned_body out to the narrower raw blend boundary
+    # -- so only the silhouette is worth re-verifying here, not head/body bit-exactness against a
+    # boundary the touch-up was deliberately allowed to cross.
+    identity, seam_mask = smooth_seam(server, composite, preserved_head, root, work, args.force)
+    report(root, "identity", [*masked_edit_checks(composite, identity, seam_mask),
+                              *silhouette_checks(identity, carrier)])
     if done("identity"):
         return print(root)
 
