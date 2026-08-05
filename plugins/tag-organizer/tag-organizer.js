@@ -159,13 +159,24 @@
 
   function duplicateReviewed(group, choice) {
     return Boolean(
-      choice && choice.survivor_id && choice.source_ids && choice.source_ids.length &&
+      choice && choice.target_id && choice.source_ids && choice.source_ids.length &&
       (!(group.conflicts || []).length || choice.override_remote_ids)
     );
   }
 
   function duplicateChoiceResolved(choice) {
     return !choice || !choice.has_conflicts || Boolean(choice.override_remote_ids);
+  }
+
+  function duplicateMergeSummary(group, choice) {
+    const tags = (group && group.tags) || [];
+    const targetTag = tags.find(function (tag) { return String(tag.id) === (choice && choice.target_id); });
+    const sourceIds = (choice && choice.source_ids) || [];
+    const sourceTags = tags.filter(function (tag) { return sourceIds.indexOf(String(tag.id)) >= 0; });
+    if (!targetTag) return "Choose a target tag to keep.";
+    if (!sourceTags.length) return "Choose one or more source tags to merge into “" + targetTag.name + "”.";
+    return "Will merge " + sourceTags.map(function (tag) { return "“" + tag.name + "”"; }).join(", ") +
+      " into “" + targetTag.name + "”.";
   }
 
   function cleanupApplyArgs(token, backupReady, junkIds, duplicateChoices, splitChoices) {
@@ -178,7 +189,7 @@
         const choice = duplicateChoices[groupId] || {};
         return {
           group_id: groupId,
-          survivor_id: choice.survivor_id || "",
+          target_id: choice.target_id || "",
           source_ids: (choice.source_ids || []).map(String),
           override_remote_ids: Boolean(choice.override_remote_ids),
         };
@@ -207,6 +218,33 @@
     );
   }
 
+  function failedJunkIds(result) {
+    const ids = new Set();
+    ((result && result.failures) || []).forEach(function (failure) {
+      if (failure.kind === "delete" && failure.tag_id) ids.add(String(failure.tag_id));
+    });
+    return ids;
+  }
+
+  function failedDuplicateGroupIds(result) {
+    const ids = new Set();
+    ((result && result.failures) || []).forEach(function (failure) {
+      if (failure.kind === "merge" && failure.group_id) ids.add(String(failure.group_id));
+    });
+    ((result && result.warnings) || []).forEach(function (warning) {
+      if (warning.kind === "remote-conflict" && warning.requires_override && warning.group_id) ids.add(String(warning.group_id));
+    });
+    return ids;
+  }
+
+  function failedSplitParentIds(result) {
+    const ids = new Set();
+    ((result && result.failures) || []).forEach(function (failure) {
+      if (failure.kind === "split" && failure.tag_id) ids.add(String(failure.tag_id));
+    });
+    return ids;
+  }
+
   function cleanupPageInfo(review) {
     const page = Number(review && review.page) || 1;
     const perPage = Number(review && review.per_page) || 50;
@@ -233,7 +271,7 @@
     return {
       deleteCount: (junkIds && junkIds.size) || 0,
       mergeCount: duplicateValues.filter(function (choice) {
-        return choice.survivor_id && choice.source_ids && choice.source_ids.length;
+        return choice.target_id && choice.source_ids && choice.source_ids.length;
       }).length,
       splitCandidateCount: splitCandidateCount,
       sceneUpdateEstimate: sceneUpdateEstimate,
@@ -388,8 +426,12 @@
       assert.equal(retained["parent-1"][0].action, "parent-only");
       assert.equal(retained["parent-1"][1].candidate_id, "page-2");
       assert.equal(retained["parent-2"][0].candidate_id, "page-2");
-      assert.equal(duplicateReviewed({ conflicts: [] }, { survivor_id: "1", source_ids: ["2"] }), true);
-      assert.equal(duplicateReviewed({ conflicts: [{}] }, { survivor_id: "1", source_ids: ["2"] }), false);
+      assert.equal(duplicateReviewed({ conflicts: [] }, { target_id: "1", source_ids: ["2"] }), true);
+      assert.equal(duplicateReviewed({ conflicts: [{}] }, { target_id: "1", source_ids: ["2"] }), false);
+      const summaryGroup = { tags: [{ id: "1", name: "Fishnet" }, { id: "2", name: "Fishnets" }] };
+      assert.equal(duplicateMergeSummary(summaryGroup, { target_id: "", source_ids: [] }), "Choose a target tag to keep.");
+      assert.equal(duplicateMergeSummary(summaryGroup, { target_id: "1", source_ids: [] }), "Choose one or more source tags to merge into “Fishnet”.");
+      assert.equal(duplicateMergeSummary(summaryGroup, { target_id: "1", source_ids: ["2"] }), "Will merge “Fishnets” into “Fishnet”.");
       assert.equal(duplicateChoiceResolved(null), true);
       assert.equal(duplicateChoiceResolved({ has_conflicts: false }), true);
       assert.equal(duplicateChoiceResolved({ has_conflicts: true }), false);
@@ -398,25 +440,41 @@
         "cleanup-token",
         true,
         new Set(["1"]),
-        { "duplicate-1-2": { survivor_id: "1", source_ids: ["2"] } },
+        { "duplicate-1-2": { target_id: "1", source_ids: ["2"] } },
         { "3": [{ candidate_id: "candidate", action: "child-only" }] }
       );
       assert.deepEqual(cleanupArgs.duplicates[0].source_ids, ["2"]);
       assert.equal(cleanupArgs.splits[0].candidates[0].action, "child-only");
-      const resolvedDuplicates = { "duplicate-1-2": { survivor_id: "1", source_ids: ["2"], has_conflicts: false } };
-      const unresolvedDuplicates = { "duplicate-1-2": { survivor_id: "1", source_ids: ["2"], has_conflicts: true, override_remote_ids: false } };
+      const resolvedDuplicates = { "duplicate-1-2": { target_id: "1", source_ids: ["2"], has_conflicts: false } };
+      const unresolvedDuplicates = { "duplicate-1-2": { target_id: "1", source_ids: ["2"], has_conflicts: true, override_remote_ids: false } };
       assert.equal(cleanupCanApply(cleanup, "cleanup-token", true, true, resolvedDuplicates), true);
       assert.equal(cleanupCanApply(cleanup, "cleanup-token", false, true, resolvedDuplicates), false);
       assert.equal(cleanupCanApply(cleanup, "cleanup-token", true, true, unresolvedDuplicates), false);
       assert.deepEqual(cleanupPageInfo({ page: 1, per_page: 1, total: 72 }), {
         start: 1, end: 1, hasPrevious: false, hasNext: true,
       });
+      const applyResult = {
+        deleted: ["9"],
+        merged: [{ group_id: "duplicate-1-2", target_id: "1", source_ids: ["2"] }],
+        applied_splits: [{ tag_id: "5", candidate_ids: ["a"] }],
+        failures: [
+          { kind: "delete", tag_id: "10", error: "marker is primary" },
+          { kind: "merge", group_id: "duplicate-3-4", error: "the target cannot also be a source" },
+          { kind: "split", tag_id: "6", error: "scene changed" },
+        ],
+        warnings: [
+          { kind: "remote-conflict", group_id: "duplicate-7-8", requires_override: true },
+        ],
+      };
+      assert.deepEqual(Array.from(failedJunkIds(applyResult)), ["10"]);
+      assert.deepEqual(Array.from(failedDuplicateGroupIds(applyResult)).sort(), ["duplicate-3-4", "duplicate-7-8"]);
+      assert.deepEqual(Array.from(failedSplitParentIds(applyResult)), ["6"]);
       const summary = cleanupSelectionSummary(
         { duplicate_count: 2, split_count: 2 },
         new Set(["1", "2"]),
         {
-          "duplicate-1-2": { survivor_id: "1", source_ids: ["2"], has_conflicts: false },
-          "duplicate-3-4": { survivor_id: "", source_ids: [], has_conflicts: true, override_remote_ids: false },
+          "duplicate-1-2": { target_id: "1", source_ids: ["2"], has_conflicts: false },
+          "duplicate-3-4": { target_id: "", source_ids: [], has_conflicts: true, override_remote_ids: false },
         },
         { "5": [{ candidate_id: "a", scene_count: 3 }, { candidate_id: "b", scene_count: 1 }] }
       );
@@ -434,7 +492,7 @@
       const reviewStateArgs = cleanupReviewStateArgs(
         "cleanup-token",
         new Set(["1"]),
-        { "duplicate-1-2": { survivor_id: "1", source_ids: ["2"], has_conflicts: false } },
+        { "duplicate-1-2": { target_id: "1", source_ids: ["2"], has_conflicts: false } },
         { "5": [{ candidate_id: "a", child_name: "Child", scene_count: 3 }] },
         "splits",
         "5",
@@ -445,7 +503,7 @@
       assert.equal(reviewStateArgs.split_parent_id, "5");
       const hydrated = cleanupReviewStateFromSaved({
         junk_ids: ["1", "2"],
-        duplicates: { "duplicate-1-2": { survivor_id: "1", source_ids: ["2"] } },
+        duplicates: { "duplicate-1-2": { target_id: "1", source_ids: ["2"] } },
         splits: { "5": [{ candidate_id: "a" }] },
         section: "duplicates",
         split_parent_id: "5",
@@ -574,6 +632,7 @@
     const [cleanupMessage, setCleanupMessage] = React.useState("");
     const [cleanupWarning, setCleanupWarning] = React.useState("");
     const [cleanupBackup, setCleanupBackup] = React.useState(false);
+    const [cleanupBackupOverride, setCleanupBackupOverride] = React.useState(false);
     const [cleanupJunk, setCleanupJunk] = React.useState(new Set());
     const [cleanupDuplicatesChoice, setCleanupDuplicatesChoice] = React.useState({});
     const [cleanupSplitsChoice, setCleanupSplitsChoice] = React.useState({});
@@ -589,6 +648,7 @@
     const [cleanupCandidateReview, setCleanupCandidateReview] = React.useState(null);
     const [cleanupCandidateLoading, setCleanupCandidateLoading] = React.useState(false);
     const [cleanupApplyModalOpen, setCleanupApplyModalOpen] = React.useState(false);
+    const [cleanupRefreshNonce, setCleanupRefreshNonce] = React.useState(0);
     const hydratedReviewTokenRef = React.useRef("");
     const skipNextReviewSaveRef = React.useRef(false);
     const reviewSaveTimerRef = React.useRef(null);
@@ -613,10 +673,11 @@
     const cleanupHasSelections = cleanupJunk.size > 0 ||
       Object.keys(cleanupDuplicatesChoice).length > 0 ||
       Object.keys(cleanupSplitsChoice).length > 0;
+    const cleanupBackupSatisfied = cleanupBackup || cleanupBackupOverride;
     const cleanupReady = cleanupCanApply(
       cleanupState,
       cleanupToken,
-      cleanupBackup,
+      cleanupBackupSatisfied,
       cleanupHasSelections,
       cleanupDuplicatesChoice
     );
@@ -685,7 +746,7 @@
 
     React.useEffect(function () {
       if (!cleanupToken || hydratedReviewTokenRef.current !== cleanupToken) return undefined;
-      if (!cleanupState || cleanupState.status !== "completed") return undefined;
+      if (!cleanupState || !["completed", "applied"].includes(cleanupState.status)) return undefined;
       if (skipNextReviewSaveRef.current) {
         skipNextReviewSaveRef.current = false;
         return undefined;
@@ -930,7 +991,7 @@
           setCleanupLoading(false);
         });
       return function () { stopped = true; };
-    }, [cleanupToken, cleanupState && cleanupState.status, cleanupSection, cleanupView,
+    }, [cleanupToken, cleanupState && cleanupState.status, cleanupSection, cleanupView, cleanupRefreshNonce,
       cleanupView && cleanupView.filter === "selected" && cleanupSection === "tags" ? Array.from(cleanupJunk).join("\0") : "",
       cleanupView && cleanupView.filter === "selected" && cleanupSection === "duplicates" ? Object.keys(cleanupDuplicatesChoice).join("\0") : "",
       cleanupView && cleanupView.filter === "selected" && cleanupSection === "splits" ? Object.keys(cleanupSplitsChoice).join("\0") : ""]);
@@ -952,7 +1013,7 @@
           setCleanupCandidateLoading(false);
         });
       return function () { stopped = true; };
-    }, [cleanupToken, cleanupSection, cleanupSplitParentId]);
+    }, [cleanupToken, cleanupSection, cleanupSplitParentId, cleanupRefreshNonce]);
 
     async function scan() {
       setBusy("scan");
@@ -1001,6 +1062,7 @@
       setCleanupMessage("");
       setCleanupWarning("");
       setCleanupBackup(false);
+      setCleanupBackupOverride(false);
       setCleanupApplyModalOpen(false);
       setCleanupJob(null);
       setCleanupJunk(new Set());
@@ -1053,14 +1115,32 @@
         const result = await runOperation(
           cleanupApplyArgs(
             cleanupToken,
-            cleanupBackup,
+            cleanupBackupSatisfied,
             cleanupJunk,
             cleanupDuplicatesChoice,
             cleanupSplitsChoice
           )
         );
-        setCleanupState(function (current) { return Object.assign({}, current, { status: "applied", apply_result: result }); });
+        const keepJunk = failedJunkIds(result);
+        const keepDuplicates = failedDuplicateGroupIds(result);
+        const keepSplits = failedSplitParentIds(result);
+        setCleanupJunk(function (current) {
+          const next = new Set();
+          current.forEach(function (id) { if (keepJunk.has(id)) next.add(id); });
+          return next;
+        });
+        setCleanupDuplicatesChoice(function (current) {
+          const next = {};
+          Object.keys(current).forEach(function (groupId) { if (keepDuplicates.has(groupId)) next[groupId] = current[groupId]; });
+          return next;
+        });
+        setCleanupSplitsChoice(function (current) {
+          const next = {};
+          Object.keys(current).forEach(function (splitId) { if (keepSplits.has(splitId)) next[splitId] = current[splitId]; });
+          return next;
+        });
         setCleanupBackup(false);
+        setCleanupBackupOverride(false);
         setCleanupMessage(
           "Cleanup applied: " + (result.deleted || []).length + " deleted, " +
             (result.merged || []).length + " merged, " +
@@ -1069,9 +1149,17 @@
         if ((result.failures || []).length || (result.warnings || []).length) {
           setCleanupWarning(
             (result.failures || []).length + " failure(s), " +
-              (result.warnings || []).length + " warning(s). Review the apply result before rescanning."
+              (result.warnings || []).length + " warning(s). Failed or unresolved items remain selected for retry."
           );
         }
+        try {
+          const freshStatus = await runOperation({ mode: "cleanup_status", cleanup_token: cleanupToken });
+          setCleanupState(Object.assign({}, freshStatus, { apply_result: result }));
+        } catch (statusError) {
+          setCleanupState(function (current) { return Object.assign({}, current, { status: "applied", apply_result: result }); });
+        }
+        setCleanupCandidateReview(null);
+        setCleanupRefreshNonce(function (nonce) { return nonce + 1; });
       } catch (applyError) {
         setCleanupError(errorMessage(applyError));
       } finally {
@@ -1200,10 +1288,10 @@
     function changeDuplicateChoice(group, field, value) {
       setCleanupDuplicatesChoice(function (current) {
         const next = Object.assign({}, current);
-        const choice = Object.assign({ survivor_id: "", source_ids: [], override_remote_ids: false }, next[group.id] || {});
+        const choice = Object.assign({ target_id: "", source_ids: [], override_remote_ids: false }, next[group.id] || {});
         choice.has_conflicts = Boolean((group.conflicts || []).length);
-        if (field === "survivor_id") {
-          choice.survivor_id = value;
+        if (field === "target_id") {
+          choice.target_id = value;
           choice.source_ids = choice.source_ids.filter(function (id) { return id !== value; });
         } else if (field === "source_ids") {
           choice.source_ids = value;
@@ -1280,13 +1368,13 @@
           const selected = Boolean(choice);
           return React.createElement("tr", { key: candidate.id },
             React.createElement("td", null, React.createElement("input", {
-              type: "checkbox", checked: selected, disabled: cleanupBusy || cleanupState.status === "applied",
+              type: "checkbox", checked: selected, disabled: cleanupBusy,
               onChange: function (event) { changeSplitChoice(splitId, candidate, {}, !event.target.checked); },
               "aria-label": "Select " + (candidate.remote_name || candidate.child_name),
             })),
             React.createElement("td", null, React.createElement(Form.Control, {
               size: "sm", value: choice ? choice.child_name : candidate.child_name || "",
-              disabled: cleanupBusy || cleanupState.status === "applied",
+              disabled: cleanupBusy,
               onChange: function (event) { changeSplitChoice(splitId, candidate, { child_name: event.target.value }); },
             })),
             React.createElement("td", { className: "small" },
@@ -1304,7 +1392,7 @@
             React.createElement("td", null, candidate.scene_count || 0),
             React.createElement("td", null, React.createElement(Form.Control, {
               as: "select", size: "sm", value: choice ? choice.action : candidate.action || "child-only",
-              disabled: cleanupBusy || cleanupState.status === "applied",
+              disabled: cleanupBusy,
               onChange: function (event) { changeSplitChoice(splitId, candidate, { action: event.target.value }); },
             },
               React.createElement("option", { value: "child-only" }, "Child only"),
@@ -1314,7 +1402,7 @@
             )),
             React.createElement("td", null, React.createElement("input", {
               type: "checkbox", checked: choice ? choice.remove_alias !== false : true,
-              disabled: cleanupBusy || cleanupState.status === "applied",
+              disabled: cleanupBusy,
               onChange: function (event) { changeSplitChoice(splitId, candidate, { remove_alias: event.target.checked }); },
               "aria-label": "Remove alias " + candidate.alias,
             }))
@@ -1829,7 +1917,7 @@
             )
           : null,
         cleanupState && cleanupState.status === "applied"
-          ? React.createElement(Alert, { variant: "success" }, "This review plan has been applied. Scan again before any further changes.")
+          ? React.createElement(Alert, { variant: "success" }, "At least one round of changes has been applied. Selections that succeeded were cleared below — keep reviewing to apply more, or start a new scan any time.")
           : null,
         cleanupMessage ? React.createElement(Alert, { variant: "success" }, cleanupMessage) : null,
         cleanupWarning ? React.createElement(Alert, { variant: "warning" }, cleanupWarning) : null,
@@ -1880,7 +1968,7 @@
                 { variant: "tabs", role: "tablist", className: "mb-3" },
                 [
                   ["tags", "Junk tags", cleanupState.tag_count],
-                  ["duplicates", "Duplicates", cleanupState.duplicate_count],
+                  ["duplicates", "Merge duplicates", cleanupState.duplicate_count],
                   ["splits", "Alias splits", cleanupState.split_count],
                 ].map(function (tab) {
                   return React.createElement(
@@ -1989,7 +2077,7 @@
                         React.createElement("input", {
                           type: "checkbox",
                           checked: cleanupJunk.has(String(row.id)),
-                          disabled: cleanupBusy || cleanupState.status === "applied",
+                          disabled: cleanupBusy,
                           onChange: function (event) {
                             setCleanupJunk(function (current) {
                               const next = new Set(current);
@@ -2029,8 +2117,8 @@
           ? React.createElement(
               React.Fragment,
               null,
-              React.createElement("h4", { className: "h6" }, "Duplicates"),
-              React.createElement("p", { className: "text-muted" }, "Choose the survivor and explicitly select its source tags. Remote identity conflicts require the override checkbox."),
+              React.createElement("h4", { className: "h6" }, "Merge duplicates"),
+              React.createElement("p", { className: "text-muted" }, "Pick the target tag to keep, then explicitly check the source tag(s) to merge into it. Remote identity conflicts require the override checkbox."),
               React.createElement("div", { className: "d-flex justify-content-between align-items-center mb-2" },
                 React.createElement("strong", null, "Duplicate group " + cleanupReview.page + " of " + cleanupReview.total),
                 React.createElement("div", null,
@@ -2047,7 +2135,7 @@
                 )
               ),
               cleanupDuplicateRows.map(function (group) {
-                const choice = cleanupDuplicatesChoice[group.id] || { survivor_id: "", source_ids: [], override_remote_ids: false };
+                const choice = cleanupDuplicatesChoice[group.id] || { target_id: "", source_ids: [], override_remote_ids: false };
                 return React.createElement(
                   "div",
                   { key: group.id, className: "border rounded p-2 mb-2" },
@@ -2060,9 +2148,10 @@
                       ? React.createElement(Badge, { variant: "warning", className: "mr-2" }, "Remote identity conflict")
                       : null
                   ),
+                  React.createElement("p", { className: "font-weight-bold mb-2" }, duplicateMergeSummary(group, choice)),
                   React.createElement(Table, { bordered: true, responsive: true, size: "sm" },
                     React.createElement("thead", null, React.createElement("tr", null,
-                      React.createElement("th", null, "Survivor"),
+                      React.createElement("th", null, "Target"),
                       React.createElement("th", null, "Source"),
                       React.createElement("th", null, "Name"),
                       React.createElement("th", null, "Aliases"),
@@ -2074,14 +2163,14 @@
                       const checked = choice.source_ids.indexOf(id) >= 0;
                       return React.createElement("tr", { key: id },
                         React.createElement("td", null, React.createElement("input", {
-                          type: "radio", name: "survivor-" + group.id, checked: choice.survivor_id === id,
-                          disabled: cleanupBusy || cleanupState.status === "applied",
-                          onChange: function () { changeDuplicateChoice(group, "survivor_id", id); },
-                          "aria-label": "Keep " + tag.name,
+                          type: "radio", name: "target-" + group.id, checked: choice.target_id === id,
+                          disabled: cleanupBusy,
+                          onChange: function () { changeDuplicateChoice(group, "target_id", id); },
+                          "aria-label": "Keep " + tag.name + " as merge target",
                         })),
                         React.createElement("td", null, React.createElement("input", {
                           type: "checkbox", checked: checked,
-                          disabled: cleanupBusy || cleanupState.status === "applied" || id === choice.survivor_id,
+                          disabled: cleanupBusy || id === choice.target_id,
                           onChange: function (event) {
                             const next = choice.source_ids.slice();
                             if (event.target.checked) next.push(id);
@@ -2108,7 +2197,7 @@
                       type: "checkbox",
                       className: "mr-2",
                       checked: Boolean(choice.override_remote_ids),
-                      disabled: cleanupBusy || cleanupState.status === "applied" || !(group.conflicts || []).length,
+                      disabled: cleanupBusy || !(group.conflicts || []).length,
                       onChange: function (event) { changeDuplicateChoice(group, "override_remote_ids", event.target.checked); },
                     }),
                     "Override conflicting remote identities"
@@ -2122,7 +2211,7 @@
               React.Fragment,
               null,
               React.createElement("h4", { className: "h6" }, "Alias splits"),
-              React.createElement("p", { className: "text-muted" }, "Open one alias-bearing parent to load its bounded candidate review. Choices stay selected while navigating."),
+              React.createElement("p", { className: "text-muted" }, "Open one alias-bearing parent to load its bounded candidate review. Choices stay selected while navigating. Use “Select all as children” to turn every alias into a child tag in one click, even aliases with no remote scene evidence."),
               React.createElement(
                 Table,
                 { striped: true, bordered: true, responsive: true },
@@ -2162,6 +2251,17 @@
                   ),
                   React.createElement("div", null,
                     React.createElement(Button, {
+                      size: "sm", variant: "outline-primary", className: "mr-2",
+                      disabled: cleanupBusy || !(cleanupCandidateReview && cleanupCandidateReview.items && cleanupCandidateReview.items.length),
+                      onClick: function () { bulkAliasCandidates((cleanupCandidateReview && cleanupCandidateReview.items) || [], "select"); },
+                      title: "Select every candidate on this page with its default action, so all of this tag's aliases become child tags in one click.",
+                    }, "Select all as children"),
+                    React.createElement(Button, {
+                      size: "sm", variant: "outline-secondary", className: "mr-2",
+                      disabled: cleanupBusy || !(cleanupCandidateReview && cleanupCandidateReview.items && cleanupCandidateReview.items.length),
+                      onClick: function () { bulkAliasCandidates((cleanupCandidateReview && cleanupCandidateReview.items) || [], "clear"); },
+                    }, "Clear all selections"),
+                    React.createElement(Button, {
                       size: "sm", variant: "outline-secondary", className: "mr-2",
                       disabled: cleanupSplitParentIndex <= 0,
                       onClick: function () { setCleanupCandidateReview(null); setCleanupSplitParentId(String(cleanupSplitRows[cleanupSplitParentIndex - 1].tag_id)); },
@@ -2184,12 +2284,17 @@
                       React.createElement("strong", { className: "mr-2" }, "Alias: " + group.alias),
                       React.createElement(Button, {
                         size: "sm", variant: "outline-primary", className: "mr-2",
-                        disabled: !group.exact.length || cleanupState.status === "applied",
+                        disabled: !group.exact.length || cleanupBusy,
                         onClick: function () { bulkAliasCandidates(group.exact, "select"); },
                       }, "Select exact matches"),
+                      React.createElement(Button, {
+                        size: "sm", variant: "outline-primary", className: "mr-2",
+                        disabled: !visible.length || cleanupBusy,
+                        onClick: function () { bulkAliasCandidates(visible, "select"); },
+                      }, "Select all (incl. no-evidence)"),
                       React.createElement(Form.Control, {
                         as: "select", size: "sm", defaultValue: "", className: "mr-2", style: { width: "auto" },
-                        disabled: cleanupState.status === "applied",
+                        disabled: cleanupBusy,
                         onChange: function (event) { if (event.target.value) bulkAliasCandidates(visible, "action", event.target.value); event.target.value = ""; },
                         "aria-label": "Set action for selected " + group.alias + " candidates",
                       },
@@ -2200,7 +2305,7 @@
                         React.createElement("option", { value: "skip" }, "Skip")
                       ),
                       React.createElement(Button, {
-                        size: "sm", variant: "outline-secondary", disabled: cleanupState.status === "applied",
+                        size: "sm", variant: "outline-secondary", disabled: cleanupBusy,
                         onClick: function () { bulkAliasCandidates(visible, "clear"); },
                       }, "Clear visible selections")
                     ),
@@ -2285,7 +2390,7 @@
                   {
                     variant: cleanupBackup ? "success" : "outline-primary",
                     onClick: backupCleanup,
-                    disabled: cleanupBusy || cleanupState.status === "applied",
+                    disabled: cleanupBusy,
                     className: "mr-2",
                   },
                   cleanupBackup ? "Database backup ready" : "Create database backup"
@@ -2295,13 +2400,29 @@
                   {
                     variant: "danger",
                     onClick: function () { setCleanupApplyModalOpen(true); },
-                    disabled: !cleanupReady || cleanupState.status === "applied",
+                    disabled: !cleanupReady || cleanupBusy,
                   },
                   cleanupBusy ? "Applying…" : "Apply reviewed cleanup"
                 )
               ),
               !cleanupBackup
-                ? React.createElement("p", { className: "small text-muted mt-2" }, "A fresh database-only backup is required before applying. This gate resets after a page reload.")
+                ? React.createElement(
+                    "div",
+                    { className: "mt-2" },
+                    React.createElement("p", { className: "small text-muted mb-1" }, "A fresh database-only backup is required before applying. This gate resets after a page reload."),
+                    React.createElement(
+                      "label",
+                      { className: "small text-warning font-weight-bold" },
+                      React.createElement("input", {
+                        type: "checkbox",
+                        className: "mr-2",
+                        checked: cleanupBackupOverride,
+                        disabled: cleanupBusy,
+                        onChange: function (event) { setCleanupBackupOverride(event.target.checked); },
+                      }),
+                      "Apply without a fresh backup (not recommended)"
+                    )
+                  )
                 : null,
               React.createElement(
                 Modal,
@@ -2326,8 +2447,12 @@
                   cleanupSummary.unresolvedConflictCount
                     ? React.createElement(Alert, { variant: "warning" }, cleanupSummary.unresolvedConflictCount + " selected duplicate group(s) still have an unresolved remote identity conflict and will not be merged until the override is checked.")
                     : null,
-                  React.createElement("p", { className: cleanupBackup ? "text-success" : "text-danger" },
-                    cleanupBackup ? "A fresh database backup is ready." : "No fresh database backup for this session yet."
+                  React.createElement("p", { className: cleanupBackup ? "text-success" : cleanupBackupOverride ? "text-warning" : "text-danger" },
+                    cleanupBackup
+                      ? "A fresh database backup is ready."
+                      : cleanupBackupOverride
+                        ? "No fresh database backup — applying anyway per your override."
+                        : "No fresh database backup for this session yet."
                   )
                 ),
                 React.createElement(
