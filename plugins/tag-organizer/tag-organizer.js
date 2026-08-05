@@ -71,6 +71,7 @@
     if (!state || state.status === "waiting") return "No pull has run yet. Click Pull now to process all configured metadata providers.";
     if (state.status === "running") return "No changed or failed scenes yet.";
     if (state.status === "completed") return "No scenes received new matching tags.";
+    if (state.status === "aborted") return "The pull was stopped before it finished.";
     return "No scene results were recorded.";
   }
 
@@ -394,6 +395,7 @@
       assert.equal(pullEmptyState(null).startsWith("No pull has run"), true);
       assert.equal(pullEmptyState({ status: "running", rows: [] }), "No changed or failed scenes yet.");
       assert.equal(pullEmptyState({ status: "completed", rows: [] }), "No scenes received new matching tags.");
+      assert.equal(pullEmptyState({ status: "aborted", rows: [] }), "The pull was stopped before it finished.");
       assert.equal(activeTab("pull", "pull"), true);
       assert.equal(activeTab("pull", "find"), false);
       assert.equal(resumeCleanupTab("find", { status: "running" }), "cleanup");
@@ -813,7 +815,7 @@
           }
           const nativeStatus = nativeJob && nativeJob.status;
           const terminal = terminalJobStatus(nativeStatus) ||
-            scanState.status === "completed" || scanState.status === "failed";
+            scanState.status === "completed" || scanState.status === "failed" || scanState.status === "aborted";
           if (terminal && !Object.prototype.hasOwnProperty.call(scanState, "rows")) {
             scanState = await runOperation({
               mode: "scan_status",
@@ -846,7 +848,7 @@
             return;
           }
           setBusy("");
-          if (nativeStatus === "FAILED" || nativeStatus === "CANCELLED" || scanState.status === "failed") {
+          if (nativeStatus === "FAILED" || nativeStatus === "CANCELLED" || scanState.status === "failed" || scanState.status === "aborted") {
             setError(scanState.error || (nativeJob && nativeJob.error) || "The scan did not complete.");
             setStatus("");
           } else {
@@ -896,8 +898,14 @@
             return;
           }
           setPullState(next);
-          setPullError("");
-          if (next.status === "running") timer = setTimeout(pollPull, 3000);
+          if (next.status === "running") {
+            setPullError("");
+            timer = setTimeout(pollPull, 3000);
+          } else if (next.status === "aborted") {
+            setPullError(next.error || "The pull was stopped before it finished.");
+          } else {
+            setPullError("");
+          }
         } catch (pollError) {
           if (stopped) return;
           errorStreak += 1;
@@ -946,6 +954,9 @@
             timer = setTimeout(pollCleanup, 3000);
           } else if (next.status === "running" && nativeTerminal) {
             setCleanupState(Object.assign({}, next, { status: "failed", error: nativeJob.error || "The cleanup scan did not complete." }));
+          } else if (next.status === "aborted") {
+            setCleanupState(Object.assign({}, next, { status: "aborted", error: next.error || "The cleanup scan was stopped before it finished." }));
+            setCleanupError(next.error || "The cleanup scan was stopped before it finished.");
           }
         } catch (pollError) {
           if (stopped) return;
@@ -1183,6 +1194,18 @@
         setPullState(function (current) {
           return Object.assign({}, current, { status: "failed", error: message });
         });
+      } finally {
+        setPullBusy(false);
+      }
+    }
+
+    async function cancelPull() {
+      if (!pullJob || !pullJob.id) return;
+      setPullBusy(true);
+      try {
+        await stopJob(pullJob.id);
+      } catch (cancelError) {
+        setPullError(errorMessage(cancelError));
       } finally {
         setPullBusy(false);
       }
@@ -1729,22 +1752,38 @@
             )
           ),
           React.createElement(
-            Button,
-            {
-              onClick: pullNow,
-              disabled: !providers.length || pullBusy || pullActive,
-              className: "text-nowrap",
-            },
-            pullBusy
+            "div",
+            { className: "d-flex align-items-center" },
+            pullActive && pullJob && pullJob.id
               ? React.createElement(
-                  React.Fragment,
-                  null,
-                  React.createElement(Spinner, { animation: "border", size: "sm", className: "mr-2" }),
-                  "Starting…"
+                  Button,
+                  {
+                    variant: "secondary",
+                    onClick: cancelPull,
+                    disabled: pullBusy,
+                    className: "text-nowrap mr-2",
+                  },
+                  pullBusy ? "Stopping…" : "Stop"
                 )
-              : pullActive
-                ? "Pulling…"
-                : "Pull now"
+              : null,
+            React.createElement(
+              Button,
+              {
+                onClick: pullNow,
+                disabled: !providers.length || pullBusy || pullActive,
+                className: "text-nowrap",
+              },
+              pullBusy
+                ? React.createElement(
+                    React.Fragment,
+                    null,
+                    React.createElement(Spinner, { animation: "border", size: "sm", className: "mr-2" }),
+                    "Starting…"
+                  )
+                : pullActive
+                  ? "Pulling…"
+                  : "Pull now"
+            )
           )
         ),
         !providers.length
@@ -1762,7 +1801,7 @@
               React.createElement(
                 "p",
                 { className: "text-muted", "aria-live": "polite" },
-                (pullState.status === "running" ? "Pulling" : pullState.status === "completed" ? "Last pull completed" : "Pull failed") +
+                (pullState.status === "running" ? "Pulling" : pullState.status === "completed" ? "Last pull completed" : pullState.status === "aborted" ? "Pull stopped" : "Pull failed") +
                   " · Processed " + pullStateSummary.current + (pullStateSummary.total ? " / " + pullStateSummary.total : "") +
                   " scene(s) · " + pullStateSummary.changed + " changed · " + pullStateSummary.tagsAdded + " tag(s) added" +
                   (pullStateSummary.failures ? " · " + pullStateSummary.failures + " failure(s)" : "")
