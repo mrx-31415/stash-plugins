@@ -19,11 +19,18 @@ added canonical local tag names and scene links.
 
 Use **Clean Up Tags** for a persisted, review-first cleanup plan. It lists all
 tags with per-object usage counts, suggests fuzzy duplicate groups, and shows
-remote evidence for splitting aliases into child tags. Select the survivor and
-source tags explicitly, choose each split action, then create the required
-database-only backup before applying changes. Deletes are attempted
-individually, so marker-primary failures are reported without stopping the
-remaining review.
+remote evidence for splitting aliases into child tags. For each duplicate
+group, pick the target tag to keep and explicitly check the source tag(s) to
+merge into it — a live summary always states "Will merge X into Y" so the
+outcome is unambiguous before you apply. For alias splits, open a parent tag
+and use "Select all as children" to turn every one of its aliases into a
+child tag in one click (including aliases with no remote scene evidence),
+or "Select all (incl. no-evidence)" within a single alias's evidence group.
+Create the required database-only backup before applying changes, or check
+"Apply without a fresh backup" to proceed anyway if you already trust your
+backups — that override, like the backup gate itself, resets on every page
+reload. Deletes are attempted individually, so marker-primary failures are
+reported without stopping the remaining review.
 
 Select one or more results with the checkboxes and click **Add selected** to
 process them in one operation. A failed tag does not prevent the remaining
@@ -45,6 +52,12 @@ Cleanup review plans are persisted under Stash's plugin configuration
 directory. A successful backup is required again after a page reload. Cleanup
 revalidates tag IDs, names, aliases, remote IDs, and hierarchy before every
 tag mutation; scene split updates change scene tag assignments only.
+
+Applying does not require a rescan to keep going: successfully deleted,
+merged, or split items are cleared from the review automatically, while any
+that failed (or hit an unresolved remote identity conflict) stay selected for
+retry. Pick more tags, apply again, and repeat against the same plan — start
+a new scan only when you want a fully fresh snapshot of the library.
 
 ## Upgrading from Pull Remote Tags
 

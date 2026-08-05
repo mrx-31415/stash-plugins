@@ -483,7 +483,7 @@ def cleanup_review_state_duplicates(value):
         if not isinstance(source_ids, list) or any(not isinstance(item, (str, int)) for item in source_ids):
             raise ValueError("duplicate source_ids must be a list")
         duplicates[str(group_id)] = {
-            "survivor_id": str(choice.get("survivor_id") or ""),
+            "target_id": str(choice.get("target_id") or ""),
             "source_ids": [str(item) for item in source_ids],
             "override_remote_ids": bool(choice.get("override_remote_ids")),
             "has_conflicts": bool(choice.get("has_conflicts")),
@@ -553,7 +553,7 @@ def cleanup_review_state_save(server, args):
     if not valid_scan_token(token):
         raise ValueError("cleanup token is required")
     plan = read_cleanup_state(server, token)
-    if plan is None or plan.get("status") != "completed":
+    if plan is None or plan.get("status") not in {"completed", "applied"}:
         raise ValueError("review state can only be saved while the cleanup plan is completed")
     payload = cleanup_review_state_payload(args)
     payload["cleanup_token"] = token
@@ -804,13 +804,13 @@ def remote_id_conflicts(tags):
     }
 
 
-def union_hierarchy(tags, survivor_id, source_ids):
+def union_hierarchy(tags, target_id, source_ids):
     """Collapse source nodes, union their edges, and reject any resulting cycle."""
     source_ids = {str(tag_id) for tag_id in source_ids}
-    survivor_id = str(survivor_id)
-    group_ids = source_ids | {survivor_id}
+    target_id = str(target_id)
+    group_ids = source_ids | {target_id}
     records = cleanup_tags_by_id(tags)
-    if survivor_id not in records or not source_ids <= records.keys():
+    if target_id not in records or not source_ids <= records.keys():
         raise CleanupStaleError("duplicate selection is not present in the scan snapshot")
     parents = {}
     children = {}
@@ -818,16 +818,16 @@ def union_hierarchy(tags, survivor_id, source_ids):
         return [str(value.get("id")) if isinstance(value, dict) else str(value) for value in values or []]
 
     for tag_id, tag in records.items():
-        node = survivor_id if tag_id in group_ids else tag_id
+        node = target_id if tag_id in group_ids else tag_id
         parents.setdefault(node, set())
         children.setdefault(node, set())
         for parent_id in relation_ids(tag.get("parents")):
-            parent_node = survivor_id if parent_id in group_ids else parent_id
+            parent_node = target_id if parent_id in group_ids else parent_id
             if parent_node != node:
                 parents[node].add(parent_node)
                 children.setdefault(parent_node, set()).add(node)
         for child_id in relation_ids(tag.get("children")):
-            child_node = survivor_id if child_id in group_ids else child_id
+            child_node = target_id if child_id in group_ids else child_id
             if child_node != node:
                 children[node].add(child_node)
                 parents.setdefault(child_node, set()).add(node)
@@ -838,8 +838,8 @@ def union_hierarchy(tags, survivor_id, source_ids):
     for values in (parents, children):
         for node, links in values.items():
             links.difference_update(source_ids)
-            if survivor_id in links and node == survivor_id:
-                links.remove(survivor_id)
+            if target_id in links and node == target_id:
+                links.remove(target_id)
 
     visiting = set()
     visited = set()
@@ -858,8 +858,8 @@ def union_hierarchy(tags, survivor_id, source_ids):
     for node in children:
         visit(node)
     return {
-        "parent_ids": sorted(parents.get(survivor_id, set())),
-        "child_ids": sorted(children.get(survivor_id, set())),
+        "parent_ids": sorted(parents.get(target_id, set())),
+        "child_ids": sorted(children.get(target_id, set())),
     }
 
 
@@ -1820,35 +1820,35 @@ def cleanup_resolve_child(local_url, local_headers, expected, parent_id, child_n
     return str(child_id)
 
 
-def cleanup_merge_one(local_url, local_headers, expected, group, selection, result):
-    survivor_id = str(selection.get("survivor_id") or "")
+def cleanup_merge_one(local_url, local_headers, expected, group, selection, result, group_id=""):
+    target_id = str(selection.get("target_id") or "")
     source_ids = sorted({str(tag_id) for tag_id in (selection.get("source_ids") or selection.get("sources") or [])})
     group_ids = {str(tag_id) for tag_id in group.get("tag_ids") or []}
-    if not survivor_id or not source_ids or survivor_id not in group_ids or not set(source_ids) <= group_ids:
-        result["failures"].append({"kind": "merge", "error": "select one survivor and at least one source from the suggested group"})
+    if not target_id or not source_ids or target_id not in group_ids or not set(source_ids) <= group_ids:
+        result["failures"].append({"kind": "merge", "group_id": group_id, "error": "select one target and at least one source from the suggested group"})
         return
-    if survivor_id in source_ids or len(set(source_ids)) != len(source_ids):
-        result["failures"].append({"kind": "merge", "error": "the survivor cannot also be a source"})
+    if target_id in source_ids or len(set(source_ids)) != len(source_ids):
+        result["failures"].append({"kind": "merge", "group_id": group_id, "error": "the target cannot also be a source"})
         return
-    all_ids = [survivor_id, *source_ids]
+    all_ids = [target_id, *source_ids]
     tags = [expected[tag_id] for tag_id in all_ids if tag_id in expected]
     if len(tags) != len(all_ids):
-        result["failures"].append({"kind": "merge", "error": "duplicate selection is not present in the scan snapshot"})
+        result["failures"].append({"kind": "merge", "group_id": group_id, "error": "duplicate selection is not present in the scan snapshot"})
         return
     conflicts = remote_id_conflicts(tags)
     override = bool(selection.get("override_remote_ids") or selection.get("remote_override"))
     if conflicts and not override:
         result["warnings"].append(
-            {"kind": "remote-conflict", "tag_id": survivor_id, "endpoints": conflicts, "requires_override": True}
+            {"kind": "remote-conflict", "group_id": group_id, "tag_id": target_id, "endpoints": conflicts, "requires_override": True}
         )
         return
     try:
-        hierarchy = union_hierarchy(list(expected.values()), survivor_id, source_ids)
+        hierarchy = union_hierarchy(list(expected.values()), target_id, source_ids)
         cleanup_revalidate(local_url, local_headers, expected, all_ids)
-        survivor = expected[survivor_id]
+        target = expected[target_id]
         aliases = dedupe_tag_names(
-            [*survivor.get("aliases", []), *(name for tag in tags[1:] for name in [tag["name"], *tag.get("aliases", [])])],
-            excluded=[survivor["name"]],
+            [*target.get("aliases", []), *(name for tag in tags[1:] for name in [tag["name"], *tag.get("aliases", [])])],
+            excluded=[target["name"]],
         )
         if conflicts and override:
             stash_ids = []
@@ -1860,7 +1860,7 @@ def cleanup_merge_one(local_url, local_headers, expected, group, selection, resu
                         seen_endpoints.add(endpoint)
                         stash_ids.append(stash_id)
             result["warnings"].append(
-                {"kind": "remote-conflict", "tag_id": survivor_id, "endpoints": conflicts, "overridden": True}
+                {"kind": "remote-conflict", "group_id": group_id, "tag_id": target_id, "endpoints": conflicts, "overridden": True}
             )
         else:
             stash_ids = []
@@ -1877,9 +1877,9 @@ def cleanup_merge_one(local_url, local_headers, expected, group, selection, resu
             {
                 "input": {
                     "source": source_ids,
-                    "destination": survivor_id,
+                    "destination": target_id,
                     "values": {
-                        "id": survivor_id,
+                        "id": target_id,
                         "aliases": aliases,
                         "stash_ids": stash_ids,
                         "parent_ids": hierarchy["parent_ids"],
@@ -1889,7 +1889,7 @@ def cleanup_merge_one(local_url, local_headers, expected, group, selection, resu
             },
             local_headers,
         )
-        expected[survivor_id].update(
+        expected[target_id].update(
             {
                 "aliases": aliases,
                 "stash_ids": stash_ids,
@@ -1897,9 +1897,11 @@ def cleanup_merge_one(local_url, local_headers, expected, group, selection, resu
                 "children": hierarchy["child_ids"],
             }
         )
-        result["merged"].append({"survivor_id": survivor_id, "source_ids": source_ids})
+        for source_id in source_ids:
+            expected.pop(source_id, None)
+        result["merged"].append({"group_id": group_id, "target_id": target_id, "source_ids": source_ids})
     except (CleanupStaleError, RuntimeError, ValueError) as error:
-        result["failures"].append({"kind": "merge", "tag_id": survivor_id, "error": str(error)})
+        result["failures"].append({"kind": "merge", "group_id": group_id, "tag_id": target_id, "error": str(error)})
 
 
 def cleanup_apply_splits(local_url, local_headers, expected, split_plan, selections, result):
@@ -2007,6 +2009,10 @@ def cleanup_apply_splits(local_url, local_headers, expected, split_plan, selecti
                     )
                     cleanup_update_expected_aliases(expected, parent_id, remaining)
                     result["aliases_removed"].append({"tag_id": parent_id, "aliases": sorted(aliases_to_remove)})
+            result["applied_splits"].append({
+                "tag_id": parent_id,
+                "candidate_ids": [str(item["candidate"]["id"]) for item in chosen],
+            })
         except (CleanupStaleError, RuntimeError, ValueError) as error:
             result["failures"].append({"kind": "split", "tag_id": parent_id, "error": str(error)})
 
@@ -2036,6 +2042,7 @@ def cleanup_apply(local_url, local_headers, server, args, duplicate_cutoff=DUPLI
         "merged": [],
         "scene_updates": [],
         "aliases_removed": [],
+        "applied_splits": [],
         "warnings": [],
         "failures": [],
     }
@@ -2046,6 +2053,7 @@ def cleanup_apply(local_url, local_headers, server, args, duplicate_cutoff=DUPLI
             if response.get("tagDestroy") is False:
                 raise RuntimeError("tagDestroy returned false")
             result["deleted"].append(tag_id)
+            expected.pop(tag_id, None)
         except (CleanupStaleError, RuntimeError, ValueError) as error:
             result["failures"].append({"kind": "delete", "tag_id": tag_id, "error": str(error)})
 
@@ -2053,18 +2061,19 @@ def cleanup_apply(local_url, local_headers, server, args, duplicate_cutoff=DUPLI
         str(group["id"]): group for group in cleanup_duplicate_groups(state, duplicate_cutoff)
     }
     for selection in args.get("duplicates") or []:
-        group = duplicate_groups.get(str(selection.get("group_id") or selection.get("duplicate_id") or ""))
+        submitted_group_id = str(selection.get("group_id") or selection.get("duplicate_id") or "")
+        group = duplicate_groups.get(submitted_group_id)
         if group is None:
             selected_ids = {str(item) for item in selection.get("source_ids") or selection.get("sources") or []}
-            survivor_id = str(selection.get("survivor_id") or "")
+            target_id = str(selection.get("target_id") or "")
             group = next(
-                (item for item in duplicate_groups.values() if survivor_id in item.get("tag_ids", []) and selected_ids <= set(item.get("tag_ids", []))),
+                (item for item in duplicate_groups.values() if target_id in item.get("tag_ids", []) and selected_ids <= set(item.get("tag_ids", []))),
                 None,
             )
         if group is None:
-            result["failures"].append({"kind": "merge", "error": "unknown duplicate group"})
+            result["failures"].append({"kind": "merge", "group_id": submitted_group_id, "error": "unknown duplicate group"})
             continue
-        cleanup_merge_one(local_url, local_headers, expected, group, selection, result)
+        cleanup_merge_one(local_url, local_headers, expected, group, selection, result, submitted_group_id)
 
     cleanup_apply_splits(
         local_url,
@@ -2074,6 +2083,32 @@ def cleanup_apply(local_url, local_headers, server, args, duplicate_cutoff=DUPLI
         args.get("splits"),
         result,
     )
+
+    removed_ids = set(result["deleted"]) | {
+        source_id for merge in result["merged"] for source_id in merge["source_ids"]
+    }
+    if removed_ids:
+        for tag in expected.values():
+            tag["parents"] = [tag_id for tag_id in tag.get("parents") or [] if tag_id not in removed_ids]
+            tag["children"] = [tag_id for tag_id in tag.get("children") or [] if tag_id not in removed_ids]
+    state["tags"] = list(expected.values())
+    if result["applied_splits"]:
+        applied_by_parent = {
+            str(item["tag_id"]): {str(candidate_id) for candidate_id in item["candidate_ids"]}
+            for item in result["applied_splits"]
+        }
+        for split in state.get("splits") or []:
+            applied_ids = applied_by_parent.get(str(split.get("tag_id")))
+            if not applied_ids:
+                continue
+            split["candidates"] = [
+                candidate for candidate in split.get("candidates") or []
+                if str(candidate.get("id")) not in applied_ids
+            ]
+            parent = expected.get(str(split.get("tag_id")))
+            if parent is not None:
+                split["aliases"] = parent.get("aliases", [])
+                split["alias_count"] = len(parent.get("aliases", []))
     state["status"] = "applied"
     state["apply_result"] = result
     state["error"] = None
@@ -2695,6 +2730,17 @@ def self_test():
         if query == UPDATE_SCENE_MUTATION:
             cleanup_scene["tags"] = [{"id": tag_id} for tag_id in variables["input"]["tag_ids"]]
             return {"sceneUpdate": {"id": cleanup_scene["id"]}}
+        if query == TAGS_MERGE_MUTATION:
+            values = variables["input"]["values"]
+            destination_id = variables["input"]["destination"]
+            for source_id in variables["input"]["source"]:
+                cleanup_store.pop(source_id, None)
+            tag = cleanup_store[destination_id]
+            tag["aliases"] = values.get("aliases", tag["aliases"])
+            tag["stash_ids"] = values.get("stash_ids", tag["stash_ids"])
+            tag["parents"] = [{"id": item} for item in values.get("parent_ids") or []]
+            tag["children"] = [{"id": item} for item in values.get("child_ids") or []]
+            return {"tagsMerge": {"id": destination_id}}
         raise AssertionError(query)
 
     graphql = fake_cleanup_graphql
@@ -2735,6 +2781,7 @@ def self_test():
                 "duplicates": [{
                     "id": "duplicate-1-2",
                     "score": 0.9,
+                    "tag_ids": ["1", "2"],
                     "tags": cleanup_snapshot_tags[:2],
                     "remote_conflicts": {"remote": ["a", "b"]},
                 }],
@@ -2848,7 +2895,7 @@ def self_test():
                     "mode": "cleanup_review_state_save",
                     "cleanup_token": "cleanup-test",
                     "junk_ids": ["3", 3],
-                    "duplicates": {"duplicate-1-2": {"survivor_id": "1", "source_ids": ["2"], "override_remote_ids": True, "has_conflicts": True}},
+                    "duplicates": {"duplicate-1-2": {"target_id": "1", "source_ids": ["2"], "override_remote_ids": True, "has_conflicts": True}},
                     "splits": {"1": [{"candidate_id": "candidate", "action": "child-only", "child_name": "Child", "remove_alias": True, "scene_count": 2}]},
                     "section": "splits",
                     "split_parent_id": "1",
@@ -2911,16 +2958,38 @@ def self_test():
             )
             assert applied["deleted"] == []
             assert applied["failures"][0]["kind"] == "delete"
+            assert applied["applied_splits"] == [{"tag_id": "1", "candidate_ids": ["candidate"]}]
             assert "3" in cleanup_store
             assert cleanup_store["2"]["parents"] == [{"id": "1"}]
             assert cleanup_scene["tags"] == [{"id": "2"}]
             assert cleanup_store["1"]["aliases"] == []
-            try:
-                cleanup_review_state_save({"Dir": cleanup_dir}, {"cleanup_token": "cleanup-test", "junk_ids": []})
-            except ValueError:
-                pass
-            else:
-                raise AssertionError("review state was saved after the cleanup plan was applied")
+            state_after_first_apply = read_cleanup_state({"Dir": cleanup_dir}, "cleanup-test")
+            assert state_after_first_apply["status"] == "applied"
+            assert {tag["id"] for tag in state_after_first_apply["tags"]} == {"1", "2", "3", "4"}
+            assert next(tag for tag in state_after_first_apply["tags"] if tag["id"] == "1")["aliases"] == []
+            assert state_after_first_apply["splits"][0]["candidates"] == []
+            assert state_after_first_apply["splits"][0]["aliases"] == []
+            # Applying once must not force a rescan: review state can still be saved and a
+            # second round can merge/delete/split further tags against the same plan.
+            resaved_review_state = cleanup_review_state_save(
+                {"Dir": cleanup_dir}, {"cleanup_token": "cleanup-test", "junk_ids": []}
+            )
+            assert resaved_review_state == {"ok": True}
+            second_apply = cleanup_apply(
+                "local",
+                {},
+                {"Dir": cleanup_dir},
+                {
+                    "cleanup_token": "cleanup-test",
+                    "backup_confirmed": True,
+                    "duplicates": [{"group_id": "duplicate-1-2", "target_id": "1", "source_ids": ["2"]}],
+                },
+            )
+            assert second_apply["failures"] == []
+            assert second_apply["merged"] == [{"group_id": "duplicate-1-2", "target_id": "1", "source_ids": ["2"]}]
+            state_after_second_apply = read_cleanup_state({"Dir": cleanup_dir}, "cleanup-test")
+            assert {tag["id"] for tag in state_after_second_apply["tags"]} == {"1", "3", "4"}
+            assert "2" not in cleanup_store
     finally:
         graphql = real_cleanup_graphql
     assert any(call[0] == TAG_DESTROY_MUTATION for call in cleanup_calls)

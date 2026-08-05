@@ -1,6 +1,6 @@
 name: Tag Organizer
 description: Find remote tag gaps, sync matching tags, and review tag cleanup safely.
-version: 1.5.0
+version: 1.7.0
 url: https://github.com/mrx-31415/stash-plugins
 exec:
   - python
