@@ -522,7 +522,7 @@
 
   const { React, patch, register, libraries, utils } = api;
   const { Alert, Badge, Button, Form, Modal, Nav, ProgressBar, Spinner, Table } = libraries.Bootstrap;
-  const { NavLink } = libraries.ReactRouterDOM;
+  const { Link, NavLink } = libraries.ReactRouterDOM;
   const { gql } = libraries.Apollo;
   const { faTags } = libraries.FontAwesomeSolid;
   const { getClient } = utils.StashService;
@@ -2089,7 +2089,10 @@
                           "aria-label": "Delete " + row.name,
                         })
                       ),
-                      React.createElement("td", null, row.name, row.aliases && row.aliases.length ? " (" + row.aliases.join(", ") + ")" : ""),
+                      React.createElement("td", null,
+                        React.createElement(Link, { to: "/tags/" + row.id }, row.name),
+                        row.aliases && row.aliases.length ? " (" + row.aliases.join(", ") + ")" : ""
+                      ),
                       React.createElement("td", null,
                         row.usage || 0,
                         row.usage !== row.direct_usage
