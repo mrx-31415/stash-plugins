@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import sys
 import tempfile
+import time
 import unicodedata
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -47,6 +48,11 @@ query CleanupTagsByIds($ids: [ID!]) { findTags(ids: $ids) { tags {
   parents { id } children { id }
 } } }
 """
+TAG_EXISTS_QUERY = "query TagExists($id: ID!) { findTag(id: $id) { id } }"
+SCENES_TAGS_FK_ARGS_RE = re.compile(r"\[\[(\d+)[,\s]+(\d+)\]\]")
+STALE_JOB_GRACE_SECONDS = 300
+
+
 TAG_SEARCH_QUERY = """
 query Tags($filter: FindFilterType) {
   findTags(filter: $filter) { tags { id name aliases } }
@@ -211,6 +217,56 @@ def read_cleanup_review_state(server, token):
             return state if state.get("cleanup_token") == token else None
     except FileNotFoundError:
         return None
+
+
+def tag_exists(local_url, local_headers, tag_id):
+    """Return True if the local tag id still exists."""
+    data = graphql(local_url, TAG_EXISTS_QUERY, {"id": str(tag_id)}, local_headers)
+    return (data.get("findTag") or {}).get("id") is not None
+
+
+def dead_tag_ids_from_error(message):
+    """Extract the tag id from a scenes_tags foreign-key failure message.
+
+    Stash reports these as e.g. ``... INSERT INTO scenes_tags ...` [[3467 253]]:
+    FOREIGN KEY constraint failed`` where 253 is the tag that no longer exists.
+    """
+    match = SCENES_TAGS_FK_ARGS_RE.search(message or "")
+    if not match:
+        return set()
+    return {match.group(2)}
+
+
+def writer_alive(state, path, max_stale_seconds=STALE_JOB_GRACE_SECONDS):
+    """Best-effort check whether the process that wrote `state` is still running.
+
+    Relies on the recorded pid when available; falls back to how recently the
+    state file was written (relevant for state files from older versions).
+    """
+    pid = state.get("pid")
+    if pid is not None:
+        try:
+            os.kill(int(pid), 0)
+        except ProcessLookupError:
+            return False
+        except OSError:
+            pass  # cannot determine (e.g. permission); fall back to file age below
+        else:
+            return True
+    try:
+        return time.time() - path.stat().st_mtime <= max_stale_seconds
+    except OSError:
+        return True
+
+
+def resolve_running_state(state, path):
+    """Mark a persisted 'running' state as aborted when its writer is gone."""
+    if state and state.get("status") == "running" and not writer_alive(state, path):
+        resolved = dict(state)
+        resolved["status"] = "aborted"
+        resolved["error"] = "The job was stopped before it finished."
+        return resolved
+    return state
 
 
 def cleanup_overview(state, token=None, duplicate_cutoff=DUPLICATE_FUZZY_CUTOFF):
@@ -1360,6 +1416,7 @@ def scan_all(local_url, local_headers, provider, server, token):
         "failure_count": 0,
         "rows": [],
         "error": None,
+        "pid": os.getpid(),
     }
     write_scan_state(state_path, state)
     gaps = {}
@@ -1549,11 +1606,13 @@ def pull_all(local_url, local_headers, providers, server):
         "failure_count": 0,
         "rows": [],
         "error": None,
+        "pid": os.getpid(),
     }
     write_pull_state(server, state)
     summary = {"scanned": 0, "changed": 0, "tags_added": 0, "unknown_remote_tags": [], "failures": []}
     cache = {}
     checked_names = set()
+    dead_ids = set()
     total = 0
 
     try:
@@ -1577,6 +1636,7 @@ def pull_all(local_url, local_headers, providers, server):
                     cache,
                     checked_names,
                     canonical_names,
+                    dead_ids,
                 )
                 summary["failures"].extend({"scene_id": scene["id"], **failure} for failure in failures)
                 summary["unknown_remote_tags"] = sorted(set(summary["unknown_remote_tags"]) | unknown_names)
@@ -1668,6 +1728,7 @@ def cleanup_scan_all(local_url, local_headers, providers, server, token, duplica
         "progress_detail": "",
         "duplicate_similarity_cutoff": duplicate_cutoff,
         "error": None,
+        "pid": os.getpid(),
     }
     write_cleanup_state(server, state)
     try:
@@ -2125,6 +2186,11 @@ def run_operation(args, configuration, local_url, local_headers, server):
         state = read_scan_state(server, token)
         if state is None:
             return {"scan_token": token, "status": "waiting", "scanned": 0, "total": 0, "row_count": 0, "rows": []}
+        path = scan_state_path(server, token)
+        resolved = resolve_running_state(state, path)
+        if resolved is not state:
+            write_scan_state(path, resolved)
+            state = resolved
         result = dict(state)
         result["row_count"] = len(state.get("rows") or [])
         if not args.get("include_rows"):
@@ -2144,6 +2210,11 @@ def run_operation(args, configuration, local_url, local_headers, server):
                 "rows": [],
                 "error": None,
             }
+        path = pull_state_path(server)
+        resolved = resolve_running_state(state, path)
+        if resolved is not state:
+            write_pull_state(server, resolved)
+            state = resolved
         result = dict(state)
         result["row_count"] = len(state.get("rows") or [])
         return result
@@ -2152,6 +2223,11 @@ def run_operation(args, configuration, local_url, local_headers, server):
     if mode == "cleanup_status":
         token = args.get("cleanup_token") or args.get("scan_token")
         state = read_cleanup_state(server, token)
+        path = cleanup_state_path(server)
+        resolved = resolve_running_state(state, path) if state is not None else state
+        if resolved is not state:
+            write_cleanup_state(server, resolved)
+            state = resolved
         return cleanup_overview(state, token, duplicate_cutoff)
     if mode == "cleanup_review":
         token = args.get("cleanup_token") or args.get("scan_token")
@@ -2230,9 +2306,11 @@ def run_operation(args, configuration, local_url, local_headers, server):
     raise ValueError("unknown operation")
 
 
-def sync_scene(scene, local_url, local_headers, providers, local_tags, cache, checked_names, canonical_names=None):
+def sync_scene(scene, local_url, local_headers, providers, local_tags, cache, checked_names, canonical_names=None, dead_ids=None):
     if canonical_names is None:
         canonical_names = {}
+    if dead_ids is None:
+        dead_ids = set()
     existing_ids = {tag["id"] for tag in scene.get("tags") or []}
     names, failures = remote_tag_names(scene, providers, cache)
     unchecked = {
@@ -2244,9 +2322,36 @@ def sync_scene(scene, local_url, local_headers, providers, local_tags, cache, ch
     merge_tag_index(local_tags, find_local_tags(local_url, local_headers, unchecked.values(), canonical_names))
     merged_ids = merge_tag_ids(existing_ids, names, local_tags)
     unknown_names = {name for name in names if len(local_tags.get(name.casefold(), set())) != 1}
-    if merged_ids == existing_ids:
+    additions = merged_ids - existing_ids
+    additions = {tag_id for tag_id in additions if str(tag_id) not in dead_ids}
+    if not additions:
         return [], failures, unknown_names
-    graphql(local_url, UPDATE_SCENE_MUTATION, {"input": {"id": scene["id"], "tag_ids": sorted(merged_ids)}}, local_headers)
+
+    def apply_update(tag_ids):
+        graphql(local_url, UPDATE_SCENE_MUTATION, {"input": {"id": scene["id"], "tag_ids": sorted(tag_ids)}}, local_headers)
+
+    try:
+        apply_update(existing_ids | additions)
+    except RuntimeError as error:
+        # A tag matched by name may have been deleted or merged while the pull
+        # was running (e.g. by the cleanup review or another client), leaving a
+        # stale id in the name index. Confirm the reported id is really gone,
+        # prune it from the shared index, and retry once without it.
+        reported = dead_tag_ids_from_error(str(error))
+        dead = {tag_id for tag_id in reported if not tag_exists(local_url, local_headers, tag_id)}
+        if not dead:
+            raise
+        for tag_id in dead:
+            dead_ids.add(str(tag_id))
+            for names_for_id in local_tags.values():
+                names_for_id.discard(tag_id)
+        current_ids = {tag_id for tag_id in existing_ids if str(tag_id) not in dead_ids}
+        additions = {tag_id for tag_id in merged_ids - existing_ids if str(tag_id) not in dead_ids}
+        if current_ids == existing_ids and not additions:
+            return [], failures, unknown_names
+        apply_update(current_ids | additions)
+        existing_ids = current_ids
+        merged_ids = current_ids | additions
     added_names = sorted(
         (canonical_names[str(tag_id)] for tag_id in merged_ids - existing_ids if str(tag_id) in canonical_names),
         key=str.casefold,
@@ -2588,10 +2693,89 @@ def self_test():
             },
         ],
         "error": None,
+        "pid": os.getpid(),
     }
     assert any(state["status"] == "running" and len(state["rows"]) == 1 for state in pull_writes)
     assert "other" in remote_urls
     assert pull_status_result == {**pull_state, "row_count": 2}
+
+    # stale tag ids learned from scenes_tags foreign-key failures are pruned so
+    # the pull recovers instead of failing every affected scene
+    assert dead_tag_ids_from_error(
+        "error executing `INSERT INTO scenes_tags (scene_id, tag_id) VALUES (?, ?) "
+        "ON CONFLICT (scene_id, tag_id) DO NOTHING` [[3467 253]]: FOREIGN KEY constraint failed"
+    ) == {"253"}
+    assert dead_tag_ids_from_error("update failed") == set()
+    stale_calls = []
+
+    def stale_graphql(url, query, variables=None, headers=None):
+        stale_calls.append(query)
+        if query == TAGS_QUERY:
+            return {"findTags": {"tags": [
+                {"id": "1", "name": "Anal", "aliases": []},
+                {"id": "12", "name": "Oral", "aliases": []},
+            ]}}
+        if query == SCENES_QUERY:
+            return {"findScenes": {"count": 2, "scenes": [
+                {"id": "1", "title": "A", "paths": {}, "tags": [], "stash_ids": [{"endpoint": "remote", "stash_id": "a"}]},
+                {"id": "2", "title": "B", "paths": {}, "tags": [], "stash_ids": [{"endpoint": "remote", "stash_id": "b"}]},
+            ]}}
+        if query == REMOTE_TAGS_QUERY:
+            return {"findScene": {"tags": [{"name": "Anal"}, {"name": "Oral"}]}}
+        if query.startswith("query RemoteScenes("):
+            return {
+                f"scene_{index}": {"tags": [{"name": "Anal"}, {"name": "Oral"}]}
+                for index in range(len(variables))
+            }
+        if query == TAG_SEARCH_QUERY:
+            return {"findTags": {"tags": []}}
+        if query == TAG_EXISTS_QUERY:
+            return {"findTag": {"id": "1"} if variables["id"] == "1" else None}
+        if query == UPDATE_SCENE_MUTATION:
+            if variables["input"]["tag_ids"] == ["1", "12"]:
+                raise RuntimeError(
+                    "error executing `INSERT INTO scenes_tags (scene_id, tag_id) VALUES (?, ?) "
+                    "ON CONFLICT (scene_id, tag_id) DO NOTHING` [[1 12]]: FOREIGN KEY constraint failed"
+                )
+            return {"sceneUpdate": {"id": variables["input"]["id"]}}
+        raise AssertionError(query)
+
+    real_stale_graphql = graphql
+    graphql = stale_graphql
+    try:
+        with tempfile.TemporaryDirectory() as stale_dir:
+            stale_result = pull_all("local", {}, {"remote": {"endpoint": "remote", "api_key": "key"}}, {"Dir": stale_dir})
+    finally:
+        graphql = real_stale_graphql
+    assert stale_result["changed"] == 2
+    assert stale_result["tags_added"] == 2
+    assert stale_result["failure_count"] == 0
+    assert stale_result["unknown_remote_tags"] == ["Oral"]
+    assert stale_calls.count(TAG_EXISTS_QUERY) == 1
+    assert stale_calls.count(UPDATE_SCENE_MUTATION) == 3  # failed + retried for scene 1, direct success for scene 2
+
+    # orphaned 'running' state (writer process gone) resolves to aborted
+    with tempfile.TemporaryDirectory() as orphan_dir:
+        orphan_state = {"status": "running", "scanned": 1, "total": 2, "pid": 99999999}
+        write_pull_state({"Dir": orphan_dir}, orphan_state)
+        orphan_result = run_operation(
+            {"mode": "pull_status"},
+            {"general": {"stashBoxes": []}},
+            "local",
+            {},
+            {"Dir": orphan_dir},
+        )
+        assert orphan_result["status"] == "aborted"
+        assert orphan_result["error"] == "The job was stopped before it finished."
+        assert read_pull_state({"Dir": orphan_dir})["status"] == "aborted"
+        # a live writer (this test process) is still reported as running
+        live_state = {"status": "running", "pid": os.getpid()}
+        live_path = Path(orphan_dir) / "tag-organizer" / "pull.json"
+        write_pull_state({"Dir": orphan_dir}, live_state)
+        assert writer_alive(live_state, live_path) is True
+        # state without a pid falls back to file age
+        assert writer_alive({"status": "running"}, live_path) is True
+        assert resolve_running_state(live_state, live_path)["status"] == "running"
     bulk_calls = [call for call in calls if call[0] == BULK_UPDATE_SCENES_MUTATION]
     assert [call[1]["input"]["ids"] for call in bulk_calls] == [["1"], ["2"], ["1"]]
     assert hook_target({"args": {}}, {}) == "all"
