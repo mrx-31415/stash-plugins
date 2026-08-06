@@ -2,10 +2,10 @@ name: Deploy repository to Github Pages
 
 on:
   push:
-      paths:
-      - 'plugins/**'
-      branches:
+    branches:
       - main
+    paths:
+      - 'plugins/**'
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
