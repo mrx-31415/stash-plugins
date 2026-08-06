@@ -321,6 +321,158 @@
     };
   }
 
+  function linkRowsByKind(state) {
+    const rows = state && Array.isArray(state.rows) ? state.rows : [];
+    const groups = { ready: [], review: [], merges: [] };
+    rows.forEach(function (row) {
+      if (row.kind === "merge") groups.merges.push(row);
+      else if (row.preselected) groups.ready.push(row);
+      else groups.review.push(row);
+    });
+    return groups;
+  }
+
+  function linkRowSurvivor(row) {
+    const id = String((row && row.survivor_id) || "");
+    return ((row && row.candidates) || []).find(function (candidate) {
+      return String(candidate.id) === id;
+    }) || null;
+  }
+
+  function linkRowText(row, selection) {
+    if (!row) return "";
+    const remote = row.remote_name || "";
+    const survivor = linkRowSurvivor(row);
+    if (!survivor) return "Choose a local tag to link to “" + remote + "”.";
+    if (row.kind === "merge") {
+      const selectedNames = (row.candidates || [])
+        .filter(function (candidate) {
+          return selection && selection.source_ids.has(String(candidate.id));
+        })
+        .map(function (candidate) { return "“" + candidate.name + "”"; });
+      if (!selectedNames.length) return "Link “" + survivor.name + "” to “" + remote + "” — no merges selected.";
+      return "Merge " + selectedNames.join(", ") + " into “" + survivor.name + "” and link to “" + remote + "”.";
+    }
+    return "Link “" + survivor.name + "” to “" + remote + "”.";
+  }
+
+  function linkSelectionInit(state) {
+    const selections = {};
+    ((state && state.rows) || []).forEach(function (row) {
+      const key = String(row.remote_name || "").toLowerCase();
+      if (!key) return;
+      // Merge rows start with no sources selected: checking the row only links
+      // the survivor, and the user ticks exactly which variants to merge in.
+      selections[key] = {
+        remote_name: row.remote_name,
+        checked: Boolean(row.preselected),
+        survivor_id: row.survivor_id ? String(row.survivor_id) : "",
+        source_ids: new Set(),
+        override: false,
+      };
+    });
+    return selections;
+  }
+
+  function updateLinkSelection(current, row, changes) {
+    const key = String(row.remote_name || "").toLowerCase();
+    const base = {
+      remote_name: row.remote_name,
+      checked: false,
+      survivor_id: row.survivor_id ? String(row.survivor_id) : "",
+      source_ids: new Set(),
+      override: false,
+    };
+    const next = Object.assign({}, current);
+    next[key] = Object.assign({}, current[key] || base, changes || {});
+    return next;
+  }
+
+  function linkRowNeedOverride(row) {
+    return Boolean(((row && row.candidates) || []).some(function (candidate) {
+      return Boolean(candidate.provider_stash_id);
+    }));
+  }
+
+  function linkCheckedSelections(selections) {
+    return Object.keys(selections || {}).map(function (key) {
+      return selections[key];
+    }).filter(function (selection) {
+      return selection.checked && selection.survivor_id;
+    });
+  }
+
+  function linkSelectionHasMerge(selections) {
+    return linkCheckedSelections(selections).some(function (selection) {
+      return Array.from(selection.source_ids || []).length > 0;
+    });
+  }
+
+  function linkSelectionSummary(state, selections) {
+    let links = 0;
+    let merges = 0;
+    let overrides = 0;
+    linkCheckedSelections(selections).forEach(function (selection) {
+      // a checked row only performs a merge when it has selected sources
+      if (Array.from(selection.source_ids || []).length > 0) merges += 1;
+      else links += 1;
+      if (selection.override) overrides += 1;
+    });
+    return { links: links, merges: merges, overrides: overrides, total: links + merges };
+  }
+
+  function linkApplyArgs(token, provider, selections, backupConfirmed) {
+    return {
+      mode: "link_apply",
+      link_token: token,
+      provider: provider,
+      backup_confirmed: Boolean(backupConfirmed),
+      rows: linkCheckedSelections(selections).map(function (selection) {
+        return {
+          remote_name: selection.remote_name,
+          survivor_id: selection.survivor_id || "",
+          source_ids: Array.from(selection.source_ids || []).map(String),
+          override: Boolean(selection.override),
+        };
+      }),
+    };
+  }
+
+  function failedLinkRowNames(result) {
+    const names = new Set();
+    ((result && result.failures) || []).forEach(function (failure) {
+      if (failure.remote_name) names.add(String(failure.remote_name).toLowerCase());
+    });
+    return names;
+  }
+
+  function linkRowsFiltered(state, filter, query) {
+    const groups = linkRowsByKind(state);
+    const rows = filter === "all"
+      ? groups.ready.concat(groups.review, groups.merges)
+      : groups[filter] || [];
+    const q = String(query || "").toLowerCase();
+    return rows.filter(function (row) {
+      if (!q) return true;
+      const names = [row.remote_name, row.linked_note].concat(
+        (row.candidates || []).map(function (candidate) { return candidate.name; })
+      );
+      return names.join(" ").toLowerCase().includes(q);
+    });
+  }
+
+  function storedLinkScan() {
+    try {
+      return JSON.parse(window.localStorage.getItem("tag-organizer.link"));
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function saveLinkScan(scan) {
+    window.localStorage.setItem("tag-organizer.link", JSON.stringify(scan));
+  }
+
   function newScanToken() {
     if (typeof window !== "undefined" && window.crypto && window.crypto.randomUUID) {
       return window.crypto.randomUUID();
@@ -517,6 +669,70 @@
       assert.equal(hydrated.views.tags.page, 2);
       assert.deepEqual(cleanupReviewStateFromSaved(null).junk, new Set());
       assert.equal(cleanupReviewStateFromSaved(null).section, "tags");
+      const linkRows = [
+        {
+          remote_name: "Goth", scene_count: 42, kind: "merge", survivor_id: "1", preselected: false,
+          candidates: [
+            { id: "1", name: "Goth", usage: 10, has_stash_id: false, provider_stash_id: null, match: "exact" },
+            { id: "2", name: "Goth Girl", usage: 2, has_stash_id: false, provider_stash_id: null, match: "fuzzy" },
+          ],
+        },
+        {
+          remote_name: "Anal", scene_count: 9, kind: "link", survivor_id: "5", preselected: true,
+          candidates: [
+            { id: "5", name: "Anal", usage: 7, has_stash_id: false, provider_stash_id: null, match: "exact" },
+          ],
+        },
+        {
+          remote_name: "Gotham", scene_count: 1, kind: "link", survivor_id: "7", preselected: false,
+          candidates: [
+            { id: "7", name: "Gotham", usage: 1, has_stash_id: false, provider_stash_id: null, match: "fuzzy" },
+          ],
+        },
+      ];
+      const linkGroups = linkRowsByKind({ rows: linkRows });
+      assert.equal(linkGroups.ready.length, 1);
+      assert.equal(linkGroups.review.length, 1);
+      assert.equal(linkGroups.merges.length, 1);
+      // merge rows describe no merges until sources are picked
+      assert.equal(linkRowText(linkRows[0]), "Link “Goth” to “Goth” — no merges selected.");
+      assert.equal(linkRowText(linkRows[0], { source_ids: new Set(["2"]) }), "Merge “Goth Girl” into “Goth” and link to “Goth”.");
+      assert.equal(linkRowText(linkRows[0], { source_ids: new Set(["2", "3"]) }), "Merge “Goth Girl” into “Goth” and link to “Goth”.");
+      assert.equal(linkRowText(linkRows[1]), "Link “Anal” to “Anal”.");
+      assert.equal(linkRowsFiltered({ rows: linkRows }, "ready", "").length, 1);
+      assert.equal(linkRowsFiltered({ rows: linkRows }, "all", "goth").length, 2);
+      const linkSel = linkSelectionInit({ rows: linkRows });
+      assert.equal(linkSel["goth"].checked, false);
+      // no sources are pre-selected: the user ticks exactly which variants merge
+      assert.deepEqual(Array.from(linkSel["goth"].source_ids).sort(), []);
+      assert.equal(linkSel["anal"].checked, true);
+      assert.equal(linkSel["gotham"].checked, false);
+      const toggled = updateLinkSelection(linkSel, linkRows[0], { checked: true });
+      assert.equal(toggled["goth"].checked, true);
+      assert.deepEqual(
+        linkCheckedSelections(toggled).map(function (selection) { return selection.remote_name; }),
+        ["Goth", "Anal"]
+      );
+      // checking the row alone is a link, not a merge
+      assert.equal(linkSelectionHasMerge(toggled), false);
+      assert.equal(linkSelectionHasMerge(linkSel), false);
+      assert.deepEqual(linkSelectionSummary({ rows: linkRows }, toggled), { links: 2, merges: 0, overrides: 0, total: 2 });
+      const linkMerged = updateLinkSelection(linkSel, linkRows[0], { checked: true, source_ids: new Set(["2"]) });
+      assert.equal(linkSelectionHasMerge(linkMerged), true);
+      assert.deepEqual(linkSelectionSummary({ rows: linkRows }, linkMerged), { links: 1, merges: 1, overrides: 0, total: 2 });
+      const linkArgs = linkApplyArgs("link-token", "https://stashdb.org/graphql", linkMerged, true);
+      assert.equal(linkArgs.mode, "link_apply");
+      assert.equal(linkArgs.link_token, "link-token");
+      assert.equal(linkArgs.backup_confirmed, true);
+      assert.deepEqual(linkArgs.rows.map(function (row) { return row.remote_name; }), ["Goth", "Anal"]);
+      assert.deepEqual(linkArgs.rows[0].source_ids, ["2"]);
+      assert.equal(linkArgs.rows[1].override, false);
+      assert.equal(linkRowNeedOverride(linkRows[0]), false);
+      assert.equal(linkRowNeedOverride({ candidates: [{ id: "1", provider_stash_id: "r99" }] }), true);
+      assert.deepEqual(Array.from(failedLinkRowNames({ failures: [{ remote_name: "Goth" }] })), ["goth"]);
+      assert.deepEqual(Array.from(failedLinkRowNames({ failures: [] })), []);
+      const survivorRow = updateLinkSelection(linkSel, linkRows[0], { survivor_id: "2", source_ids: new Set(["1"]) });
+      assert.deepEqual(Array.from(survivorRow["goth"].source_ids).sort(), ["1"]);
       console.log("self-check passed");
     }
     return;
@@ -654,6 +870,18 @@
     const hydratedReviewTokenRef = React.useRef("");
     const skipNextReviewSaveRef = React.useRef(false);
     const reviewSaveTimerRef = React.useRef(null);
+    const [linkState, setLinkState] = React.useState({ status: "waiting", scanned: 0, total: 0, failure_count: 0, row_count: 0, rows: [], error: null });
+    const [linkToken, setLinkToken] = React.useState("");
+    const [linkJob, setLinkJob] = React.useState(null);
+    const [linkBusy, setLinkBusy] = React.useState(false);
+    const [linkError, setLinkError] = React.useState("");
+    const [linkMessage, setLinkMessage] = React.useState("");
+    const [linkSelections, setLinkSelections] = React.useState({});
+    const [linkFilter, setLinkFilter] = React.useState("all");
+    const [linkQuery, setLinkQuery] = React.useState("");
+    const [linkBackup, setLinkBackup] = React.useState(false);
+    const [linkBackupOverride, setLinkBackupOverride] = React.useState(false);
+    const [linkApplyResult, setLinkApplyResult] = React.useState(null);
     const localTags = React.useRef(new Set());
     const filteredRows = visibleRows(rows, search, showLocal, localTags.current);
     const selectedRows = rows.filter(function (row) {
@@ -684,6 +912,17 @@
       cleanupDuplicatesChoice
     );
     const cleanupSummary = cleanupSelectionSummary(cleanupState, cleanupJunk, cleanupDuplicatesChoice, cleanupSplitsChoice);
+    const linkGroups = linkRowsByKind(linkState);
+    const linkRows = linkRowsFiltered(linkState, linkFilter, linkQuery);
+    const linkChecked = linkCheckedSelections(linkSelections);
+    const linkHasMerge = linkSelectionHasMerge(linkSelections);
+    const linkBackupSatisfied = !linkHasMerge || linkBackup || linkBackupOverride;
+    const linkApplyReady = Boolean(
+      linkToken && linkState && linkState.status === "completed" &&
+      linkChecked.length && linkBackupSatisfied
+    );
+    const linkSummary = linkSelectionSummary(linkState, linkSelections);
+    const linkActive = Boolean(linkState && linkState.status === "running");
 
     React.useEffect(function () {
       Promise.all([runOperation({ mode: "providers" }), runOperation({ mode: "pull_status" })])
@@ -723,6 +962,78 @@
           setCleanupState({ status: "failed", tag_count: 0, duplicate_count: 0, split_count: 0, failure_count: 0, error: message });
         });
     }, []);
+
+    React.useEffect(function () {
+      const saved = storedLinkScan();
+      if (!saved || !saved.token) return undefined;
+      let stopped = false;
+      setLinkToken(saved.token);
+      runOperation({ mode: "link_status", link_token: saved.token, include_rows: true })
+        .then(function (state) {
+          if (stopped) return;
+          setLinkState(state);
+          if (state && state.status === "completed") setLinkSelections(linkSelectionInit(state));
+          if (state && state.status === "running" && saved.job_id) setLinkJob({ id: String(saved.job_id) });
+        })
+        .catch(function () {
+          window.localStorage.removeItem("tag-organizer.link");
+        });
+      return function () { stopped = true; };
+    }, []);
+
+    React.useEffect(function () {
+      if (!linkToken || !linkState || linkState.status !== "running" || linkBusy) return undefined;
+      let stopped = false;
+      let timer = null;
+      let waitingStreak = 0;
+      let errorStreak = 0;
+
+      async function pollLink() {
+        try {
+          const nativeJob = linkJob && linkJob.id ? await getJob(linkJob.id) : null;
+          const next = await runOperation({ mode: "link_status", link_token: linkToken, include_rows: true });
+          if (stopped) return;
+          errorStreak = 0;
+          waitingStreak = next.status === "waiting" ? waitingStreak + 1 : 0;
+          if (pollStreakExceeded(waitingStreak, 10)) {
+            setLinkState(Object.assign({}, next, { status: "failed", error: "The link scan could not be found on the server after several attempts. It may have failed to start; please try again." }));
+            setLinkError("");
+            return;
+          }
+          setLinkState(next);
+          setLinkError("");
+          const nativeTerminal = nativeJob && terminalJobStatus(nativeJob.status);
+          if (next.status === "running" && !nativeTerminal) {
+            timer = setTimeout(pollLink, 3000);
+          } else if (next.status === "running" && nativeTerminal) {
+            setLinkState(Object.assign({}, next, { status: "failed", error: nativeJob.error || "The link scan did not complete." }));
+          } else if (next.status === "aborted") {
+            setLinkState(Object.assign({}, next, { status: "aborted", error: next.error || "The link scan was stopped before it finished." }));
+            setLinkError(next.error || "The link scan was stopped before it finished.");
+          } else if (next.status === "completed") {
+            setLinkSelections(linkSelectionInit(next));
+          }
+        } catch (pollError) {
+          if (stopped) return;
+          errorStreak += 1;
+          if (pollStreakExceeded(errorStreak, 10)) {
+            setLinkState(function (current) {
+              return Object.assign({}, current, { status: "failed", error: "The link status check kept failing: " + errorMessage(pollError) });
+            });
+            setLinkError("");
+            return;
+          }
+          setLinkError(errorMessage(pollError));
+          timer = setTimeout(pollLink, 5000);
+        }
+      }
+
+      pollLink();
+      return function () {
+        stopped = true;
+        if (timer) clearTimeout(timer);
+      };
+    }, [linkToken, linkState && linkState.status, linkJob && linkJob.id, linkBusy]);
 
     React.useEffect(function () {
       if (!cleanupToken || hydratedReviewTokenRef.current === cleanupToken) return undefined;
@@ -1178,6 +1489,121 @@
       }
     }
 
+    async function scanLink() {
+      setLinkBusy(true);
+      setLinkError("");
+      setLinkMessage("");
+      setLinkApplyResult(null);
+      setLinkJob(null);
+      setLinkSelections({});
+      setLinkBackup(false);
+      setLinkBackupOverride(false);
+      const token = newScanToken();
+      setLinkToken(token);
+      setLinkState({ link_token: token, status: "running", scanned: 0, total: 0, failure_count: 0, row_count: 0, rows: [], error: null });
+      saveLinkScan({ token: token });
+      try {
+        const id = await runScanTask({ mode: "link_scan", link_token: token, provider: provider });
+        if (!id) throw new Error("Stash did not return a link scan job ID");
+        setLinkJob({ id: String(id) });
+        saveLinkScan({ token: token, job_id: String(id) });
+      } catch (scanError) {
+        const message = errorMessage(scanError);
+        setLinkError(message);
+        setLinkState(function (current) { return Object.assign({}, current, { status: "failed", error: message }); });
+      } finally {
+        setLinkBusy(false);
+      }
+    }
+
+    async function backupLink() {
+      setLinkBusy(true);
+      setLinkError("");
+      setLinkMessage("");
+      try {
+        const link = await backupDatabase();
+        if (!link) throw new Error("Stash did not return a database backup");
+        setLinkBackup(true);
+        setLinkMessage("Database backup created. Selected merges are ready to apply.");
+      } catch (backupError) {
+        setLinkBackup(false);
+        setLinkError(errorMessage(backupError));
+      } finally {
+        setLinkBusy(false);
+      }
+    }
+
+    async function applyLink() {
+      if (!linkApplyReady) return;
+      setLinkBusy(true);
+      setLinkError("");
+      setLinkMessage("");
+      try {
+        const result = await runOperation(linkApplyArgs(linkToken, provider, linkSelections, linkBackup || linkBackupOverride));
+        setLinkApplyResult(result);
+        const failed = failedLinkRowNames(result);
+        setLinkSelections(function (current) {
+          const next = {};
+          Object.keys(current).forEach(function (key) {
+            const selection = current[key];
+            if (!selection.checked) { next[key] = selection; return; }
+            if (failed.has(key)) { next[key] = Object.assign({}, selection); return; }
+            next[key] = Object.assign({}, selection, { checked: false });
+          });
+          return next;
+        });
+        const linkedCount = (result.linked || []).length;
+        const mergedCount = (result.merged || []).length;
+        const alreadyCount = (result.already_linked || []).length;
+        const failedCount = (result.failures || []).length;
+        setLinkMessage(
+          "Linked " + linkedCount + " tag" + (linkedCount === 1 ? "" : "s") +
+          (mergedCount ? " (merged " + mergedCount + ")" : "") +
+          (alreadyCount ? "; " + alreadyCount + " already linked" : "") +
+          (failedCount ? "; " + failedCount + " failed and stayed selected" : "") + "."
+        );
+      } catch (applyError) {
+        setLinkError(errorMessage(applyError));
+      } finally {
+        setLinkBusy(false);
+      }
+    }
+
+    function toggleLinkRow(row) {
+      const key = String(row.remote_name || "").toLowerCase();
+      setLinkSelections(function (current) {
+        return updateLinkSelection(current, row, { checked: !(current[key] && current[key].checked) });
+      });
+    }
+
+    function setLinkSurvivor(row, candidateId) {
+      const key = String(row.remote_name || "").toLowerCase();
+      setLinkSelections(function (current) {
+        const sourceIds = new Set(current[key] && current[key].source_ids || []);
+        // the new survivor can never be a merge source; the old survivor is left
+        // as a plain tag unless the user explicitly ticks it to merge
+        sourceIds.delete(String(candidateId));
+        return updateLinkSelection(current, row, { survivor_id: String(candidateId), source_ids: sourceIds });
+      });
+    }
+
+    function toggleLinkSource(row, candidateId) {
+      const key = String(row.remote_name || "").toLowerCase();
+      setLinkSelections(function (current) {
+        const sourceIds = new Set(current[key] && current[key].source_ids || []);
+        if (sourceIds.has(String(candidateId))) sourceIds.delete(String(candidateId));
+        else sourceIds.add(String(candidateId));
+        return updateLinkSelection(current, row, { source_ids: sourceIds });
+      });
+    }
+
+    function toggleLinkOverride(row) {
+      const key = String(row.remote_name || "").toLowerCase();
+      setLinkSelections(function (current) {
+        return updateLinkSelection(current, row, { override: !(current[key] && current[key].override) });
+      });
+    }
+
     async function pullNow() {
       setActive("pull");
       setPullBusy(true);
@@ -1501,6 +1927,24 @@
               onClick: function () { setActive("cleanup"); },
             },
             "Clean Up Tags"
+          )
+        ),
+        React.createElement(
+          Nav.Item,
+          null,
+          React.createElement(
+            Nav.Link,
+            {
+              as: "button",
+              type: "button",
+              id: "tag-organizer-link-tab",
+              active: activeTab(active, "link"),
+              role: "tab",
+              "aria-controls": "tag-organizer-link-panel",
+              "aria-selected": activeTab(active, "link"),
+              onClick: function () { setActive("link"); },
+            },
+            "Link Tags"
           )
         )
       ),
@@ -2504,6 +2948,304 @@
                   React.createElement(Button, { variant: "danger", onClick: applyCleanup, disabled: !cleanupReady || cleanupBusy }, "Apply reviewed cleanup")
                 )
               )
+            )
+          : null
+      ),
+      React.createElement(
+        "div",
+        {
+          id: "tag-organizer-link-panel",
+          role: "tabpanel",
+          "aria-labelledby": "tag-organizer-link-tab",
+          hidden: !activeTab(active, "link"),
+        },
+        React.createElement("h3", { className: "h5 mb-1" }, "Link Tags"),
+        React.createElement("p", { className: "text-muted" },
+          "Match your local tags with remote stash-box tags found on linked scenes. Exact and alias matches are pre-checked; fuzzy matches and merges stay unchecked for your review. In a merge suggestion, checking the row links the survivor; tick the “merge” boxes next to exactly the variants you want folded in."
+        ),
+        React.createElement(
+          "div",
+          { className: "d-flex align-items-end flex-nowrap mb-3" },
+          React.createElement(
+            Form.Group,
+            { className: "flex-grow-1 mb-0", style: { minWidth: 0 } },
+            React.createElement(Form.Label, { htmlFor: "tag-organizer-link-provider" }, "Metadata provider"),
+            React.createElement(
+              Form.Control,
+              {
+                as: "select",
+                id: "tag-organizer-link-provider",
+                value: provider,
+                disabled: Boolean(linkBusy) || linkActive,
+                onChange: function (event) {
+                  setProvider(event.target.value);
+                  setLinkState({ status: "waiting", scanned: 0, total: 0, failure_count: 0, row_count: 0, rows: [], error: null });
+                  setLinkToken("");
+                  setLinkJob(null);
+                  setLinkSelections({});
+                  setLinkApplyResult(null);
+                  setLinkError("");
+                  setLinkMessage("");
+                  window.localStorage.removeItem("tag-organizer.link");
+                },
+              },
+              providers.map(function (item) {
+                return React.createElement("option", { key: item.endpoint, value: item.endpoint }, item.name);
+              })
+            )
+          ),
+          React.createElement(
+            Button,
+            {
+              className: "ml-2",
+              variant: "primary",
+              onClick: scanLink,
+              disabled: !provider || Boolean(linkBusy) || linkActive,
+            },
+            linkActive ? "Scanning…" : "Scan for links"
+          ),
+          linkActive && linkJob && linkJob.id
+            ? React.createElement(
+                Button,
+                {
+                  className: "ml-2",
+                  variant: "secondary",
+                  onClick: function () { stopJob(linkJob.id); },
+                  disabled: linkBusy,
+                },
+                "Stop"
+              )
+            : null
+        ),
+        providers.length === 0
+          ? React.createElement(Alert, { variant: "info" }, "Configure a Stash-box metadata provider and API key before running a link scan.")
+          : null,
+        linkState && linkState.status === "running"
+          ? React.createElement(ProgressBar, {
+              now: linkState.total ? (linkState.scanned / linkState.total) * 100 : 0,
+              label: linkState.scanned + " / " + (linkState.total || "?") +
+                (linkState.progress_phase === "verify" ? " · verifying matches on the provider" : ""),
+            })
+          : null,
+        linkError ? React.createElement(Alert, { variant: "danger" }, linkError) : null,
+        linkMessage ? React.createElement(Alert, { variant: "info" }, linkMessage) : null,
+        linkState && linkState.status !== "running" && linkState.status !== "waiting"
+          ? React.createElement("p", { className: "text-muted mb-2" },
+              (linkState.status === "completed"
+                ? "Scan completed"
+                : linkState.status === "aborted"
+                  ? "Scan stopped"
+                  : "Scan failed") +
+                " · " + linkState.row_count + " suggestion(s)" +
+                (linkState.failure_count ? " · " + linkState.failure_count + " remote lookup failure(s)" : "") +
+                (linkState.error ? " · " + linkState.error : "")
+            )
+          : null,
+        linkState && linkState.status === "completed"
+          ? React.createElement(
+              React.Fragment,
+              null,
+              React.createElement(
+                "div",
+                { className: "d-flex flex-wrap align-items-center mb-2" },
+                ["all", "ready", "review", "merges"].map(function (filter) {
+                  const counts = {
+                    all: linkState.row_count,
+                    ready: linkGroups.ready.length,
+                    review: linkGroups.review.length,
+                    merges: linkGroups.merges.length,
+                  };
+                  const labels = {
+                    all: "All",
+                    ready: "Ready to link",
+                    review: "Needs review",
+                    merges: "Merge suggestions",
+                  };
+                  return React.createElement(
+                    Button,
+                    {
+                      key: filter,
+                      size: "sm",
+                      variant: linkFilter === filter ? "primary" : "outline-secondary",
+                      className: "mr-1 mb-1",
+                      onClick: function () { setLinkFilter(filter); },
+                    },
+                    labels[filter] + " (" + counts[filter] + ")"
+                  );
+                }),
+                React.createElement(
+                  Form.Control,
+                  {
+                    as: "input",
+                    size: "sm",
+                    type: "search",
+                    className: "ml-auto",
+                    style: { maxWidth: 220 },
+                    placeholder: "Filter tags…",
+                    value: linkQuery,
+                    onChange: function (event) { setLinkQuery(event.target.value); },
+                  }
+                )
+              ),
+              linkHasMerge && !linkBackupSatisfied
+                ? React.createElement(
+                    Alert,
+                    { variant: "warning" },
+                    React.createElement("div", { className: "d-flex align-items-center flex-wrap" },
+                      React.createElement("span", { className: "mr-2" }, "Selected rows include merges, which replace tags. Create a database backup first."),
+                      React.createElement(Button, { size: "sm", variant: "warning", onClick: backupLink, disabled: linkBusy, className: "mr-2" }, "Create backup"),
+                      React.createElement(Form.Check, {
+                        type: "checkbox",
+                        id: "tag-organizer-link-backup-override",
+                        label: "Apply without a fresh backup",
+                        checked: linkBackupOverride,
+                        onChange: function () { setLinkBackupOverride(!linkBackupOverride); },
+                      })
+                    )
+                  )
+                : null,
+              React.createElement(
+                "div",
+                { className: "d-flex align-items-center flex-wrap mb-2" },
+                React.createElement(
+                  Button,
+                  {
+                    variant: "success",
+                    onClick: applyLink,
+                    disabled: !linkApplyReady || linkBusy,
+                  },
+                  "Apply selected (" + linkSummary.total + ")"
+                ),
+                linkSummary.total
+                  ? React.createElement("span", { className: "ml-2 text-muted" },
+                      linkSummary.links + " link" + (linkSummary.links === 1 ? "" : "s") +
+                      (linkSummary.merges ? " · " + linkSummary.merges + " merge" + (linkSummary.merges === 1 ? "" : "s") : "") +
+                      (linkSummary.overrides ? " · " + linkSummary.overrides + " override" + (linkSummary.overrides === 1 ? "" : "s") : "") +
+                      (linkBackup ? " · backup ready" : linkBackupOverride ? " · no fresh backup" : "")
+                    )
+                  : null
+              ),
+              linkRows.length
+                ? React.createElement(
+                    Table,
+                    { bordered: true, responsive: true, size: "sm" },
+                    React.createElement("thead", null,
+                      React.createElement("tr", null,
+                        React.createElement("th", { style: { width: 40 } }, ""),
+                        React.createElement("th", null, "Remote tag"),
+                        React.createElement("th", null, "Plan"),
+                        React.createElement("th", { style: { width: 340 } }, "Local tags")
+                      )
+                    ),
+                    React.createElement(
+                      "tbody",
+                      null,
+                      linkRows.map(function (row) {
+                        const key = String(row.remote_name || "").toLowerCase();
+                        const safeKey = key.replace(/[^a-z0-9_-]+/g, "-");
+                        const selection = linkSelections[key];
+                        const survivor = linkRowSurvivor(row);
+                        const isMerge = row.kind === "merge";
+                        const rowFailure = linkApplyResult && (linkApplyResult.failures || []).find(function (failure) {
+                          return String(failure.remote_name).toLowerCase() === key;
+                        });
+                        return React.createElement("tr", { key: key },
+                          React.createElement("td", null,
+                            React.createElement(Form.Check, {
+                              type: "checkbox",
+                              id: "tag-organizer-link-row-" + safeKey,
+                              checked: Boolean(selection && selection.checked),
+                              onChange: function () { toggleLinkRow(row); },
+                              disabled: linkBusy,
+                            })
+                          ),
+                          React.createElement("td", null,
+                            React.createElement("div", null,
+                              React.createElement("strong", null, row.remote_name),
+                              " ",
+                              React.createElement(Badge, { variant: "secondary" }, row.scene_count + " scene" + (row.scene_count === 1 ? "" : "s"))
+                            ),
+                            row.remote_aliases && row.remote_aliases.length
+                              ? React.createElement("div", { className: "small text-muted" }, "aliases: " + row.remote_aliases.join(", "))
+                              : null,
+                            row.linked_note
+                              ? React.createElement(Badge, { variant: "warning", className: "d-block mt-1" }, row.linked_note)
+                              : null
+                          ),
+                          React.createElement("td", null,
+                            React.createElement("div", null, linkRowText(row, selection)),
+                            linkRowNeedOverride(row)
+                              ? React.createElement(Form.Check, {
+                                  type: "checkbox",
+                                  id: "tag-organizer-link-override-" + safeKey,
+                                  label: "Replace existing stash ID if needed",
+                                  checked: Boolean(selection && selection.override),
+                                  onChange: function () { toggleLinkOverride(row); },
+                                  disabled: linkBusy,
+                                })
+                              : null
+                          ),
+                          React.createElement("td", null,
+                            (row.candidates || []).map(function (candidate) {
+                              const candidateId = String(candidate.id);
+                              const isSurvivor = survivor && String(survivor.id) === candidateId;
+                              const isSource = Boolean(selection && selection.source_ids.has(candidateId));
+                              return React.createElement(
+                                "div",
+                                { key: candidateId, className: "mb-1" },
+                                React.createElement(
+                                  "div",
+                                  { className: "d-flex align-items-center" },
+                                  React.createElement("strong", { className: "mr-2" }, candidate.name),
+                                  !isMerge && candidate.match === "exact"
+                                    ? React.createElement(Badge, { variant: "success", className: "mr-1" }, "exact")
+                                    : null,
+                                  React.createElement(Badge, { variant: "light", className: "mr-1" }, candidate.usage + " obj"),
+                                  isSurvivor
+                                    ? React.createElement(Badge, { variant: "primary", className: "mr-1" }, "survivor")
+                                    : null,
+                                  candidate.provider_stash_id
+                                    ? React.createElement(Badge, { variant: "warning" }, "stash ID")
+                                    : null
+                                ),
+                                isMerge
+                                  ? React.createElement(
+                                      "div",
+                                      { className: "d-flex align-items-center small text-muted" },
+                                      React.createElement(Form.Check, {
+                                        type: "radio",
+                                        inline: true,
+                                        name: "tag-organizer-link-survivor-" + safeKey,
+                                        id: "tag-organizer-link-survivor-" + safeKey + "-" + candidateId,
+                                        checked: isSurvivor,
+                                        onChange: function () { setLinkSurvivor(row, candidateId); },
+                                        disabled: linkBusy,
+                                        label: "survivor",
+                                      }),
+                                      isSurvivor
+                                        ? null
+                                        : React.createElement(Form.Check, {
+                                            type: "checkbox",
+                                            inline: true,
+                                            id: "tag-organizer-link-source-" + safeKey + "-" + candidateId,
+                                            checked: isSource,
+                                            onChange: function () { toggleLinkSource(row, candidateId); },
+                                            disabled: linkBusy,
+                                            label: "merge",
+                                          })
+                                    )
+                                  : null
+                              );
+                            }),
+                            rowFailure
+                              ? React.createElement("div", { className: "text-danger small" }, "Apply failed: " + rowFailure.error)
+                              : null
+                          )
+                        );
+                      })
+                    )
+                  )
+                : React.createElement(Alert, { variant: "info" }, "No suggestions in this view. Try another filter or run a new scan.")
             )
           : null
       )

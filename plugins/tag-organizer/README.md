@@ -32,6 +32,51 @@ backups — that override, like the backup gate itself, resets on every page
 reload. Deletes are attempted individually, so marker-primary failures are
 reported without stopping the remaining review.
 
+Use the **Link Tags** tab to match your local tags with the remote stash-box
+tags that appear on your linked scenes — a batch review list, so you never
+have to type tag names one by one. Run a scan for a provider and the plugin
+builds a suggestion per remote tag:
+
+- **Ready to link**: a local tag matches the remote name or one of its
+  stash-box aliases exactly. These are pre-checked because linking is
+  non-destructive.
+- **Needs review**: the remote tag only near-matches local tags (a shared
+  word, e.g. "Goth Girl" vs "Goth", or a near-duplicate like a plural or
+  compound spelling). Each candidate is its own unchecked row.
+- **Merge suggestions**: the remote name matches a local tag exactly while
+  other local tags near-match it (your local "Goth" + "Goth Girl" vs remote
+  "Goth"). The exact match is the default survivor. Checking the row links the
+  survivor; tick the "merge" box next to exactly the variants you want folded
+  in — each variant merges individually, so you can merge just one of several.
+
+Matching uses stash-box itself as the semantic oracle instead of loose
+string-distance guesses. During the scan every remote tag is resolved by name
+on stash-box (one cached lookup each) and every fuzzy candidate is verified
+with a stash-box search: a candidate whose name is its own separate stash-box
+tag is dropped, and candidates that only share a generic word ("Anal Play" vs
+"Breast Play", "Age Group" vs "Group Sex") are dropped unless stash-box's own
+search ranks the remote tag for the candidate's name — i.e. unless stash-box
+itself associates them. Local tags matching a stash-box alias are treated as
+exact matches ("Goth Girl" links directly when stash-box's "Goth" lists it as
+an alias), and near-duplicate spellings (plurals, compounds) need no
+confirmation. The scan's final phase shows "verifying matches on the provider"
+while these lookups run.
+
+Apply processes the checked rows in one operation. For each row the plugin
+resolves the remote tag by name on stash-box, revalidates the local tags,
+merges any selected sources (with the same cycle, staleness, and stash-ID
+conflict checks as Clean Up Tags), then updates the survivor: it adds the
+stash ID, unions the remote aliases, and fills the description. Tag names are
+never renamed — the local name stays, the stash ID becomes the stable link.
+Local tags already linked to exactly the remote tag are omitted from the
+list entirely (there is nothing to do). Rows whose local tag carries a
+*different* stash ID for the provider show a warning chip and are not
+pre-checked; applying replaces that ID when you check "Replace existing stash
+ID if needed".
+Because merges replace tags, applying rows that merge requires a fresh
+database backup (or the same explicit override as Clean Up Tags). Failed rows
+stay selected for retry.
+
 Select one or more results with the checkboxes and click **Add selected** to
 process them in one operation. A failed tag does not prevent the remaining
 selected tags from being processed; failed tags remain selected for retry.

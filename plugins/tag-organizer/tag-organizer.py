@@ -26,6 +26,8 @@ SCAN_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 FUZZY_CUTOFF = 0.72
 DUPLICATE_FUZZY_CUTOFF = 0.85
 DUPLICATE_SIMILARITY_FLOOR = 0.70
+LINK_NEAR_DUPLICATE_CUTOFF = 0.85
+LINK_MAX_CANDIDATES = 10
 
 CONFIG_QUERY = """
 query Configuration {
@@ -90,6 +92,16 @@ query CleanupScenesByTags($filter: FindFilterType, $scene_filter: SceneFilterTyp
 REMOTE_TAGS_QUERY = """
 query RemoteScene($id: ID!) { findScene(id: $id) { tags { name } } }
 """
+LINK_REMOTE_TAG_QUERY = """
+query RemoteTag($name: String!) { findTag(name: $name) {
+  id name aliases description deleted
+} }
+"""
+LINK_SEARCH_REMOTE_QUERY = """
+query RemoteTagSearch($term: String!, $limit: Int) {
+  searchTag(term: $term, limit: $limit) { id }
+}
+"""
 CREATE_TAG_MUTATION = """
 mutation CreateTag($input: TagCreateInput!) { tagCreate(input: $input) { id } }
 """
@@ -148,6 +160,32 @@ def cleanup_state_path(server):
     if not config_dir:
         raise RuntimeError("Stash config directory is unavailable")
     return Path(config_dir) / "tag-organizer" / "cleanup.json"
+
+
+def link_state_path(server, token):
+    if not valid_scan_token(token):
+        raise ValueError("invalid link scan token")
+    config_dir = server.get("Dir")
+    if not config_dir:
+        raise RuntimeError("Stash config directory is unavailable")
+    return Path(config_dir) / "tag-organizer" / f"link-{token}.json"
+
+
+def write_link_state(server, state):
+    write_scan_state(link_state_path(server, state.get("link_token") or ""), state)
+
+
+def read_link_state(server, token):
+    if not valid_scan_token(token):
+        return None
+    path = link_state_path(server, token)
+    if not path.exists():
+        return None
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return None
 
 
 def write_scan_state(path, state):
@@ -2338,6 +2376,603 @@ def cleanup_apply(local_url, local_headers, server, args, duplicate_cutoff=DUPLI
     return result
 
 
+# ---------------------------------------------------------------------------
+# Link local tags to remote stash-box tags (batch review list)
+# ---------------------------------------------------------------------------
+
+
+def link_name_overlap(left, right):
+    """True when the names share a meaningful whole word (e.g. "Goth Girl" and "Goth")."""
+    def words(value):
+        return set(re.findall(r"[a-z0-9]{3,}", str(value or "").casefold()))
+
+    return bool(words(left) & words(right))
+
+
+def link_fuzzy_match(left, right):
+    """Fuzzy local-name match for link suggestions: shared whole word or a near-duplicate ratio.
+
+    Deliberately conservative: difflib is character-based, so loose thresholds pair up
+    unrelated names ("water" vs "amateur" scores 0.667). Token overlap catches
+    multi-word variants ("Goth Girl" vs "Goth") and a high ratio only catches
+    near-duplicates (plurals, compound splits, typos). Stash-box itself is the
+    semantic oracle: candidates it knows as separate tags are dropped later.
+    """
+    return link_name_overlap(left, right) or gated_fuzzy_similarity(left, right, LINK_NEAR_DUPLICATE_CUTOFF) is not None
+
+
+def link_resolve_remote(provider, name, cache):
+    """Resolve a stash-box tag by name, cached per scan.
+
+    Returns None when the name does not resolve to a live tag (deleted or missing);
+    used both to enrich matches with remote aliases and as the semantic oracle:
+    a candidate whose name resolves to a *different* stash-box tag is its own
+    concept, not a variant of the remote tag.
+    """
+    key = name.casefold()
+    if key in cache:
+        return cache[key]
+    remote = graphql(
+        provider["endpoint"],
+        LINK_REMOTE_TAG_QUERY,
+        {"name": name},
+        {"ApiKey": provider["api_key"]},
+    ).get("findTag")
+    if not remote or remote.get("deleted"):
+        cache[key] = None
+        return None
+    record = {
+        "id": str(remote["id"]),
+        "name": str(remote.get("name") or name),
+        "aliases": [str(alias) for alias in remote.get("aliases") or [] if str(alias).strip()],
+        "description": str(remote.get("description") or "").strip(),
+    }
+    cache[key] = record
+    return record
+
+
+def link_search_remote(provider, term, cache):
+    """Search stash-box tags for a term, cached per scan.
+
+    Returns the list of matching tag ids (stash-box's own relevance ranking), or
+    None when the lookup failed. Used as the semantic confirmation for fuzzy
+    candidates: a candidate survives only when the remote tag appears in stash-
+    box's search results for the candidate's name (stash-box associates them,
+    e.g. via alias or name similarity). A failed lookup returns None so the
+    caller keeps the candidate rather than dropping it on a network blip.
+    """
+    key = "search:" + term.casefold()
+    if key in cache:
+        return cache[key]
+    try:
+        data = graphql(
+            provider["endpoint"],
+            LINK_SEARCH_REMOTE_QUERY,
+            {"term": term, "limit": 8},
+            {"ApiKey": provider["api_key"]},
+        )
+        ids = [str(tag["id"]) for tag in data.get("searchTag") or [] if tag.get("id")]
+        cache[key] = ids
+        return ids
+    except RuntimeError:
+        cache[key] = None
+        return None
+
+
+def link_candidates(remote_name, local_tags, endpoint, remote_aliases=None):
+    """Classify local tags matching a remote tag into (exact, fuzzy) candidate dicts.
+
+    Exact covers the remote name itself and the remote tag's stash-box aliases:
+    a local tag whose name or alias equals a stash-box alias is the same concept
+    (e.g. local "Goth Girl" when stash-box "Goth" lists "Goth Girl" as an alias).
+    """
+    keys = {remote_name.casefold()}
+    for alias in remote_aliases or []:
+        keys.add(str(alias).casefold())
+    exact, fuzzy = [], []
+    for tag in local_tags:
+        name = tag.get("name") or ""
+        tag_keys = {name.casefold()}
+        tag_keys.update(str(alias).casefold() for alias in tag.get("aliases") or [])
+        if tag_keys & keys:
+            exact.append(cleanup_tag_snapshot(tag))
+        elif link_fuzzy_match(name, remote_name):
+            fuzzy.append(cleanup_tag_snapshot(tag))
+
+    def to_candidate(snapshot, match):
+        provider_id = next(
+            (
+                str(item["stash_id"])
+                for item in snapshot["stash_ids"]
+                if item.get("endpoint") == endpoint
+            ),
+            None,
+        )
+        return {
+            "id": snapshot["id"],
+            "name": snapshot["name"],
+            "aliases": snapshot["aliases"],
+            "usage": snapshot["usage"],
+            "has_stash_id": bool(snapshot["stash_ids"]),
+            "provider_stash_id": provider_id,
+            "match": match,
+        }
+
+    return [to_candidate(item, "exact") for item in exact], [to_candidate(item, "fuzzy") for item in fuzzy]
+
+
+def link_rows_from_candidates(remote_name, scene_count, exact, fuzzy):
+    """Build review rows from already-classified and oracle-verified candidate dicts."""
+    if not exact and not fuzzy:
+        return []
+    rows = []
+    if exact:
+        name_exact = [
+            candidate for candidate in exact if candidate["name"].casefold() == remote_name.casefold()
+        ]
+        if len(exact) >= 2 or fuzzy:
+            survivor = sorted(
+                name_exact or exact, key=lambda c: (-c["usage"], c["name"].casefold())
+            )[0]
+            ordered = [survivor] + [
+                candidate for candidate in exact + fuzzy if candidate["id"] != survivor["id"]
+            ]
+            row = {
+                "remote_name": remote_name,
+                "scene_count": scene_count,
+                "kind": "merge",
+                "survivor_id": survivor["id"],
+                "preselected": False,
+                "candidates": ordered[:LINK_MAX_CANDIDATES],
+            }
+            if any(candidate["has_stash_id"] for candidate in row["candidates"]):
+                row["linked_note"] = "already has a stash ID for this provider — applying verifies or replaces it"
+            rows.append(row)
+        else:
+            survivor = exact[0]
+            row = {
+                "remote_name": remote_name,
+                "scene_count": scene_count,
+                "kind": "link",
+                "survivor_id": survivor["id"],
+                "preselected": not survivor["has_stash_id"],
+                "candidates": exact[:LINK_MAX_CANDIDATES],
+            }
+            if survivor["has_stash_id"]:
+                row["linked_note"] = "already has a stash ID for this provider — applying verifies or replaces it"
+            rows.append(row)
+    else:
+        for candidate in sorted(fuzzy, key=lambda c: (-c["usage"], c["name"].casefold()))[:LINK_MAX_CANDIDATES]:
+            row = {
+                "remote_name": remote_name,
+                "scene_count": scene_count,
+                "kind": "link",
+                "survivor_id": candidate["id"],
+                "preselected": False,
+                "candidates": [candidate],
+            }
+            if candidate["has_stash_id"]:
+                row["linked_note"] = "already has a stash ID for this provider — applying verifies or replaces it"
+            rows.append(row)
+    return rows
+
+
+def link_rows_for_remote(remote_name, scene_count, local_tags, endpoint, resolve=None, search=None):
+    """Build review rows for one remote tag name, verifying candidates via stash-box.
+
+    `resolve(name)` returns the cached stash-box record for a tag name (or None)
+    and `search(name)` the cached search-result ids (or None on failure); together
+    they are the semantic oracle. A fuzzy candidate is dropped when stash-box
+    knows its name as a *different* tag, and kept for token/word variants only
+    when stash-box's own search for the candidate name ranks the remote tag
+    (associating them). Without a resolver (tests, unresolved provider) the
+    heuristic result is used as-is.
+    """
+    remote = resolve(remote_name) if resolve is not None else None
+    exact, fuzzy = link_candidates(remote_name, local_tags, endpoint, remote and remote["aliases"])
+    kept = []
+    # verify at most the most-used candidates; the row builder never shows more
+    for candidate in sorted(fuzzy, key=lambda c: (-c["usage"], c["name"].casefold()))[:LINK_MAX_CANDIDATES]:
+        if remote is not None and resolve is not None:
+            candidate_tag = resolve(candidate["name"])
+            if candidate_tag is not None and candidate_tag["id"] != remote["id"]:
+                continue  # stash-box knows this name as its own separate tag
+            if (
+                search is not None
+                # a near-duplicate spelling (plural/compound) needs no confirmation
+                and gated_fuzzy_similarity(candidate["name"], remote_name, LINK_NEAR_DUPLICATE_CUTOFF) is None
+            ):
+                ids = search(candidate["name"])
+                # the remote tag must rank among stash-box's own search results
+                if ids is not None and remote["id"] not in ids:
+                    continue
+        kept.append(candidate)
+    rows = link_rows_from_candidates(remote_name, scene_count, exact, kept)
+    if remote is None:
+        return rows
+    result = []
+    for row in rows:
+        row["remote_id"] = remote["id"]
+        if remote["aliases"]:
+            row["remote_aliases"] = remote["aliases"]
+        survivor = next(
+            (candidate for candidate in row["candidates"] if candidate["id"] == row["survivor_id"]),
+            None,
+        )
+        # plain link rows already linked to exactly this remote tag have nothing to
+        # do: drop them instead of surfacing a no-op. A different stash ID on the
+        # same provider is kept (it is a mislink the override can replace), and
+        # merge rows stay even when the survivor is already linked, because the
+        # merge of the variants is still meaningful.
+        if (
+            row["kind"] == "link"
+            and survivor is not None
+            and survivor.get("provider_stash_id") == remote["id"]
+        ):
+            continue
+        result.append(row)
+    return result
+
+
+def link_scan_all(local_url, local_headers, provider, server, token):
+    if not valid_scan_token(token):
+        raise ValueError("link token must be 8-64 letters, numbers, underscores, or hyphens")
+    endpoint = provider["endpoint"]
+    state = {
+        "link_token": token,
+        "provider": endpoint,
+        "status": "running",
+        "scanned": 0,
+        "total": 0,
+        "failure_count": 0,
+        "rows": [],
+        "progress_phase": "scenes",
+        "progress_detail": "",
+        "error": None,
+        "pid": os.getpid(),
+    }
+    write_link_state(server, state)
+    gaps = {}
+    cache = {}
+    scanned = 0
+    total = 0
+    failures = 0
+    page = 1
+    try:
+        local_tags = graphql(local_url, CLEANUP_TAGS_QUERY, headers=local_headers)["findTags"]["tags"]
+        while True:
+            result = graphql(
+                local_url,
+                SCENES_QUERY,
+                {
+                    "filter": {"page": page, "per_page": SCAN_PAGE_SIZE},
+                    "scene_filter": {
+                        "stash_ids_endpoint": {"endpoint": endpoint, "modifier": "NOT_NULL"}
+                    },
+                },
+                local_headers,
+            )["findScenes"]
+            scenes = result["scenes"]
+            total = result["count"]
+            page_start = scanned
+
+            def report_page_progress(processed):
+                current = min(page_start + processed, total)
+                state.update({"scanned": current, "total": total})
+                write_link_state(server, state)
+                stash_progress(current, total)
+
+            report_page_progress(0)
+            rows, _, page_failures = gap_rows(
+                scenes,
+                {endpoint: provider},
+                cache,
+                report_page_progress,
+            )
+            failures += len(page_failures)
+            merge_gap_rows(gaps, rows)
+            scanned += len(scenes)
+            state.update(
+                {
+                    "scanned": scanned,
+                    "total": total,
+                    "failure_count": failures,
+                    "row_count": len(gaps),
+                }
+            )
+            write_link_state(server, state)
+            stash_progress(scanned, total)
+            if not scenes or scanned >= total:
+                break
+            page += 1
+        # Resolve every remote tag by name and verify fuzzy candidates against
+        # stash-box's own tag vocabulary and search ranking (the semantic oracle).
+        # Each lookup is cached, and progress is throttled because hundreds of
+        # small lookups are far cheaper than persisting the state file after
+        # each one.
+        def resolve(name):
+            return link_resolve_remote(provider, name, cache)
+
+        def search(name):
+            return link_search_remote(provider, name, cache)
+
+        ordered_gaps = sorted(
+            gaps.values(), key=lambda item: (-len(item["scene_ids"]), item["name"].casefold())
+        )
+        total_names = len(ordered_gaps)
+        last_persist = [0.0]
+        link_rows = []
+        for processed, gap in enumerate(ordered_gaps, 1):
+            link_rows.extend(
+                link_rows_for_remote(
+                    gap["name"],
+                    len(gap["scene_ids"]),
+                    local_tags,
+                    endpoint,
+                    resolve,
+                    search,
+                )
+            )
+            state.update(
+                {
+                    "scanned": processed,
+                    "total": total_names,
+                    "progress_phase": "verify",
+                    "progress_detail": "resolving remote tags on the provider",
+                }
+            )
+            now = time.time()
+            if now - last_persist[0] >= 0.5 or processed == total_names:
+                write_link_state(server, state)
+                stash_progress(processed, total_names)
+                last_persist[0] = now
+        state.update({"rows": link_rows, "row_count": len(link_rows), "status": "completed"})
+        write_link_state(server, state)
+        return {
+            "link_token": token,
+            "status": state["status"],
+            "scanned": scanned,
+            "total": total,
+            "failure_count": failures,
+            "row_count": len(link_rows),
+        }
+    except Exception as error:
+        state.update({"status": "failed", "error": str(error)})
+        write_link_state(server, state)
+        raise
+
+
+def link_apply(local_url, local_headers, provider, server, args):
+    if not isinstance(args, dict):
+        raise ValueError("link apply arguments must be an object")
+    token = args.get("link_token") or args.get("scan_token")
+    if not valid_scan_token(token):
+        raise ValueError("link token is required")
+    selections = args.get("rows") or args.get("selections")
+    if not isinstance(selections, list) or not selections:
+        raise ValueError("select at least one link row to apply")
+    for item in selections:
+        if (
+            not isinstance(item, dict)
+            or not isinstance(item.get("remote_name"), str)
+            or not item["remote_name"].strip()
+        ):
+            raise ValueError("each link selection must contain a remote tag name")
+    state = read_link_state(server, token)
+    if state is None or state.get("status") != "completed":
+        raise ValueError("complete a link scan before applying changes")
+    merge_selected = any(
+        (item.get("source_ids") or item.get("sources") or []) for item in selections
+    )
+    if merge_selected:
+        backup_url = args.get("backup_url")
+        if args.get("backup_confirmed") is not True and not (
+            isinstance(backup_url, str) and backup_url.strip()
+        ):
+            raise ValueError("database backup required before applying merges")
+    rows_by_name = {
+        str(row.get("remote_name")).casefold(): row for row in state.get("rows") or []
+    }
+    result = {
+        "status": "completed",
+        "linked": [],
+        "already_linked": [],
+        "merged": [],
+        "warnings": [],
+        "failures": [],
+    }
+    for selection in selections:
+        remote_name = str(selection["remote_name"]).strip()
+        row = rows_by_name.get(remote_name.casefold())
+        survivor_id = str(selection.get("survivor_id") or "")
+        source_ids = sorted(
+            {str(tag_id) for tag_id in (selection.get("source_ids") or selection.get("sources") or [])}
+        )
+        override = bool(
+            selection.get("override")
+            or selection.get("override_remote_ids")
+            or selection.get("replace_existing")
+        )
+        try:
+            record = link_apply_one(
+                local_url,
+                local_headers,
+                provider,
+                remote_name,
+                row,
+                survivor_id,
+                source_ids,
+                override,
+            )
+            result["linked"].append(record)
+            if record.get("already_linked"):
+                result["already_linked"].append(record)
+            if record.get("merged_source_ids"):
+                result["merged"].append(record)
+        except (CleanupStaleError, RuntimeError, ValueError) as error:
+            result["failures"].append({"remote_name": remote_name, "error": str(error)})
+    return result
+
+
+def link_apply_one(local_url, local_headers, provider, remote_name, row, survivor_id, source_ids, override):
+    endpoint = provider["endpoint"]
+    if row is not None:
+        candidate_ids = {str(candidate.get("id")) for candidate in row.get("candidates") or []}
+        if survivor_id not in candidate_ids:
+            raise ValueError(
+                "the chosen local tag is not a match for “{}” — rescan before applying".format(remote_name)
+            )
+        if not set(source_ids) <= candidate_ids:
+            raise ValueError(
+                "a merge source is not a match for “{}” — rescan before applying".format(remote_name)
+            )
+    if not survivor_id:
+        raise ValueError("choose a local tag to link “{}”".format(remote_name))
+
+    remote = graphql(
+        endpoint,
+        LINK_REMOTE_TAG_QUERY,
+        {"name": remote_name},
+        {"ApiKey": provider["api_key"]},
+    ).get("findTag")
+    if not remote or remote.get("deleted"):
+        raise RuntimeError("remote tag “{}” was not found on the provider".format(remote_name))
+    remote_id = str(remote["id"])
+    if row is not None and row.get("remote_id") and str(row.get("remote_id")) != remote_id:
+        raise CleanupStaleError(
+            "remote tag “{}” changed identity since the scan; rescan before applying".format(remote_name)
+        )
+    remote_aliases = [str(alias) for alias in remote.get("aliases") or [] if str(alias).strip()]
+    remote_description = str(remote.get("description") or "").strip()
+
+    all_ids = sorted({survivor_id, *source_ids})
+    records = graphql(
+        local_url, CLEANUP_TAGS_BY_IDS_QUERY, {"ids": all_ids}, local_headers
+    )["findTags"]["tags"]
+    current = cleanup_tags_by_id(records)
+    missing = [tag_id for tag_id in all_ids if tag_id not in current]
+    if missing:
+        raise CleanupStaleError(
+            "local tag {} was removed after the scan; rescan before applying".format(", ".join(missing))
+        )
+    survivor = current[survivor_id]
+
+    merged_source_ids = []
+    if source_ids:
+        source_records = [current[tag_id] for tag_id in source_ids]
+        conflicts = remote_id_conflicts([survivor, *source_records])
+        if conflicts and not override:
+            raise RuntimeError(
+                "the tags carry conflicting stash IDs on "
+                + ", ".join(sorted(conflicts))
+                + "; override to proceed with the merge"
+            )
+        hierarchy = union_hierarchy([*current.values()], survivor_id, source_ids)
+        merged_aliases = dedupe_tag_names(
+            [
+                *survivor.get("aliases", []),
+                *(
+                    name
+                    for source_id in source_ids
+                    for name in [current[source_id]["name"], *current[source_id].get("aliases", [])]
+                ),
+            ],
+            excluded=[survivor["name"]],
+        )
+        merged_stash_ids = []
+        seen = set()
+        for tag in [survivor, *source_records]:
+            for stash_id in tag.get("stash_ids") or []:
+                entry_endpoint = stash_id.get("endpoint")
+                entry_id = stash_id.get("stash_id")
+                if entry_endpoint and entry_id and (entry_endpoint, entry_id) not in seen:
+                    seen.add((entry_endpoint, entry_id))
+                    merged_stash_ids.append(stash_id)
+        graphql(
+            local_url,
+            TAGS_MERGE_MUTATION,
+            {
+                "input": {
+                    "source": source_ids,
+                    "destination": survivor_id,
+                    "values": {
+                        "id": survivor_id,
+                        "aliases": merged_aliases,
+                        "stash_ids": merged_stash_ids,
+                        "parent_ids": hierarchy["parent_ids"],
+                        "child_ids": hierarchy["child_ids"],
+                    },
+                }
+            },
+            local_headers,
+        )
+        survivor = {
+            **survivor,
+            "aliases": merged_aliases,
+            "stash_ids": merged_stash_ids,
+            "parents": hierarchy["parent_ids"],
+            "children": hierarchy["child_ids"],
+        }
+        merged_source_ids = source_ids
+
+    provider_entries = [
+        stash_id
+        for stash_id in survivor.get("stash_ids") or []
+        if stash_id.get("endpoint") == endpoint
+    ]
+    existing = provider_entries[0] if provider_entries else None
+    note = None
+    if existing is not None and str(existing.get("stash_id")) == remote_id:
+        stash_ids = list(survivor.get("stash_ids") or [])
+        already_linked = True
+    elif existing is not None:
+        if not override:
+            raise RuntimeError(
+                "local tag “{}” is already linked to a different tag on this provider (id {}); "
+                "override to replace it".format(survivor["name"], existing.get("stash_id"))
+            )
+        stash_ids = [
+            stash_id for stash_id in survivor.get("stash_ids") or []
+            if stash_id.get("endpoint") != endpoint
+        ]
+        stash_ids.append({"endpoint": endpoint, "stash_id": remote_id})
+        already_linked = False
+        note = "replaced existing stash ID"
+    else:
+        stash_ids = [
+            *(survivor.get("stash_ids") or []),
+            {"endpoint": endpoint, "stash_id": remote_id},
+        ]
+        already_linked = False
+
+    aliases = dedupe_tag_names(
+        [*(survivor.get("aliases") or []), *remote_aliases],
+        excluded=[survivor["name"], remote_name],
+    )
+    update = {
+        "id": survivor_id,
+        "aliases": aliases,
+        "stash_ids": stash_ids,
+    }
+    fields = ["stash_id"]
+    if remote_aliases:
+        fields.append("aliases")
+    if remote_description:
+        update["description"] = remote_description
+        fields.append("description")
+    graphql(local_url, TAG_UPDATE_MUTATION, {"input": update}, local_headers)
+    return {
+        "remote_name": remote_name,
+        "remote_id": remote_id,
+        "survivor_id": survivor_id,
+        "survivor_name": survivor["name"],
+        "merged_source_ids": merged_source_ids,
+        "already_linked": already_linked,
+        "fields": fields,
+        "note": note,
+    }
+
+
 def run_operation(args, configuration, local_url, local_headers, server):
     providers = configured_providers(configuration)
     duplicate_cutoff = cleanup_duplicate_cutoff(configuration)
@@ -2421,6 +3056,41 @@ def run_operation(args, configuration, local_url, local_headers, server):
         )
     if mode == "cleanup_apply":
         return cleanup_apply(local_url, local_headers, server, args, duplicate_cutoff)
+    if mode == "link_status":
+        token = args.get("link_token") or args.get("scan_token")
+        state = read_link_state(server, token)
+        if state is None:
+            return {
+                "link_token": token,
+                "status": "waiting",
+                "scanned": 0,
+                "total": 0,
+                "failure_count": 0,
+                "row_count": 0,
+                "rows": [],
+                "error": None,
+            }
+        path = link_state_path(server, token)
+        resolved = resolve_running_state(state, path)
+        if resolved is not state:
+            write_link_state(server, resolved)
+            state = resolved
+        result = dict(state)
+        result["row_count"] = len(state.get("rows") or [])
+        if not args.get("include_rows"):
+            result.pop("rows", None)
+        return result
+    if mode == "link_scan":
+        token = args.get("link_token") or args.get("scan_token")
+        provider = providers.get(args.get("provider"))
+        if not provider:
+            raise ValueError("select a configured metadata provider")
+        return link_scan_all(local_url, local_headers, provider, server, token)
+    if mode == "link_apply":
+        provider = providers.get(args.get("provider"))
+        if not provider:
+            raise ValueError("select a configured metadata provider")
+        return link_apply(local_url, local_headers, provider, server, args)
     if mode == "providers":
         local_tags = tag_index(graphql(local_url, TAGS_QUERY, headers=local_headers)["findTags"]["tags"])
         return {
@@ -3339,6 +4009,328 @@ def self_test():
             state_after_second_apply = read_cleanup_state({"Dir": cleanup_dir}, "cleanup-test")
             assert {tag["id"] for tag in state_after_second_apply["tags"]} == {"1", "3", "4"}
             assert "2" not in cleanup_store
+            # --- link review rows ---
+            endpoint = "https://stashdb.org/graphql"
+            goth = {"id": "1", "name": "Goth", "aliases": [], "stash_ids": [], "scene_count": 10, "scene_marker_count": 0, "image_count": 0, "gallery_count": 0, "performer_count": 0, "studio_count": 0, "group_count": 0, "parents": [], "children": []}
+            goth_girl = {"id": "2", "name": "Goth Girl", "aliases": [], "stash_ids": [], "scene_count": 2, "scene_marker_count": 0, "image_count": 0, "gallery_count": 0, "performer_count": 0, "studio_count": 0, "group_count": 0, "parents": [], "children": []}
+            goth_metal = {"id": "3", "name": "Goth Metal", "aliases": [], "stash_ids": [], "scene_count": 5, "scene_marker_count": 0, "image_count": 0, "gallery_count": 0, "performer_count": 0, "studio_count": 0, "group_count": 0, "parents": [], "children": []}
+            unrelated = {"id": "4", "name": "Unrelated", "aliases": [], "stash_ids": [], "scene_count": 1, "scene_marker_count": 0, "image_count": 0, "gallery_count": 0, "performer_count": 0, "studio_count": 0, "group_count": 0, "parents": [], "children": []}
+            # exact + variants -> merge row, survivor = the exact name match, never preselected
+            rows = link_rows_for_remote("Goth", 42, [goth, goth_girl, goth_metal, unrelated], endpoint)
+            assert len(rows) == 1
+            assert rows[0]["kind"] == "merge"
+            assert rows[0]["survivor_id"] == "1"
+            assert rows[0]["preselected"] is False
+            assert {candidate["id"] for candidate in rows[0]["candidates"]} == {"1", "2", "3"}
+            assert {candidate["match"] for candidate in rows[0]["candidates"]} == {"exact", "fuzzy"}
+            assert "linked_note" not in rows[0]
+            # exact only -> link row, preselected
+            rows = link_rows_for_remote("Goth", 3, [goth, unrelated], endpoint)
+            assert rows[0]["kind"] == "link" and rows[0]["preselected"] is True and rows[0]["survivor_id"] == "1"
+            # fuzzy only -> one unchecked link row per candidate, most-used first
+            rows = link_rows_for_remote("Goth", 3, [goth_girl, goth_metal, unrelated], endpoint)
+            assert [row["survivor_id"] for row in rows] == ["3", "2"]
+            assert all(row["kind"] == "link" and row["preselected"] is False for row in rows)
+            # alias-exact counts as exact and forces a merge with the name-exact tag
+            alias_tag = dict(goth_girl, aliases=["Goth"])
+            rows = link_rows_for_remote("Goth", 3, [goth, alias_tag], endpoint)
+            assert rows[0]["kind"] == "merge" and rows[0]["survivor_id"] == "1"
+            # already linked to this provider -> chip and not preselected
+            linked_goth = dict(goth, stash_ids=[{"endpoint": endpoint, "stash_id": "r99"}])
+            rows = link_rows_for_remote("Goth", 1, [linked_goth], endpoint)
+            assert rows[0]["kind"] == "link" and rows[0]["preselected"] is False
+            assert rows[0]["candidates"][0]["provider_stash_id"] == "r99"
+            assert rows[0].get("linked_note")
+            # no match -> no row
+            assert link_rows_for_remote("Goth", 1, [unrelated], endpoint) == []
+            assert link_name_overlap("Goth Girl", "Goth") is True
+            assert link_name_overlap("Gotham", "Goth") is False
+            # tightened fuzzy: near-duplicates and token variants only
+            assert link_fuzzy_match("goth girl", "goth") is True
+            assert link_fuzzy_match("goths", "goth") is True
+            assert link_fuzzy_match("cream pie", "creampie") is True
+            assert link_fuzzy_match("water", "amateur") is False
+            assert link_fuzzy_match("gotham", "goth") is False
+            # the semantic oracle: candidates stash-box knows as separate tags are dropped,
+            # remote aliases turn local variants into exact matches
+            resolved_goth = {
+                "goth": {"id": "rg", "name": "Goth", "aliases": ["Goth Girl"], "description": ""},
+                "goth metal": {"id": "rgm", "name": "Goth Metal", "aliases": [], "description": ""},
+                "goth girl": None,  # only an alias of Goth, not a separate tag
+            }
+            rows = link_rows_for_remote(
+                "Goth", 5, [goth, goth_girl, goth_metal], endpoint,
+                lambda name: resolved_goth.get(name.casefold()),
+            )
+            assert len(rows) == 1 and rows[0]["kind"] == "merge"
+            assert rows[0]["survivor_id"] == "1"
+            assert {candidate["id"] for candidate in rows[0]["candidates"]} == {"1", "2"}
+            assert rows[0]["remote_id"] == "rg"
+            assert rows[0]["remote_aliases"] == ["Goth Girl"]
+            # without the oracle the token-overlap candidate would still be listed
+            rows = link_rows_for_remote("Goth", 5, [goth, goth_girl, goth_metal], endpoint)
+            assert {candidate["id"] for candidate in rows[0]["candidates"]} == {"1", "2", "3"}
+            # exact name match only, oracle confirms "Water" is its own stash-box tag
+            resolved_amateur = {
+                "amateur": {"id": "ra", "name": "Amateur", "aliases": [], "description": ""},
+                "water": {"id": "rw", "name": "Water", "aliases": [], "description": ""},
+            }
+            amateur_tag = dict(goth, id="10", name="Amateur")
+            water_tag = dict(goth, id="11", name="Water")
+            rows = link_rows_for_remote(
+                "Amateur", 5, [amateur_tag, water_tag], endpoint,
+                lambda name: resolved_amateur.get(name.casefold()),
+            )
+            assert len(rows) == 1 and rows[0]["kind"] == "link"
+            assert [candidate["id"] for candidate in rows[0]["candidates"]] == ["10"]
+            # a local tag already linked to exactly this remote tag: no no-op row
+            resolved_69 = {"69": {"id": "r69", "name": "69", "aliases": [], "description": ""}}
+            linked_69 = dict(goth, id="20", name="69", stash_ids=[{"endpoint": endpoint, "stash_id": "r69"}])
+            rows = link_rows_for_remote("69", 3, [linked_69], endpoint, lambda name: resolved_69.get(name.casefold()))
+            assert rows == []
+            # linked to a *different* stash-box tag: kept as a fixable mislink, not preselected
+            mislinked_69 = dict(goth, id="21", name="69", stash_ids=[{"endpoint": endpoint, "stash_id": "r666"}])
+            rows = link_rows_for_remote("69", 3, [mislinked_69], endpoint, lambda name: resolved_69.get(name.casefold()))
+            assert len(rows) == 1 and rows[0]["kind"] == "link"
+            assert rows[0]["preselected"] is False and rows[0].get("linked_note")
+            # unresolved remote: cannot verify, so the row stays with the chip
+            rows = link_rows_for_remote("69", 3, [linked_69], endpoint)
+            assert len(rows) == 1 and rows[0]["preselected"] is False
+            # merge rows stay even when the survivor is already linked (the merge matters)
+            goth_linked = dict(goth, stash_ids=[{"endpoint": endpoint, "stash_id": "rg"}])
+            resolved_g2 = {"goth": {"id": "rg", "name": "Goth", "aliases": [], "description": ""}, "goth girl": None}
+            rows = link_rows_for_remote(
+                "Goth", 5, [goth_linked, goth_girl], endpoint,
+                lambda name: resolved_g2.get(name.casefold()),
+            )
+            assert len(rows) == 1 and rows[0]["kind"] == "merge"
+            assert rows[0]["survivor_id"] == "1"
+            # stash-box search is the semantic confirmation: a non-tag candidate
+            # survives only when stash-box's own search ranks the remote tag
+            resolved_g3 = {"goth": {"id": "rg", "name": "Goth", "aliases": [], "description": ""}}
+
+            def search_g3(term):
+                if term.casefold() == "goth girl":
+                    return ["rg", "r-other"]  # stash-box ranks Goth for "Goth Girl"
+                return []  # no association for "Goth Metal"
+
+            rows = link_rows_for_remote(
+                "Goth", 5, [goth, goth_girl, goth_metal], endpoint,
+                lambda name: resolved_g3.get(name.casefold()),
+                search_g3,
+            )
+            assert {candidate["id"] for candidate in rows[0]["candidates"]} == {"1", "2"}
+            # a failed search keeps the candidate (cannot verify -> do not drop)
+            rows = link_rows_for_remote(
+                "Goth", 5, [goth, goth_girl], endpoint,
+                lambda name: resolved_g3.get(name.casefold()),
+                lambda term: None,
+            )
+            assert {candidate["id"] for candidate in rows[0]["candidates"]} == {"1", "2"}
+            # near-duplicates are kept without needing a search confirmation
+            calls = []
+
+            def counting_search(term):
+                calls.append(term)
+                return []
+
+            goths_tag = dict(goth, id="40", name="Goths")
+            rows = link_rows_for_remote(
+                "Goth", 5, [goth, goths_tag], endpoint,
+                lambda name: resolved_g3.get(name.casefold()),
+                counting_search,
+            )
+            assert {candidate["id"] for candidate in rows[0]["candidates"]} == {"1", "40"}
+            assert calls == []
+            # the user's cases: shared generic words are disproven by stash-box search
+            breast_play = {"id": "bp", "name": "Breast Play", "aliases": [], "description": ""}
+            breast_play_local = dict(goth, id="31", name="Breast Play")
+            anal_play_local = dict(goth, id="30", name="Anal Play")
+
+            def search_bp(term):
+                return [] if term.casefold() == "anal play" else ["bp"]
+
+            rows = link_rows_for_remote(
+                "Breast Play", 5, [breast_play_local, anal_play_local], endpoint,
+                lambda name: {"breast play": breast_play}.get(name.casefold()),
+                search_bp,
+            )
+            assert len(rows) == 1
+            assert [candidate["id"] for candidate in rows[0]["candidates"]] == ["31"]
+            # "Age Group" under "Group Sex": no token relation that stash-box confirms
+            group_sex = {"id": "gs", "name": "Group Sex", "aliases": [], "description": ""}
+            group_sex_local = dict(goth, id="41", name="Group Sex")
+            age_group_local = dict(goth, id="42", name="Age Group")
+
+            def search_gs(term):
+                return ["gs"] if term.casefold() == "group sex" else []
+
+            rows = link_rows_for_remote(
+                "Group Sex", 5, [group_sex_local, age_group_local], endpoint,
+                lambda name: {"group sex": group_sex}.get(name.casefold()),
+                search_gs,
+            )
+            assert len(rows) == 1
+            assert [candidate["id"] for candidate in rows[0]["candidates"]] == ["41"]
+            # --- link apply ---
+            link_calls = []
+            remote_tags = {
+                "Goth": {"id": "r1", "name": "Goth", "aliases": ["Goth Girl"], "description": "A goth aesthetic", "deleted": False},
+                "Vanished": {"id": "r2", "name": "Vanished", "aliases": [], "description": "", "deleted": True},
+            }
+            link_store = {
+                "1": dict(goth),
+                "2": dict(goth_girl),
+                "3": dict(goth, id="3", name="Goth (linked)", stash_ids=[{"endpoint": endpoint, "stash_id": "r1"}]),
+                "4": dict(goth, id="4", name="Goth (other)", stash_ids=[{"endpoint": endpoint, "stash_id": "other"}]),
+                "5": dict(goth, id="5", name="Goth (dup a)", stash_ids=[{"endpoint": "https://other.example/graphql", "stash_id": "a"}]),
+                "6": dict(goth, id="6", name="Goth (dup b)", stash_ids=[{"endpoint": "https://other.example/graphql", "stash_id": "b"}]),
+            }
+
+            def fake_link_graphql(url, query, variables=None, headers=None):
+                link_calls.append((query, variables))
+                if query == LINK_REMOTE_TAG_QUERY:
+                    return {"findTag": remote_tags.get(variables["name"])}
+                if query == CLEANUP_TAGS_BY_IDS_QUERY:
+                    return {"findTags": {"tags": [link_store[item] for item in variables["ids"] if item in link_store]}}
+                if query == TAGS_MERGE_MUTATION:
+                    source_ids = variables["input"]["source"]
+                    destination = variables["input"]["destination"]
+                    for source_id in source_ids:
+                        link_store.pop(source_id, None)
+                    link_store[destination] = {
+                        **link_store.get(destination, {}),
+                        **{key: value for key, value in variables["input"]["values"].items() if key != "id"},
+                    }
+                    return {"tagsMerge": {"id": destination}}
+                if query == TAG_UPDATE_MUTATION:
+                    input_data = variables["input"]
+                    link_store[input_data["id"]] = {**link_store.get(input_data["id"], {}), **input_data}
+                    return {"tagUpdate": {"id": input_data["id"]}}
+                raise AssertionError("unexpected link query: " + query)
+
+            real_link_graphql = graphql
+            graphql = fake_link_graphql
+            try:
+                provider = {"endpoint": endpoint, "api_key": "key"}
+                row = {"candidates": [{"id": "1"}, {"id": "2"}]}
+                # merge then link
+                record = link_apply_one("local", {}, provider, "Goth", row, "1", ["2"], False)
+                assert record["remote_id"] == "r1"
+                assert record["merged_source_ids"] == ["2"]
+                assert record["already_linked"] is False
+                assert record["fields"] == ["stash_id", "aliases", "description"]
+                assert "2" not in link_store
+                assert link_store["1"]["aliases"] == ["Goth Girl"]
+                assert link_store["1"]["description"] == "A goth aesthetic"
+                assert link_store["1"]["stash_ids"] == [{"endpoint": endpoint, "stash_id": "r1"}]
+                # already linked to the same remote tag: no duplicate entry, still pulls metadata
+                record = link_apply_one("local", {}, provider, "Goth", {"candidates": [{"id": "3"}]}, "3", [], False)
+                assert record["already_linked"] is True
+                assert [entry for entry in link_store["3"]["stash_ids"] if entry["endpoint"] == endpoint] == [{"endpoint": endpoint, "stash_id": "r1"}]
+                # linked to a different remote tag: requires override
+                try:
+                    link_apply_one("local", {}, provider, "Goth", {"candidates": [{"id": "4"}]}, "4", [], False)
+                except RuntimeError as error:
+                    assert "override" in str(error)
+                else:
+                    raise AssertionError("conflicting stash ID was replaced without override")
+                record = link_apply_one("local", {}, provider, "Goth", {"candidates": [{"id": "4"}]}, "4", [], True)
+                assert record["note"] == "replaced existing stash ID"
+                assert [entry for entry in link_store["4"]["stash_ids"] if entry["endpoint"] == endpoint] == [{"endpoint": endpoint, "stash_id": "r1"}]
+                # merging tags with conflicting stash IDs on another endpoint: override required
+                try:
+                    link_apply_one("local", {}, provider, "Goth", {"candidates": [{"id": "5"}, {"id": "6"}]}, "5", ["6"], False)
+                except RuntimeError as error:
+                    assert "conflicting stash IDs" in str(error)
+                else:
+                    raise AssertionError("merge with conflicting stash IDs succeeded without override")
+                record = link_apply_one("local", {}, provider, "Goth", {"candidates": [{"id": "5"}, {"id": "6"}]}, "5", ["6"], True)
+                assert record["merged_source_ids"] == ["6"]
+                assert "6" not in link_store
+                # vanished remote tag fails cleanly
+                try:
+                    link_apply_one("local", {}, provider, "Vanished", {"candidates": [{"id": "1"}]}, "1", [], False)
+                except RuntimeError as error:
+                    assert "not found" in str(error)
+                else:
+                    raise AssertionError("deleted remote tag was linked")
+                # selection validation
+                try:
+                    link_apply_one("local", {}, provider, "Goth", {"candidates": [{"id": "2"}]}, "9", [], False)
+                except ValueError as error:
+                    assert "not a match" in str(error)
+                else:
+                    raise AssertionError("survivor outside the row candidates was accepted")
+                # the remote tag changed identity since the scan -> stale
+                try:
+                    link_apply_one(
+                        "local", {}, provider, "Goth",
+                        {"candidates": [{"id": "1"}], "remote_id": "OLD"},
+                        "1", [], False,
+                    )
+                except CleanupStaleError as error:
+                    assert "changed identity" in str(error)
+                else:
+                    raise AssertionError("stale remote identity was accepted")
+            finally:
+                graphql = real_link_graphql
+            # wrapper: backup gate for merges, per-row failures, missing state
+            import tempfile as _tempfile
+            link_dir = _tempfile.mkdtemp(prefix="tag-organizer-link-test-")
+            write_link_state(
+                {"Dir": link_dir},
+                {
+                    "link_token": "link-test",
+                    "status": "completed",
+                    "rows": [{"remote_name": "Goth", "candidates": [{"id": "1"}, {"id": "2"}]}],
+                },
+            )
+            try:
+                link_apply("local", {}, provider, {"Dir": link_dir}, {"link_token": "link-test", "rows": [{"remote_name": "Goth", "survivor_id": "1", "source_ids": ["2"]}]})
+            except ValueError as error:
+                assert "backup" in str(error)
+            else:
+                raise AssertionError("merge applied without a backup")
+            graphql = fake_link_graphql
+            link_store.clear()
+            link_store.update({"1": dict(goth), "2": dict(goth_girl)})
+            try:
+                applied = link_apply(
+                    "local",
+                    {},
+                    provider,
+                    {"Dir": link_dir},
+                    {"link_token": "link-test", "backup_confirmed": True, "rows": [{"remote_name": "Goth", "survivor_id": "1", "source_ids": ["2"]}]},
+                )
+                assert applied["failures"] == []
+                assert applied["linked"][0]["remote_id"] == "r1"
+                assert applied["merged"][0]["survivor_id"] == "1"
+                assert "2" not in link_store
+                failed = link_apply(
+                    "local",
+                    {},
+                    provider,
+                    {"Dir": link_dir},
+                    {"link_token": "link-test", "backup_confirmed": True, "rows": [{"remote_name": "Vanished", "survivor_id": "1"}]},
+                )
+                assert len(failed["failures"]) == 1
+                assert failed["failures"][0]["remote_name"] == "Vanished"
+            finally:
+                graphql = real_link_graphql
+            link_state_path({"Dir": link_dir}, "link-test").unlink()
+            try:
+                link_apply("local", {}, provider, {"Dir": link_dir}, {"link_token": "link-test", "backup_confirmed": True, "rows": [{"remote_name": "Goth", "survivor_id": "1"}]})
+            except ValueError as error:
+                assert "complete a link scan" in str(error)
+            else:
+                raise AssertionError("link applied against a missing state file")
+            try:
+                link_apply("local", {}, provider, {"Dir": link_dir}, {"link_token": "link-test", "backup_confirmed": True, "rows": []})
+            except ValueError as error:
+                assert "select at least one" in str(error)
+            else:
+                raise AssertionError("empty link selection was accepted")
     finally:
         graphql = real_cleanup_graphql
     assert any(call[0] == TAG_DESTROY_MUTATION for call in cleanup_calls)
