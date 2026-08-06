@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import sys
 import tempfile
+import threading
 import time
 import unicodedata
 from urllib.error import HTTPError, URLError
@@ -17,7 +18,7 @@ from urllib.request import Request, urlopen
 PLUGIN_ID = "tag-organizer"
 PAGE_SIZE = 100
 SCAN_PAGE_SIZE = 25
-REMOTE_BATCH_SIZE = 25
+REMOTE_BATCH_SIZE = 200
 CLEANUP_TAG_PAGE_SIZE = 25
 CLEANUP_SCENE_PAGE_SIZE = 1000
 LOCAL_BATCH_SIZE = 100
@@ -766,6 +767,59 @@ def fuzzy_similarity(left, right):
     return difflib.SequenceMatcher(None, normalized_tag_name(left), normalized_tag_name(right)).ratio()
 
 
+_NAME_STATS = {}
+_RATIO_CACHE = {}
+
+
+def name_stats(name):
+    """Per-name (normalized, char mask, char multiset, length) for exact gating."""
+    key = name.casefold()
+    stats = _NAME_STATS.get(key)
+    if stats is None:
+        normalized = normalized_tag_name(name)
+        mask = 0
+        counts = {}
+        for char in normalized:
+            mask |= 1 << (ord(char) & 63)
+            counts[char] = counts.get(char, 0) + 1
+        stats = (normalized, mask, counts, len(normalized))
+        _NAME_STATS[key] = stats
+    return stats
+
+
+def gated_fuzzy_similarity(left, right, cutoff):
+    """difflib ratio when it can reach `cutoff`, else None.
+
+    Exact gate: pairs whose length ratio, disjoint character mask, or shared-
+    character multiset upper bound already prove the ratio is below `cutoff`
+    never reach difflib, and computed ratios are memoized (SequenceMatcher's
+    ratio is symmetric, so each unordered name pair is computed once).
+    """
+    left_norm, left_mask, left_counts, left_len = name_stats(left)
+    right_norm, right_mask, right_counts, right_len = name_stats(right)
+    if not left_norm or not right_norm:
+        return None
+    if left_norm == right_norm:
+        return 1.0
+    if not (left_mask & right_mask):
+        return None
+    if 2 * min(left_len, right_len) / (left_len + right_len) < cutoff:
+        return None
+    shared = 0
+    for char, left_count in left_counts.items():
+        right_count = right_counts.get(char)
+        if right_count:
+            shared += left_count if left_count < right_count else right_count
+    if 2 * shared / (left_len + right_len) < cutoff:
+        return None
+    pair = (left_norm, right_norm) if left_norm <= right_norm else (right_norm, left_norm)
+    value = _RATIO_CACHE.get(pair)
+    if value is None:
+        value = difflib.SequenceMatcher(None, left_norm, right_norm).ratio()
+        _RATIO_CACHE[pair] = value
+    return value if value >= cutoff else None
+
+
 def duplicate_similarity_edges(tags, minimum=DUPLICATE_SIMILARITY_FLOOR, progress_callback=None):
     """Calculate compact direct-similarity edges once for runtime filtering.
 
@@ -1022,7 +1076,13 @@ def cleanup_candidate_id(parent_id, alias, remote_name):
 
 
 def cleanup_scene_evidence(scenes, providers, remote_cache, progress_callback=None):
-    prefetch_remote_tag_names(scenes, providers, remote_cache)
+    def report_prefetch_progress(done, total):
+        if progress_callback:
+            # chunk counts so the tail of the prefetch stays visible instead of
+            # being capped at the scene total
+            progress_callback(done, total)
+
+    prefetch_remote_tag_names(scenes, providers, remote_cache, report_prefetch_progress)
     evidence = {}
     failures = []
     for index, scene in enumerate(scenes, 1):
@@ -1075,8 +1135,8 @@ def cleanup_split_candidates(
         fuzzy = []
         alias_key = normalized_tag_name(alias)
         for observation in observations.values():
-            score = fuzzy_similarity(alias, observation["name"])
-            if score < FUZZY_CUTOFF:
+            score = gated_fuzzy_similarity(alias, observation["name"], FUZZY_CUTOFF)
+            if score is None:
                 continue
             item = {
                 "id": cleanup_candidate_id(parent["id"], alias, observation["name"]),
@@ -1322,7 +1382,7 @@ def remote_tag_names_for_id(endpoint, stash_id, provider, cache):
         return [], [{"provider": endpoint, "error": str(error)}]
 
 
-def prefetch_remote_tag_names(scenes, providers, cache):
+def prefetch_remote_tag_names(scenes, providers, cache, progress_callback=None):
     pending = {}
     for scene in scenes:
         for stash_id in scene.get("stash_ids") or []:
@@ -1333,7 +1393,15 @@ def prefetch_remote_tag_names(scenes, providers, cache):
             if cache_key not in cache:
                 pending.setdefault(endpoint, {})[cache_key] = stash_id["stash_id"]
 
-    for endpoint, scene_ids in pending.items():
+    def chunks_for(count):
+        chunks = (count + REMOTE_BATCH_SIZE - 1) // REMOTE_BATCH_SIZE
+        return max(0, chunks - 1) if count % REMOTE_BATCH_SIZE == 1 else chunks
+
+    total_chunks = sum(chunks_for(len(ids)) for ids in pending.values())
+    progress_lock = threading.Lock()
+    done = [0]
+
+    def fetch_endpoint(endpoint, scene_ids):
         provider = providers[endpoint]
         items = list(scene_ids.items())
         for offset in range(0, len(items), REMOTE_BATCH_SIZE):
@@ -1348,6 +1416,26 @@ def prefetch_remote_tag_names(scenes, providers, cache):
             for alias, cache_key in aliases.items():
                 scene = data.get(alias) or {}
                 cache[cache_key] = [tag["name"] for tag in scene.get("tags", [])]
+            with progress_lock:
+                done[0] += 1
+                if progress_callback:
+                    progress_callback(done[0], total_chunks)
+
+    # providers are different servers, so their prefetch streams run in
+    # parallel; each provider is still hit sequentially so this does not add
+    # any load per provider, it only halves the wall time
+    if len(pending) > 1:
+        workers = [
+            threading.Thread(target=fetch_endpoint, args=(endpoint, scene_ids))
+            for endpoint, scene_ids in pending.items()
+        ]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join()
+    else:
+        for endpoint, scene_ids in pending.items():
+            fetch_endpoint(endpoint, scene_ids)
 
 
 def remote_tag_names(scene, providers, cache):
@@ -1795,6 +1883,8 @@ def cleanup_scan_all(local_url, local_headers, providers, server, token, duplica
     }
     write_cleanup_state(server, state)
     try:
+        last_persist = [0.0, -1]
+
         def report_cleanup_progress(scanned, total, phase, detail=""):
             state.update({
                 "scanned": scanned,
@@ -1802,34 +1892,41 @@ def cleanup_scan_all(local_url, local_headers, providers, server, token, duplica
                 "progress_phase": phase,
                 "progress_detail": detail,
             })
-            write_cleanup_state(server, state)
-            stash_progress(scanned, total)
+            now = time.time()
+            # progress is reported per scene for tags with tens of thousands of
+            # scenes; persisting the full state file and emitting a stderr
+            # progress line that often is orders of magnitude slower than the
+            # work itself, so throttle both to ~2/s
+            now_delta = now - last_persist[0]
+            scan_delta = abs(float(scanned) - last_persist[1])
+            if now_delta >= 0.5 or scan_delta >= 500:
+                write_cleanup_state(server, state)
+                stash_progress(scanned, total)
+                last_persist[0] = now
+                last_persist[1] = float(scanned)
 
         plan = cleanup_plan(local_url, local_headers, providers, report_cleanup_progress, duplicate_cutoff)
+        # nothing consumes splits until the scan reports completed/applied, so
+        # persist them in a single write at the end instead of re-serializing
+        # the whole (ever-growing) state file once per split
         state.update(
             {
                 "tags": plan["tags"],
                 "junk": plan["junk"],
                 "duplicates": plan["duplicates"],
                 "duplicate_edges": plan["duplicate_edges"],
+                "splits": plan["splits"],
+                "scanned": len(plan["splits"]),
                 "total": len(plan["splits"]),
                 "failure_count": len(plan["failures"]),
                 "failures": plan["failures"],
-                "progress_phase": "plan",
+                "progress_phase": "complete",
                 "progress_detail": "",
             }
         )
-        write_cleanup_state(server, state)
-        for index, split in enumerate(plan["splits"], 1):
-            state["splits"].append(split)
-            state["scanned"] = index
-            if index % 5 == 0 or index == len(plan["splits"]):
-                write_cleanup_state(server, state)
-            stash_progress(index, len(plan["splits"]))
         state["status"] = "completed"
-        state["progress_phase"] = "complete"
-        state["progress_detail"] = ""
         write_cleanup_state(server, state)
+        stash_progress(len(plan["splits"]), len(plan["splits"]))
         return {
             "cleanup_token": token,
             "status": state["status"],
