@@ -1,2 +1,7 @@
 __pycache__/
 *.pyc
+
+# Offline cover-story pipeline (tools/cover-story) — not part of any shipped plugin.
+# ONNX matting/upscale weights and the onnxruntime venv: ~460 MB, re-downloadable.
+tools/cover-story/models/
+tools/cover-story/.venv-birefnet/

@@ -10,7 +10,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageOps, ImageStat
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageMath, ImageOps, ImageStat
 
 from comfy import api, run, upload_image
 from export_personas import atomic_text, sha256
@@ -67,6 +67,11 @@ CONTROL_TYPES = {
 # body_repaint_mask() and silhouette_outline() for what each one is defending against.
 FACE_ALIGN_TOLERANCE = 0.12
 NECK_OVERLAP = 15
+# How far harmonize_skin()'s mask is held back from the figure's own silhouette, in dilate()/
+# erode() units (size//2 actual pixels). ImageCompositeMasked guarantees bit-exactness only
+# *outside* the mask, so a mask that reached the boundary would let a body-wide edit shrink the
+# silhouette within it; keeping the outermost ring original makes that impossible.
+SKIN_BLEND_EDGE_GUARD = 6
 OUTER_MARGIN = 25
 OUTER_FEATHER = 8
 OUTLINE_WIDTH = 5
@@ -93,6 +98,11 @@ SEAM_EDIT_MARGIN = 15
 SPREAD_TRANSLATION_PX = 2
 SPREAD_SCALE = 0.005
 NEGATIVE = "低分辨率，低画质，肢体畸形，手指畸形，画面过饱和，蜡像感，人脸无细节，过度光滑，画面具有AI感。构图混乱。文字模糊，扭曲"
+
+# VITON person-image tone samples (PoC constants; the catalog's skin_tone_group owns these in
+# production). Used by the grey-carrier/VITON path to recolor the carrier deterministically to the
+# tone the exposed skin must carry, so the try-on output needs no per-tone garment generation.
+TONE_RGB = {"light": (212, 176, 150), "medium": (183, 143, 110), "dark": (140, 96, 70)}
 SETTINGS = {
     "edit": {
         "model": EDIT_MODEL, "text_encoder": TEXT_ENCODER, "vae": VAE,
@@ -161,11 +171,40 @@ def erode(mask, size):
 
 
 def screen_foreground(image, screen="blue"):
-    """Raw foreground estimate from key-channel dominance; a hint input, never final alpha.
+    """Raw foreground estimate; a hint input, never final alpha.
 
     Parameterised by screen because the clothing plate keys green while skin and identity stay on
-    blue. Hardcoded blue counts a green background as *figure*."""
-    red, green, blue = image.convert("RGB").split()
+    blue. Hardcoded blue counts a green background as *figure*.
+
+    screen="grey" is the flat generated-background mode (grey carrier / VITON PoC): the screen is
+    estimated per row as the horizontal blend of the left/right border bands (averaged 8-column
+    strips, vertically blurred) -- the figure never touches the frame borders, so those strips are
+    pure background. A single corner sample or a bilinear corner blend cannot fit the non-linear
+    vertical gradient generated images have (measured on a real grey carrier: a bright band near the
+    bottom edge misclassified the whole margin as figure at 45.7% coverage). Any pixel differing
+    from that estimate by >= 20 in at least one channel is figure. Deliberately cheap and
+    deterministic -- no model -- so it drives the recolor mask and silhouette checks without a
+    matting pass. Assumes the prompt guarantees suit/background contrast (the grey carrier prompt
+    does: light-grey bodysuit on a background a few shades darker)."""
+    image = image.convert("RGB")
+    if screen == "grey":
+        w, h = image.size
+        bands = []
+        for ch in image.split():
+            left_col = ch.crop((0, 0, 8, h)).resize((1, h), Image.Resampling.BOX)
+            right_col = ch.crop((w - 8, 0, w, h)).resize((1, h), Image.Resampling.BOX)
+            left_col = left_col.filter(ImageFilter.GaussianBlur(3))
+            right_col = right_col.filter(ImageFilter.GaussianBlur(3))
+            pair = Image.new("L", (2, h))
+            pair.paste(left_col, (0, 0))
+            pair.paste(right_col, (1, 0))
+            bands.append(pair.resize((w, h), Image.Resampling.BILINEAR))
+        bg = Image.merge("RGB", bands)
+        diff = ImageChops.difference(image, bg)
+        r, g, b = diff.split()
+        maxd = ImageChops.lighter(r, ImageChops.lighter(g, b))
+        return maxd.point(lambda v: 255 if v >= 20 else 0)
+    red, green, blue = image.split()
     key, others = (green, (red, blue)) if screen == "green" else (blue, (red, green))
     dominance = ImageChops.subtract(key, ImageChops.lighter(*others))
     return ImageOps.invert(dominance.point(lambda value: 255 if value >= 12 else 0))
@@ -257,11 +296,29 @@ def inset(box, margin):
     return (x0 + dx, y0 + dy, x1 - dx, y1 - dy)
 
 
-def deterministic_skin_recolor(image, foreground, target_rgb, paint_channel="green"):
-    """Recolor `foreground` pixels to `target_rgb`, tinted by the image's own per-pixel shading --
-    `paint_channel`'s own brightness at that point -- so photographed highlights, shadows and
-    muscle definition survive a hue change that a diffusion regeneration cannot guarantee stays
-    registered to the source. Background pixels are untouched.
+# Blur radius for deterministic_skin_recolor()'s local brightness reference. Large enough to average
+# out broad studio lighting falloff (measured on a real carrier: the key channel reads 162 at the
+# chest and 79 at the thigh, roughly half, purely from the light falling off toward the floor) while
+# staying smaller than that falloff's own scale, so local shading -- a muscle's curve, a knee's
+# highlight, which vary over tens of pixels rather than hundreds -- still comes through.
+SKIN_TONE_LOCAL_RADIUS = 90
+
+
+def deterministic_skin_recolor(image, foreground, target_rgb, paint_channel="green",
+                               radius=SKIN_TONE_LOCAL_RADIUS):
+    """Recolor `foreground` pixels to `target_rgb`, tinted by the image's own *local* shading --
+    `paint_channel`'s brightness at that point relative to a blurred local average, not relative to
+    one global figure-wide average -- so photographed highlights, shadows and muscle definition
+    survive a hue change that a diffusion regeneration cannot guarantee stays registered to the
+    source. Background pixels are untouched.
+
+    Local, not global: a single figure-wide reference carries the carrier's own broad lighting
+    falloff straight through to skin tone along with the local shading, and that falloff can be
+    severe -- half the key-channel brightness from chest to thigh on a real carrier -- producing
+    legs that read as flat and grey next to a warm torso. A blurred local reference divides out
+    exactly that broad-scale falloff (the blur mixes chest-level and thigh-level brightness apart
+    from each other, so each region's own local average maps back to `target_rgb`) while leaving
+    fine shading, which varies within the blur radius, intact.
 
     `paint_channel` names the figure's own paint colour (green, for this project's carriers) --
     deliberately not called `screen`, which screen_foreground() already uses for the *opposite*
@@ -272,13 +329,29 @@ def deterministic_skin_recolor(image, foreground, target_rgb, paint_channel="gre
     diffusion pass (skin.png) instead; that pass carries its own independent registration drift
     against the carrier (measured up to 7px), which a downstream clothes plate built from the
     carrier's own bit-exact pixels would inherit. This has none, because it never leaves the
-    carrier's own pixel grid."""
-    channel = image.split()[{"green": 1, "blue": 2}[paint_channel]]
-    reference = ImageStat.Stat(channel, mask=foreground).mean[0]
-    if reference <= 0:
-        raise ValueError("foreground mask is empty or the key channel is entirely zero within it")
-    bands = [channel.point(lambda value, target=target: max(0, min(255, round(target * (value / reference)))))
-             for target in target_rgb]
+    carrier's own pixel grid.
+
+    paint_channel=None selects the luminance mode for grey carriers (no paint channel exists):
+    the figure's luma is the shading map. On the real blue-screen/green-paint carrier the two modes
+    differ by ~12 levels mean (p95 27) inside the figure -- the green paint's R/B noise and screen
+    spill leaking into luma -- which does not exist on a grey suit, where luma *is* the shading."""
+    if paint_channel is None:
+        channel = image.convert("L")
+    else:
+        channel = image.split()[{"green": 1, "blue": 2}[paint_channel]]
+    local_mean = channel.filter(ImageFilter.GaussianBlur(radius))
+    ratio = ImageMath.lambda_eval(
+        lambda args: ImageMath.imagemath_float(args["value"])
+        / ImageMath.imagemath_max(ImageMath.imagemath_float(args["mean"]), 1),
+        value=channel, mean=local_mean,
+    )
+    bands = [
+        ImageMath.lambda_eval(
+            lambda args, t=target: ImageMath.imagemath_min(ImageMath.imagemath_max(args["r"] * t, 0), 255),
+            r=ratio,
+        ).convert("L")
+        for target in target_rgb
+    ]
     recolored = Image.merge("RGB", bands)
     return Image.composite(recolored, image, foreground)
 
@@ -293,6 +366,59 @@ def head_transplant(head_source, body, head_mask, feather=HEAD_BLEND_FEATHER):
     softening near the edge -- which is exactly where a real head meets a real body anyway."""
     alpha = head_mask.filter(ImageFilter.GaussianBlur(feather))
     return Image.composite(head_source, body, alpha)
+
+
+def chroma_spread(image, mask):
+    """Saturation mean and spread (percent) over `mask` -- the quantitative stand-in for "does this
+    read as real skin".
+
+    Spread is the number that matters, and it is the one nothing measured before 2026-08-08.
+    deterministic_skin_recolor() computes `target_rgb * ratio`, so every output pixel is a scalar
+    multiple of one RGB vector: all pixels lie on a single line through the origin and saturation is
+    constant *by construction*. Measured on a real plate, torso saturation spread was 2.0 against
+    real skin's 9.9 -- while the *mean* was already correct (hue 28.6 against 28.4). Tone was never
+    the problem; variance was, and only a spread metric can see the difference."""
+    red, green, blue = image.convert("RGB").split()
+    high = ImageChops.lighter(ImageChops.lighter(red, green), blue)
+    low = ImageChops.darker(ImageChops.darker(red, green), blue)
+    saturation = ImageMath.lambda_eval(
+        lambda args: 255.0 * ImageMath.imagemath_float(args["d"])
+        / ImageMath.imagemath_max(ImageMath.imagemath_float(args["h"]), 1.0),
+        d=ImageChops.subtract(high, low), h=high).convert("L")
+    stat = ImageStat.Stat(saturation, mask)
+    return {"saturation_mean": round(stat.mean[0] * 100 / 255, 2),
+            "saturation_spread": round(stat.stddev[0] * 100 / 255, 2)}
+
+
+def rebackground(image, alpha, from_rgb, to_rgb):
+    """Swap one known flat backdrop for another, correcting the blend band and not just the solid
+    background behind the figure.
+
+    A boundary pixel is `C = a*F + (1-a)*B_from`, so the pixel that would have been produced against
+    a different backdrop is `C + (1-a)*(B_to - B_from)`. Written that way it never needs the unmixed
+    foreground `F`, which is what makes it stable: recovering `F` means dividing by `a`, and that
+    amplifies noise worst exactly at the wispy hair edge this exists to fix. Where `a` is 255 the
+    correction is zero, so solid figure pixels are untouched by construction.
+
+    Why it exists: head_transplant() composites through a *geometric* mask, so whatever backdrop
+    surrounds the performer's hair inside that mask is pasted onto the plate along with her. Measured
+    on a real run, 17.6% of the transplant mask (6,406 px of 36,377) is her backdrop. That is
+    invisible only while her backdrop and the carrier's are the same colour. Running the preprocess
+    stage on grey -- which is what removes the blue contamination from her hair edge at source --
+    makes it a grey halo instead. Correcting the backdrop first makes the two independent.
+
+    Requires the whole frame to share one `from_rgb`, so an aligned canvas must be padded with the
+    performer's own backdrop rather than the carrier's; padding with the destination colour would be
+    corrected as though it were her backdrop and shifted by the full delta."""
+    bands = []
+    for index, (source, target) in enumerate(zip(from_rgb, to_rgb)):
+        bands.append(ImageMath.lambda_eval(
+            lambda args, delta=float(target) - float(source): ImageMath.imagemath_min(
+                ImageMath.imagemath_max(
+                    ImageMath.imagemath_float(args["c"])
+                    + (255.0 - ImageMath.imagemath_float(args["a"])) * delta / 255.0, 0), 255),
+            c=image.convert("RGB").split()[index], a=alpha.convert("L")).convert("L"))
+    return Image.merge("RGB", bands)
 
 
 def blend_zone(head_mask, feather=HEAD_BLEND_FEATHER, margin=SEAM_EDIT_MARGIN):
@@ -686,7 +812,7 @@ def generation_graph(prompt, seed, prefix, size=(1328, 1328), canonical=True, ne
 
 
 def edit_graph(image1, prompt, seed, prefix, image2=None, mask=None,
-               control=None, control_type="canny", control_strength=1.0):
+               control=None, control_type="canny", control_strength=1.0, denoise=1.0):
     """control= a control image applied through the Qwen Union ControlNet.
 
     Additive: every existing caller keeps today's graph exactly. The point of the control path is
@@ -704,6 +830,17 @@ def edit_graph(image1, prompt, seed, prefix, image2=None, mask=None,
     Strength 1.0-1.5 is the range documented for this ControlNet against Qwen Image Edit
     (civitai 1966651), whose author also pairs it with CFG 2.5 / 20 steps; this graph keeps the
     handover's CFG 4 / 40 steps so that the control image is the only variable being changed.
+
+    `denoise` defaults to 1.0, which is what every stage before 2026-08-08 used and what the two
+    generative edits need: the clothes stage paints a garment that is not in the source at all, and
+    the identity stage regenerates inside its mask entirely.
+
+    Below 1.0 the masked region is *harmonised* rather than regenerated -- the regime a skin-tone
+    blend wants, where the composite already states the target colour in pixels and the model only
+    has to supply the chromatic variation a deterministic recolor cannot (measured: saturation
+    spread 2.0 against real skin's 9.9, with the mean already correct at hue 28.6 vs 28.4). At 1.0
+    a body-shaped mask reproduces the abandoned repaint construction, whose body proportions varied
+    by seed; see LAYERED_COSTUME_PRODUCTION_STATUS.md, 2026-08-05.
     """
     nodes = {
         "1": {"class_type": "UNETLoader", "inputs": {"unet_name": EDIT_MODEL, "weight_dtype": "default"}},
@@ -718,7 +855,7 @@ def edit_graph(image1, prompt, seed, prefix, image2=None, mask=None,
         "10": {"class_type": "FluxKontextMultiReferenceLatentMethod", "inputs": {"reference_latents_method": "index_timestep_zero", "conditioning": ["8", 0]}},
         "11": {"class_type": "CFGNorm", "inputs": {"strength": 1.0, "pre_cfg": False, "model": ["4", 0]}},
         "12": {"class_type": "VAEEncode", "inputs": {"pixels": ["6", 0], "vae": ["3", 0]}},
-        "13": {"class_type": "KSampler", "inputs": {"model": ["11", 0], "seed": seed, "steps": 40, "cfg": 4.0, "sampler_name": "euler", "scheduler": "simple", "positive": ["10", 0], "negative": ["9", 0], "latent_image": ["12", 0], "denoise": 1.0}},
+        "13": {"class_type": "KSampler", "inputs": {"model": ["11", 0], "seed": seed, "steps": 40, "cfg": 4.0, "sampler_name": "euler", "scheduler": "simple", "positive": ["10", 0], "negative": ["9", 0], "latent_image": ["12", 0], "denoise": denoise}},
         "14": {"class_type": "VAEDecode", "inputs": {"samples": ["13", 0], "vae": ["3", 0]}},
         "15": {"class_type": "SaveImage", "inputs": {"images": ["14", 0], "filename_prefix": f"{prefix}-raw"}},
     }
@@ -918,7 +1055,46 @@ def standalone_alpha(source, raw_hint, hint, screen, layer_id, ssh_target, ssh_p
             return opened.convert("RGBA").getchannel("A")
 
 
+# How far past a hole's own edges spill_mask()'s morphological closing reaches, in the same
+# dilate()/erode() units as elsewhere in this file (size//2 actual pixels). Large enough to bridge
+# the waist-crease-sized defect (measured ~3px wide) with margin, small enough that it cannot bridge
+# the gap between genuinely separate parts of the figure.
+SPILL_HOLE_CLOSE_RADIUS = 24
+
+
+def spill_mask(image, screen, radius=SPILL_HOLE_CLOSE_RADIUS):
+    if screen == "grey":
+        # No chroma screen means no spill; there is nothing to close. Callers (segment_source,
+        # scoped_despill) must be able to pass "grey" for the flat-background mode.
+        return Image.new("L", image.size, 0)
+    """Small gaps *enclosed* within the confident-foreground shape -- a hole like a shadowed waist
+    crease, surrounded on all sides by solid fabric -- found by morphological closing (dilate then
+    erode by the same amount) rather than by raw dominance strength.
+
+    An earlier version tested every pixel's dominance independently of context: weak enough, and
+    below a fixed ceiling, meant "despill it." That worked cleanly at the waist and feet (measured
+    dominance 39-67 there against 79-97 for confident background, no overlap) but not generally: a
+    genuine soft edge near hair measured the same weak dominance (69) as the real defects, because
+    ordinary antialiasing at any true boundary reads as weak dominance too, spill or not. Confirmed
+    on a real run: with the dominance-ceiling hint, CorridorKey assigned high alpha (213-246) to
+    blue-screen pixels near her hairline that a hint built without any despill had correctly left
+    transparent (alpha 0) the run before -- a regression the ceiling approach introduced by
+    "fixing" a boundary that was never broken.
+
+    Morphological closing only finds *enclosed* gaps, not ordinary edges, so it does not have this
+    problem by construction: a hair boundary is open to the background, not a hole surrounded by
+    fabric. Verified on real data -- closes the waist gap, leaves the hair region and all tested far
+    background untouched. Does not close the feet/shoe defect, which is a much wider (30px+) notch
+    open to the outside rather than an enclosed hole; that remains unsolved. See
+    LAYERED_COSTUME_PRODUCTION_STATUS.md, 2026-08-06."""
+    fg = screen_foreground(image, screen)
+    closed = erode(dilate(fg, radius), radius)
+    return ImageChops.subtract(closed, fg)
+
+
 def despill_source(image, screen):
+    if screen == "grey":
+        return image.convert("RGB")
     channels = list(image.convert("RGB").split())
     index = 1 if screen == "green" else 2
     other = ImageChops.lighter(*(channel for number, channel in enumerate(channels) if number != index))
@@ -928,9 +1104,90 @@ def despill_source(image, screen):
     return Image.merge("RGB", channels)
 
 
+def scoped_despill(image, screen, radius=SPILL_HOLE_CLOSE_RADIUS):
+    """despill_source(), but only within spill_mask()'s enclosed holes, leaving ordinary boundaries
+    and all background -- confidently screen-coloured or not -- at their original colour."""
+    mask = spill_mask(image, screen, radius)
+    return Image.composite(despill_source(image, screen), image, mask)
+
+
+# How far in from a matte's own boundary edge_despill() reaches. The screen-coloured band a learned
+# matte keeps is a few pixels wide (measured 3-4 px on BiRefNet output); 4 covers it without
+# reaching into skin or fabric that happens to lean toward the key colour.
+MATTE_EDGE_WIDTH = 4
+# Fraction of a layer's edge band that may be screen-dominant before the layer is called fringed.
+# Measured on real plates: CorridorKey 6.4-9.3%, BiRefNet 21.8-40.2%, either one after edge_despill
+# 0.0%. 15% sits in the empty gap between "a keyer's residue" and "a visible coloured halo".
+FRINGE_LIMIT = 0.15
+
+
+def screen_dominant(image, screen, margin=18):
+    """Pixels whose key channel beats both others by `margin` -- i.e. that still read as screen."""
+    red, green, blue = image.convert("RGB").split()
+    key = green if screen == "green" else blue
+    others = ImageChops.lighter(red, blue) if screen == "green" else ImageChops.lighter(red, green)
+    return ImageChops.subtract(key, others).point(lambda value: 255 if value > margin else 0)
+
+
+def matte_edge(alpha, width=MATTE_EDGE_WIDTH):
+    """The band just inside a matte's boundary, plus every partially-transparent pixel.
+
+    This is exactly where a learned matting model keeps screen-coloured pixels: it segments by
+    *shape* and has no notion of chroma, so spill at the boundary reads as subject. A chroma keyer
+    never had this problem -- screen colour means transparent by definition -- which is why despill
+    was unnecessary while CorridorKey produced the alpha and became necessary the moment BiRefNet
+    did. Measured on one plate: BiRefNet's matte is a strict superset of CorridorKey's (1 px goes
+    the other way) and the 6,632 px it adds include 2,663 screen-dominant ones CorridorKey excluded
+    outright. See LAYERED_COSTUME_PRODUCTION_STATUS.md, 2026-08-08."""
+    solid = alpha.point(lambda value: 255 if value > 8 else 0)
+    rim = ImageChops.subtract(solid, erode(solid, 2 * width))
+    partial = alpha.point(lambda value: 255 if 8 < value < 248 else 0)
+    return ImageChops.lighter(rim, partial)
+
+
+def edge_despill(image, alpha, screen, width=MATTE_EDGE_WIDTH):
+    """despill_source() over matte_edge() only, so matte interiors keep their original colour.
+
+    Deliberately not the whole plate: an unconditional despill also rewrites pixels whose alpha was
+    already decided correctly, which is what segment_source() used to do and why CorridorKey's own
+    despilled output looked worse after reconstruction. A grey screen has no hue to pull, so this
+    is a no-op there."""
+    if screen == "grey":
+        return image
+    return Image.composite(despill_source(image, screen), image, matte_edge(alpha, width))
+
+
+def chroma_gate(alpha, image, screen):
+    """Hybrid matte: a learned model's shape, a chroma keyer's edge precision.
+
+    Zeroes alpha wherever the source pixel is still screen-dominant. The two extractors fail in
+    opposite directions -- BiRefNet leaves holes-free shapes with a contaminated rim, CorridorKey
+    leaves a clean rim with holes -- so intersecting them beats either alone. Measured on v3's
+    clothes plate: interior holes 3,730 against CorridorKey's 4,426, rim spill 0.0% against
+    CorridorKey's 8.9% and BiRefNet's 60.8%."""
+    if screen == "grey":
+        return alpha
+    return ImageChops.multiply(alpha, screen_foreground(image, screen))
+
+
+def fringe_fraction(rgba, screen, width=3):
+    """Share of a composited layer's edge band that still reads as screen colour. The cheap visual
+    proxy for "is there a coloured halo", which no mechanical check caught before 2026-08-08."""
+    if screen == "grey":
+        return 0.0
+    alpha = rgba.getchannel("A")
+    solid = alpha.point(lambda value: 255 if value > 8 else 0)
+    rim = ImageChops.subtract(solid, erode(solid, 2 * width))
+    total = sum(rim.histogram()[1:])
+    if not total:
+        return 0.0
+    return sum(ImageChops.multiply(rim, screen_dominant(rgba, screen)).histogram()[1:]) / total
+
+
 def segment_source(source, alpha, screen):
     with Image.open(source) as opened:
-        image = despill_source(opened, screen).convert("RGBA")
+        image = scoped_despill(opened.convert("RGB"), screen)
+    image = edge_despill(image, alpha, screen).convert("RGBA")
     image.putalpha(alpha)
     return image
 
@@ -1547,6 +1804,99 @@ def self_test():
         assert normalized_key_input(Image.new("RGB", (1, 1), (20, 90, 30)), "green").getpixel((0, 0)) == (0, 255, 0)
         assert normalized_key_input(Image.new("RGB", (1, 1), (200, 10, 10)), "green", Image.new("L", (1, 1), 255)).getpixel((0, 0)) == (0, 255, 0)
         assert despill_source(Image.new("RGB", (1, 1), (20, 90, 30)), "green").getpixel((0, 0))[1] == 30
+        # spill_mask()/scoped_despill(): an enclosed weak-dominance hole surrounded by solid figure
+        # must be found and corrected; background must not be touched even immediately beside the
+        # figure's true edge -- the property a dominance-only test got wrong (see spill_mask()'s
+        # docstring) and morphological closing gets right by construction, since a hole has to be
+        # enclosed and an ordinary edge is not.
+        spill_plate = Image.new("RGB", (100, 100), (0, 200, 0))
+        spill_draw = ImageDraw.Draw(spill_plate)
+        spill_draw.rectangle((20, 20, 79, 79), fill=(30, 25, 28))
+        spill_draw.rectangle((45, 45, 54, 54), fill=(20, 80, 50))
+        mask = spill_mask(spill_plate, "green", radius=24)
+        assert mask.getpixel((49, 49)) == 255, "an enclosed weak-dominance hole must be found"
+        assert mask.getpixel((10, 10)) == 0, "background far from the figure must not be flagged"
+        assert mask.getpixel((15, 50)) == 0, "background right beside the figure's edge must not be flagged"
+        despilled = scoped_despill(spill_plate, "green", radius=24)
+        assert despilled.getpixel((49, 49)) == (20, 50, 50), "the hole's colour must be corrected"
+        assert despilled.getpixel((10, 10)) == (0, 200, 0), "background must keep its original colour"
+        # matte_edge()/edge_despill(): the band inside a matte's boundary is where a learned matte
+        # keeps screen-coloured pixels, so despill must reach it and must leave the interior alone.
+        edge_plate = Image.new("RGB", (60, 60), (0, 200, 0))
+        edge_draw = ImageDraw.Draw(edge_plate)
+        edge_draw.rectangle((20, 20, 39, 39), fill=(40, 30, 35))
+        edge_draw.rectangle((20, 20, 39, 21), fill=(20, 120, 40))  # spill along the top edge
+        edge_alpha = Image.new("L", (60, 60))
+        ImageDraw.Draw(edge_alpha).rectangle((20, 20, 39, 39), fill=255)
+        band = matte_edge(edge_alpha, width=3)
+        assert band.getpixel((30, 21)) == 255, "the rim just inside the matte must be in the band"
+        assert band.getpixel((30, 30)) == 0, "the matte interior must not be"
+        assert band.getpixel((5, 5)) == 0, "pixels outside the matte must not be"
+        fixed = edge_despill(edge_plate, edge_alpha, "green", width=3)
+        assert fixed.getpixel((30, 21))[1] <= 40, "spill on the rim must be pulled down"
+        assert fixed.getpixel((30, 30)) == (40, 30, 35), "the interior must keep its colour"
+        assert edge_despill(edge_plate, edge_alpha, "grey", width=3).getpixel((30, 21)) == (20, 120, 40), \
+            "a grey screen has no hue to pull, so despill must be a no-op"
+        # A partially transparent pixel is a subject/screen blend by definition, so it belongs to
+        # the band wherever it sits -- including deep inside the matte.
+        soft = edge_alpha.copy()
+        ImageDraw.Draw(soft).rectangle((29, 29, 30, 30), fill=128)
+        assert matte_edge(soft, width=3).getpixel((30, 30)) == 255
+        # chroma_gate(): a learned matte's shape, a keyer's refusal to call screen colour subject.
+        opaque = Image.new("L", (4, 4), 255)
+        assert chroma_gate(opaque, Image.new("RGB", (4, 4), (0, 200, 0)), "green").getpixel((0, 0)) == 0
+        assert chroma_gate(opaque, Image.new("RGB", (4, 4), (200, 40, 40)), "green").getpixel((0, 0)) == 255
+        assert chroma_gate(opaque, Image.new("RGB", (4, 4), (0, 200, 0)), "grey").getpixel((0, 0)) == 255
+        # fringe_fraction(): a haloed layer must score far above the limit, a clean one at zero.
+        haloed = Image.new("RGBA", (60, 60), (0, 0, 0, 0))
+        ImageDraw.Draw(haloed).rectangle((20, 20, 39, 39), fill=(20, 200, 60, 255))
+        ImageDraw.Draw(haloed).rectangle((24, 24, 35, 35), fill=(180, 60, 60, 255))
+        assert fringe_fraction(haloed, "green") > FRINGE_LIMIT, "a screen-coloured rim must fail"
+        clean = Image.new("RGBA", (60, 60), (0, 0, 0, 0))
+        ImageDraw.Draw(clean).rectangle((20, 20, 39, 39), fill=(180, 60, 60, 255))
+        assert fringe_fraction(clean, "green") == 0.0, "a clean rim must score zero"
+        assert fringe_fraction(haloed, "grey") == 0.0, "grey has no fringe to measure"
+        # rebackground(): solid figure untouched, solid backdrop fully replaced, and -- the point --
+        # a half-covered boundary pixel corrected by exactly half the backdrop delta.
+        grey_bg, blue_bg = (128, 128, 128), (30, 60, 200)
+        blend = Image.new("RGB", (3, 1))
+        blend.putpixel((0, 0), (200, 150, 120))                 # solid figure, alpha 255
+        blend.putpixel((1, 0), (164, 139, 130))                 # half figure / half grey, alpha 128
+        blend.putpixel((2, 0), grey_bg)                         # solid backdrop, alpha 0
+        blend_alpha = Image.new("L", (3, 1))
+        blend_alpha.putpixel((0, 0), 255)
+        blend_alpha.putpixel((1, 0), 128)
+        blend_alpha.putpixel((2, 0), 0)
+        swapped = rebackground(blend, blend_alpha, grey_bg, blue_bg)
+        assert swapped.getpixel((0, 0)) == (200, 150, 120), "an opaque pixel must not move"
+        assert swapped.getpixel((2, 0)) == blue_bg, "a fully transparent pixel becomes the new backdrop"
+        half = swapped.getpixel((1, 0))
+        blended = (164, 139, 130)
+        for channel, (was, target) in enumerate(zip(grey_bg, blue_bg)):
+            expected = blended[channel] + (255 - 128) * (target - was) / 255.0
+            assert abs(half[channel] - expected) <= 1, \
+                f"blend band channel {channel}: {half[channel]} vs {expected:.1f}"
+        assert rebackground(blend, blend_alpha, grey_bg, grey_bg).getpixel((1, 0)) == (164, 139, 130), \
+            "swapping a backdrop for itself must be a no-op"
+        # chroma_spread(): must separate a one-dimensional recolor from real chromatic variation.
+        # The flat case is exactly what deterministic_skin_recolor() produces -- one hue scaled by
+        # brightness -- so a metric that cannot tell these two apart cannot gate skin naturalness.
+        everywhere = Image.new("L", (40, 40), 255)
+        flat = Image.new("RGB", (40, 40))
+        varied = Image.new("RGB", (40, 40))
+        for y in range(40):
+            for x in range(40):
+                scale = 0.4 + 0.6 * (x / 39)          # same hue, brightness ramp -> constant saturation
+                flat.putpixel((x, y), tuple(round(c * scale) for c in (200, 150, 100)))
+                # Blue swept 20..190 against a fixed red, so saturation itself ranges 0.90 down to
+                # 0.25 -- the kind of spread real skin has and a scalar recolor cannot produce.
+                varied.putpixel((x, y), (200, 150, 20 + round(170 * x / 39)))
+        assert chroma_spread(flat, everywhere)["saturation_spread"] < 1.0, \
+            "a scalar-multiple recolor has no saturation variation to find"
+        assert chroma_spread(varied, everywhere)["saturation_spread"] > 5.0, \
+            "genuine chromatic variation must register"
+        assert 40 < chroma_spread(flat, everywhere)["saturation_mean"] < 60, \
+            "(200,150,100) is 50% saturated at every brightness"
     # Inverted identity transfer geometry.
     assert screen_foreground(Image.new("RGB", (4, 4), (0, 0, 255))).getbbox() is None
     assert screen_foreground(Image.new("RGB", (4, 4), (0, 255, 0))).getbbox() == (0, 0, 4, 4)
@@ -1576,20 +1926,28 @@ def self_test():
     assert region_tone(two_tone, (0, 0, 40, 40), mask=half_mask) == (0, 0, 0)
     box = inset((0, 0, 40, 40), 0.25)
     assert box == (10, 10, 30, 30)
-    # Two foreground shades (dim/bright green) plus an untouched background, so the recolor's
-    # reference (the mean green over the mask) and its per-pixel scaling are both independently
-    # checkable by hand: mean is (64+192)/2 = 128, so the dim half scales the target by 0.5 and the
-    # bright half by 1.5, clamped where that overflows.
-    paint = Image.new("RGB", (40, 60), (5, 20, 90))
+    # Two broad, uniform regions at very different brightness (green 180 vs 90, roughly the 2x
+    # chest-vs-thigh falloff measured on a real carrier) plus a small local highlight within one of
+    # them. With a radius modest relative to each region's own width, a point deep inside either
+    # region has a local average close to that region's own value, so both broad regions must map to
+    # the *same* target colour -- the falloff is normalized away, which is the whole point. The small
+    # highlight, narrower than the blur radius, must still stand out from its own surroundings --
+    # local shading is not just flattened along with everything else.
+    paint = Image.new("RGB", (200, 100), (5, 20, 90))
     draw = ImageDraw.Draw(paint)
-    draw.rectangle((0, 20, 19, 59), fill=(5, 64, 5))
-    draw.rectangle((20, 20, 39, 59), fill=(5, 192, 5))
-    fg = Image.new("L", (40, 60))
-    ImageDraw.Draw(fg).rectangle((0, 20, 39, 59), fill=255)
-    recolored = deterministic_skin_recolor(paint, fg, (200, 150, 100))
-    assert recolored.getpixel((5, 40)) == (100, 75, 50), "dim half must scale the target down"
-    assert recolored.getpixel((25, 40)) == (255, 225, 150), "bright half must scale up, clamped at 255"
-    assert recolored.getpixel((5, 5)) == (5, 20, 90), "background must be untouched"
+    draw.rectangle((0, 0, 99, 99), fill=(5, 180, 5))
+    draw.rectangle((100, 0, 199, 99), fill=(5, 90, 5))
+    draw.rectangle((25, 45, 34, 54), fill=(5, 220, 5))
+    fg = Image.new("L", (200, 100), 255)
+    ImageDraw.Draw(fg).rectangle((0, 0, 9, 9), fill=0)
+    recolored = deterministic_skin_recolor(paint, fg, (200, 150, 100), radius=15)
+    bright_region = recolored.getpixel((30, 10))
+    dim_region = recolored.getpixel((170, 90))
+    highlight = recolored.getpixel((29, 49))
+    assert bright_region == dim_region == (200, 150, 100), \
+        f"broad regional falloff must be normalized away, got {bright_region} vs {dim_region}"
+    assert highlight[0] > bright_region[0], "a local highlight must still read brighter than its surroundings"
+    assert recolored.getpixel((5, 5)) == paint.getpixel((5, 5)), "background must be untouched"
     head_source = Image.new("RGB", (60, 60), (255, 0, 0))
     body = Image.new("RGB", (60, 60), (0, 0, 255))
     head_mask = Image.new("L", (60, 60))

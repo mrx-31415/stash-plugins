@@ -1235,6 +1235,172 @@ Read this after `LAYERED_COSTUME_PRODUCTION_HANDOVER.md` and
 `LAYERED_COSTUME_PIPELINE_REFERENCE.md`. This file records the implemented
 state and the safe pickup point; it does not replace either specification.
 
+### Clothes/extraction defects, round one: four despill attempts, three reverted, 2026-08-06
+
+Picking up directly from the three composite defects logged at the end of the
+previous entry (neckline, waist, feet/shoes) — the user's framing at the start
+of today: *"Corridorkey should be able to do this with a good hint and the
+correct color model, etc."*, i.e. treat this as a hint/keying-correctness bug
+to fix at the source, not a compositing artifact to paper over.
+
+**Root cause of the waist/feet holes.** Green-screen spill contaminates dark
+garment/shadow edges — a shadowed waist crease, a shoe's dark leather — enough
+that `screen_foreground()`'s channel-dominance test misclassifies those pixels
+as background, so the CorridorKey hint tells it to key them out. Confirmed by
+sampling: spill-contaminated edge pixels measured dominance 39–54 (with a
+marginal fringe to 67 right at the true boundary), against 79–97 for confident
+background — a real, measurable, separable defect at the waist and feet.
+
+**Four attempts at a scoped fix to `[extract]`'s hint construction, in order:**
+
+1. **Envelope-scoped despill** (`despilled_plate()` limited to the diffusion
+   edit's 97px permission envelope). Reverted: leaked a large, wrong teal halo
+   around the whole figure — the envelope exists to bound where the *edit*
+   model may draw, not where spill actually occurs, and it's far larger than
+   the true contamination zone.
+2. **Dilated-foreground-scoped** (margin 20px past a rough
+   `screen_foreground()` estimate). Reverted: produced a thin halo along the
+   *entire* silhouette, not just the defect sites. Any spatial dilation from
+   the true boundary inevitably reaches genuine background sitting right next
+   to it — spatial proximity cannot distinguish spill from background that
+   merely happens to be close to the figure.
+3. **Dominance-ceiling** (despill any pixel with dominance below a fixed
+   threshold, no spatial scoping at all — the 39–67 vs. 79–97 split above).
+   This is the version that shipped and was checked against composite output;
+   waist and feet looked clean. But the same measurement that separates
+   spill from background at the waist and feet does **not** generalize: a
+   genuine, ordinary soft antialiased edge near hair measured dominance 69 —
+   inside the same "weak enough to despill" range as the real defects,
+   because ordinary antialiasing at *any* true boundary reads as weak
+   dominance, spill or not. **Proven, not inferred**, by pulling CorridorKey's
+   own content-hash-keyed cached output for yesterday's run and today's run
+   and diffing the identical pixel coordinate (358, 68): yesterday (no
+   despill in the hint) alpha 0 there — correctly transparent; today (with
+   the dominance-ceiling hint) alpha 213 — a real hole punched into her hair,
+   a regression the ceiling approach introduced by "fixing" a boundary that
+   was never broken. This is what answered the user's mid-investigation
+   question directly: *"It makes no sense to me that we get this pronounced
+   green outline now, considering how well the earlier poc did in terms of
+   keying"* — the earlier PoC didn't have this hint change at all.
+4. **Morphological hole-closing** (`spill_mask()`/`scoped_despill()`, new,
+   `layered_costume_production.py`): instead of testing dominance at each
+   pixel independently of context, dilate the rough foreground estimate by a
+   radius then erode it back by the same amount, and treat only pixels newly
+   covered by that closing (i.e. *enclosed* gaps, not open boundaries) as
+   spill. This fixed the hair regression by construction — a hair boundary is
+   open to the background, not a hole surrounded by fabric, so closing never
+   touches it — and closed the waist gap cleanly. But it introduced a new
+   regression the user caught immediately: *"The underarm gap is also new,
+   likely a hint issue."* Confirmed: `spill_mask()` flagged 1194 of 1892
+   pixels (63%) in the underarm region as "holes," because the underarm gap
+   is a narrow, complex, partially-populated shape (698 of the 1892 pixels
+   were already foreground, most likely her gloved hand crossing through it),
+   not a simple enclosed rectangle — hole-closing bridged across it as if it
+   were one.
+
+All four hint-side attempts were reverted. `[extract]` in
+`run_qwen2512_skin_head_clothes_poc.py` now calls `plate_hints()`/`extract()`
+directly on the raw, undespilled plates again, same as before today. The
+`spill_mask()`/`scoped_despill()`/`despilled_plate()` machinery (hole-closing
+version) stays in the codebase, self-tested, but unwired from `main()` —
+validated-but-currently-unused infrastructure, not deleted, in case a better
+scope for it turns up later.
+
+**One despill fix was kept.** `segment_source()` — shared by the PoC's
+`[composite]` stage and the full production `extract()` — was unconditionally
+running `despill_source()` (a whole-plate despill) over CorridorKey's own
+alpha-decided output just to rebuild final pixel color, discarding
+CorridorKey's own internal despill/despeckle result in the process and making
+already-correct edges worse wherever alpha was imperfectly nonzero. Switched
+to `scoped_despill()` (the hole-closing version). This is safe to keep because
+it only touches color reconstruction for pixels whose alpha has *already* been
+decided — it cannot introduce a hole the way despilling the *hint* can, since
+it never feeds back into CorridorKey's own matting decision.
+
+**The user's strategic redirect, which reframed the rest of the day:**
+*"My take is this, the dress should ideally be placed on a green carrier with
+green background to lift cleanly. That should be doable. The identity
+transfer should already be able to lift cleanly. Shoes / feet are a real
+issue though, since shoes can be pointy and more narrow than bare feet. I
+think we should fix the keying of each component first before debugging the
+composite."* Every attempt above had been diagnosed against composite output,
+where hair, waist, underarm and feet issues are easy to conflate. Stopped
+iterating on hint scoping and instead built isolated, non-composited
+checkerboard views of each plate's raw `alpha` over its own original color —
+bypassing `segment_source()` and compositing entirely — to characterize each
+layer's *own* keying quality independent of the others.
+
+**What isolated diagnosis actually found, at the true (undespilled) baseline:**
+
+- Identity/skin extraction: clean.
+- Clothes waist and underarm: essentially non-issues at true baseline — both
+  had looked worse than they are because earlier composite-level debugging
+  conflated them with the hair and feet problems next to them.
+- Feet/shoes: the one severe, clearly-isolated defect — scattered
+  speckled-black noise around the ankle/shoe boundary, confirmed present in
+  total isolation from compositing, so it is not an artifact of layering.
+  Still open; not investigated further today. The user's working hypothesis,
+  not yet tested: *"Shoes / feet are a real issue though, since shoes can be
+  pointy and more narrow than bare feet"* — a geometric mismatch between the
+  shoe silhouette (clothes layer) and the bare-foot silhouette (identity
+  layer) underneath it, rather than a pure color-keying problem.
+- Hair: user pushback — *"the hair is worse than the previous one, jagged
+  holes"* — pushed a direct check rather than accepting the "hair halo fixed"
+  framing from undoing attempt 3. Checked `spill_mask()` in the hair crop
+  region first: it flagged almost nothing there, ruling out today's changes
+  as the direct cause. Pulled yesterday's cached CorridorKey identity
+  extraction from the same content-hash cache used for the (358, 68) diff
+  above, rendered it over a checkerboard, and found the identical jagged
+  matting pattern present yesterday too. Pre-existing CorridorKey hair-matting
+  softness on fine strands, not new, never previously visible because no
+  prior composite had been inspected this closely. Not fixed today; likely
+  needs CorridorKey parameter tuning (`refiner_scale`, `despill_strength`) or
+  a stronger hair-specific hint, not a despill/hint-scoping fix of the kind
+  tried above.
+
+**A separate, real bug found during isolated inspection: grey/flat legs.**
+User: *"weird greyish color on legs."* `deterministic_skin_recolor()`
+(`layered_costume_production.py`, introduced 2026-08-05 for the deterministic
+body construction) scaled the performer's target skin tone by the carrier's
+own green-channel brightness relative to a single figure-wide mean — correct
+in principle (the carrier's paint value at a point already *is* a shading
+map), but the carrier's green channel measured 162 at the chest and 79 at the
+thigh (roughly half — real studio-lighting falloff toward the floor), and a
+single global mean faithfully replicated that entire 2x falloff onto skin
+tone, reading as unnaturally flat and grey at the thighs next to a
+normal-toned torso.
+
+Fixed by normalizing against a *local*, Gaussian-blurred (radius 90) mean
+instead of one global mean: the blur mixes chest-level and thigh-level
+brightness apart from each other, so each region's own local average maps
+back to the target tone, while fine local shading — a muscle's curve, a
+knee's highlight, which vary over tens rather than hundreds of pixels — still
+survives inside the blur radius. `ImageMath.lambda_eval()` performs the
+per-pixel division (Pillow 12.1.1 removed the old string-expression
+`ImageMath.eval()`).
+
+Measured before/after (global mean → local mean) on the real carrier: chest
+(400, 400) went from (201, 158, 133) to (190, 150, 126); thigh (400, 850)
+went from (98, 77, 65) to (157, 123, 103) — a much smaller, natural-looking
+chest/thigh gap. Visually
+confirmed even, warm tone throughout the legs with shading and musculature
+still visible. This fix is live in `main()`, not experimental infrastructure
+like the despill attempts above.
+
+**Final verified pipeline state, end of session:** all nine stages
+(`[preflight]` through `[composite]`) pass clean end to end on the corrected
+skin-recolor code and the reverted (undespilled) `[extract]` hints —
+`identity.png` shows natural, even skin tone with legs matching the torso;
+`composite.png` shows no teal halo, no underarm gap, and no visible waist
+issue. Still open, unchanged by today: **feet/shoe boundary noise** (the one
+severe defect, possibly a shoe-vs-foot silhouette mismatch, not yet
+investigated) and **hair matting softness** (pre-existing CorridorKey
+limitation, needs different tooling than anything tried today). Neither the
+despill-scoping machinery nor the feet/hair problems are wired into or
+blocking `main()` — the only functional change carried into `main()` today is
+the local-normalization skin recolor and the kept `segment_source()` scoped
+despill.
+
 ## Pickup point
 
 The v19 four-performer pilot is fully generated, extracted, and composed. It

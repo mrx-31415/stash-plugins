@@ -114,4 +114,131 @@ else
         || fail comfy_cache "restart failed; see /workspace/comfyui.log"
 fi
 
+# 6b. comfy-kitchen must match ComfyUI's pin, or fp8 loading silently disables: an older kitchen
+#     lacks the layout classes the repo imports (e.g. 0.2.10 vs the 0.2.26 pin missing
+#     TensorCoreConvRotW4A4Layout), which makes _CK_AVAILABLE False and every fp8 model load crash
+#     with "'NoneType' object has no attribute 'Params'". Compare against requirements.txt rather
+#     than a fixed version so the repo stays the source of truth.
+COMFY_VENV=$COMFY_DIR/.venv-cu128
+if [ -x "$COMFY_VENV/bin/pip" ]; then
+    wanted=$(grep -i '^comfy-kitchen' "$COMFY_DIR/requirements.txt" 2>/dev/null | sed 's/.*==//' | tr -d '[:space:]')
+    if [ -n "$wanted" ]; then
+        have=$("$COMFY_VENV/bin/pip" show comfy-kitchen 2>/dev/null | awk '/^Version/{print $2}')
+        if [ "$have" != "$wanted" ]; then
+            say comfy_kitchen "$have -> installing $wanted (required by requirements.txt)"
+            "$COMFY_VENV/bin/pip" install -q "comfy-kitchen==$wanted" >/dev/null 2>&1 \
+                && say comfy_kitchen "installed $wanted" || fail comfy_kitchen "pip install failed"
+        else
+            say comfy_kitchen "$have (matches pin)"
+        fi
+    fi
+fi
+
+# 7. CatVTON (the VITON clothes stage). Installed only when the runner asks for it -- preflight
+#    touches $VOLUME/install-catvton for --clothes-mode viton, so the one-time multi-GB download
+#    does not run for the chroma recipe. The wrapper (chflame163/ComfyUI_CatVTON_Wrapper) pads to
+#    its internal 768x1024 working size and restores the output to the input size and position, so
+#    registration to the carrier canvas survives; the plain pzc163 node crops instead and would
+#    need an inverted crop transform, so do not swap the two.
+CATVTON_FLAG=$VOLUME/install-catvton
+if [ -f "$CATVTON_FLAG" ]; then
+    NODE_DIR=$COMFY_DIR/custom_nodes/ComfyUI_CatVTON_Wrapper
+    if [ ! -d "$NODE_DIR" ]; then
+        git clone --depth 1 https://github.com/chflame163/ComfyUI_CatVTON_Wrapper.git "$NODE_DIR" \
+            >/dev/null 2>&1 && say catvton "wrapper cloned" || fail catvton "wrapper clone failed"
+    else
+        say catvton "wrapper present"
+    fi
+    CATVTON_MODELS=$COMFY_DIR/models/CatVTON
+    if [ ! -d "$CATVTON_MODELS/stable-diffusion-inpainting/unet" ]; then
+        say catvton "downloading stable-diffusion-inpainting (one-time, several GB) ..."
+        "$PYTHON" - "$CATVTON_MODELS" <<'EOF' >/dev/null 2>&1 || fail catvton "sd15 inpainting download failed"
+import os, sys
+from huggingface_hub import snapshot_download
+root = sys.argv[1]
+os.makedirs(root, exist_ok=True)
+# Canonical home is the stable-diffusion-v1-5 org; runwayml/stable-diffusion-inpainting is only a
+# redirect stub whose files 404. The pipeline needs just the scheduler/ and unet/ subfolders
+# (CatVTON has no text conditioning), but snapshot_download fetches the whole diffusers repo.
+snapshot_download(repo_id="stable-diffusion-v1-5/stable-diffusion-inpainting",
+                  local_dir=os.path.join(root, "stable-diffusion-inpainting"))
+EOF
+    else
+        say catvton "sd15 inpainting present"
+    fi
+    # The wrapper's pipeline also loads a VAE explicitly from models/CatVTON/sd-vae-ft-mse.
+    if [ ! -f "$CATVTON_MODELS/sd-vae-ft-mse/diffusion_pytorch_model.safetensors" ]; then
+        say catvton "downloading sd-vae-ft-mse (stabilityai, small) ..."
+        "$PYTHON" - "$CATVTON_MODELS" <<'EOF' >/dev/null 2>&1 || fail catvton "vae download failed"
+import os, sys
+from huggingface_hub import snapshot_download
+root = sys.argv[1]
+os.makedirs(root, exist_ok=True)
+snapshot_download(repo_id="stabilityai/sd-vae-ft-mse",
+                  local_dir=os.path.join(root, "sd-vae-ft-mse"))
+EOF
+    else
+        say catvton "sd-vae-ft-mse present"
+    fi
+    # attn_ckpt_version="mix" resolves to the mix-48k-1024 subfolder (the repo has no plain
+    # attn_ckpt/ dir; the ckpts are named by training set). The pipeline does
+    # load_checkpoint_in_model(attn_modules, models/CatVTON/mix-48k-1024/attention).
+    if [ ! -f "$CATVTON_MODELS/mix-48k-1024/attention/model.safetensors" ]; then
+        say catvton "downloading CatVTON mix attn checkpoint (one-time, ~1.7 GB) ..."
+        "$PYTHON" - "$CATVTON_MODELS" <<'EOF' >/dev/null 2>&1 || fail catvton "attn ckpt download failed"
+import os, sys
+from huggingface_hub import snapshot_download
+root = sys.argv[1]
+os.makedirs(root, exist_ok=True)
+snapshot_download(repo_id="zhengchong/CatVTON", local_dir=root, allow_patterns=["mix-48k-1024/*"])
+EOF
+    else
+        say catvton "mix attn checkpoint present"
+    fi
+    [ -d "$CATVTON_MODELS/mix-48k-1024/attention" ] && [ -d "$CATVTON_MODELS/sd-vae-ft-mse" ] \
+        && say catvton "weights present" || fail catvton "weights missing"
+    # The wrapper resolves its models against ComfyUI's models dir at node instantiation; a wrapper
+    # installed while ComfyUI was already running needs the node list to refresh.
+    if pgrep -f 'main\.py.*--cache-lru' >/dev/null 2>&1; then
+        curl -fsS -X POST "http://127.0.0.1:8188/object_info" -o /dev/null 2>/dev/null \
+            || say catvton "node list refresh skipped (comfyui restart required before [viton])"
+    fi
+fi
+
+# 8. GPU matting venv (BiRefNet + Real-ESRGAN, both ONNX). Optional and flag-gated the same way
+#    CatVTON is: preflight touches $VOLUME/install-matting when the runner is asked to matte on the
+#    pod, so a CPU-only workflow never pays for the download.
+#
+#    Why it is worth having: the same upscale-then-matte pass measured 25m30s per plate on the CPU
+#    dev VM. birefnet_ab.available_providers() picks CUDA automatically when it is present, so
+#    nothing downstream needs a flag.
+#
+#    The gate is that CUDAExecutionProvider is *listed*, not that the wheel installed. Stock
+#    onnxruntime, or an onnxruntime-gpu built against a different CUDA runtime than the pod has,
+#    both install cleanly and then fall back to CPU silently -- a 25-minute no-op instead of an
+#    error, which is precisely the failure worth catching in preflight rather than mid-run.
+MATTE_VENV=$VOLUME/matting-venv
+if [ -f "$VOLUME/install-matting" ]; then
+    if [ ! -x "$MATTE_VENV/bin/python" ]; then
+        say matting "creating venv at $MATTE_VENV"
+        uv venv "$MATTE_VENV" >/dev/null 2>&1 || fail matting "uv venv failed"
+    fi
+    if [ -x "$MATTE_VENV/bin/python" ]; then
+        if ! "$MATTE_VENV/bin/python" -c 'import onnxruntime, numpy, PIL' >/dev/null 2>&1; then
+            say matting "installing onnxruntime-gpu, numpy, pillow (one-time) ..."
+            VIRTUAL_ENV=$MATTE_VENV uv pip install -q onnxruntime-gpu numpy pillow >/dev/null 2>&1 \
+                || fail matting "uv pip install failed"
+        fi
+        providers=$("$MATTE_VENV/bin/python" -c \
+            'import onnxruntime; print(",".join(onnxruntime.get_available_providers()))' 2>/dev/null)
+        case "$providers" in
+            *CUDAExecutionProvider*) say matting "CUDA provider available" ;;
+            "")  fail matting "onnxruntime does not import in $MATTE_VENV" ;;
+            *)   fail matting "no CUDA provider (got: $providers) -- matting would silently run on CPU" ;;
+        esac
+    fi
+else
+    say matting "skipped (touch $VOLUME/install-matting for GPU matting)"
+fi
+
 exit $status

@@ -17,7 +17,10 @@ import subprocess
 from comfy import api, endpoint, run, upload_image
 import layered_costume_production as production
 
-STAGES = ("preflight", "carrier", "envelope", "skin", "preprocess", "identity", "clothes", "extract", "composite")
+STAGES = ("preflight", "carrier", "envelope", "skin", "garment", "preprocess", "identity", "clothes", "extract", "composite")
+
+
+TOOL_ROOT = Path(__file__).resolve().parent
 
 
 DEFAULT_ROOT = Path("/tmp/cover-story-qwen2512-skin-head-clothes-poc")
@@ -58,6 +61,60 @@ CARRIER_PROMPT = (
     "reflections. Keep anatomy clear, proportions natural, feet visible, and the blue background clean and uniform."
 )
 CARRIER_NEGATIVE = "低分辨率，低画质，肢体畸形，手指畸形，画面过饱和，蜡像感，人脸无细节，过度光滑，画面具有AI感。构图混乱。文字模糊，扭曲, nipples"
+# Grey-carrier / VITON path (see VITON_CLOTHING_POC_HANDOVER.md): the chroma screen is replaced by a
+# flat grey background, so learned matting extracts cleanly (the matte is background-colour-invariant,
+# measured 0.48-0.93/255 on the v3 plates) and no key colour exists to spill or fringe.
+#
+# The figure is a NATURAL body, not a painted/grey-suit one: the matting path has no key colour, so
+# nothing needs the figure painted -- and the grey-suit prompt proved fragile (Qwen 2512 rendered it
+# patchily: natural-skin head, near-black blotches, suit darker than the background, so the
+# deterministic recolor amplified suit shading into splotchy skin). A swimsuit-clad natural figure
+# renders reliably, gives the recolor real shading to work with, and is what the Qwen edit's
+# "dress this person" use case expects. The suit region (recolored to skin tone) sits invisibly
+# under the clothes plate. The suit/background contrast is load-bearing: screen_foreground("grey")
+# keys on distance from a per-row border-derived background estimate, so the background must stay
+# visibly darker than her skin.
+GREY_CARRIER_PROMPT = (
+    "Full-body centered frontal bald young woman in a natural relaxed standing pose on a seamless evenly lit "
+    "flat medium grey background. She wears a plain matte light-grey fitted swimsuit covering her torso and "
+    "hips. Her shaved head, face, neck, arms, hands and legs are natural bare skin; no hair, no headwear, no "
+    "hair accessories, no jewellery, no gloss, no reflections. Keep anatomy clear, proportions natural, feet "
+    "visible, and the medium grey background clean, uniform and a few shades darker than her skin."
+)
+GREY_SKIN_PROMPT = (
+    "Recolor the grey-clad person to one fair, warm natural skin tone. Keep the bald head, anatomy, pose, "
+    "framing, light grey background and everything else unchanged."
+)
+# One T2I generation per outfit; CatVTON warps it onto the person image. Flat lay keeps it
+# pose-agnostic. The shoes in the catalog description are deliberately absent here: a flat lay cannot
+# carry footwear, and shoe handling is an open VITON item (see the handover's risks).
+GARMENT_PROMPT = (
+    "Flat lay product photo of a fitted plum Victorian walking dress with a high collar, long sleeves and a "
+    "full skirt, shown at full length on a plain white background, even studio lighting, crisp fabric detail."
+)
+# A worn garment reference carries the coverage cues a flat lay cannot: the dress on a model shows the
+# edit model where sleeves end and the skirt falls, which a 2D flat garment cannot imply -- measured:
+# the flat-lay reference left 79% of the blue paint in the lower body (rows 800-1200), i.e. the model
+# drew the torso but not the skirt/legs. Use --garment-worn for the chroma/grey garment-ref runs.
+GARMENT_WORN_PROMPT = (
+    "Full-length front-view photograph of a woman wearing a fitted plum Victorian walking dress with a high "
+    "collar, long sleeves, a full skirt and dark leather shoes, standing straight on a plain white background, "
+    "even studio lighting. The dress covers her torso, arms and legs completely; no skin is visible below her "
+    "neck."
+)
+# chflame163/ComfyUI_CatVTON_Wrapper: pads to its internal 768x1024 working size and restores the
+# output to the input size and position (restore_padding_image), so registration to the carrier canvas
+# survives -- unlike pzc163/Comfyui-CatVTON's resize_and_crop, which would need an inverted crop
+# transform. Weights live under models/CatVTON/ on the pod (stable-diffusion-inpainting + attn ckpt).
+CATVTON_NODE = "CatVTONWrapper"
+DEFAULT_BIREFNET_MODEL = TOOL_ROOT / "models" / "BiRefNet-general-tiny.onnx"
+DEFAULT_BIREFNET_PYTHON = TOOL_ROOT / ".venv-birefnet" / "bin" / "python"
+# Real-ESRGAN x2, run over a plate before matting so the matte has sharper structure to decide on.
+# Not a segmentation model and never reaches the output -- see birefnet_extract.upscale(). The
+# dedicated *matting* BiRefNet checkpoints were tested on 2026-08-08 and rejected: holes and spill
+# were unchanged, the soft-edge band grew only ~20%, and the run cost 6.5x more, because the limit
+# is the plate's own soft hair edge rather than the matte. See CLAUDE_PICKUP_HANDOVER.md.
+DEFAULT_UPSCALE_MODEL = TOOL_ROOT / "models" / "realesrgan-x2.onnx"
 # Short by design: HANDOVER.md's generation rules forbid long anatomical checklists, and
 # edit_graph()'s negative conditioning is hardcoded empty, so every "do not add X" would enter as
 # a positive token instead of a suppressor. Drift is measured by drift_check(), not asserted in
@@ -101,6 +158,15 @@ PREPROCESS_PROMPT = (
     "Zoom out to show her whole body standing, and remove her clothing so her body is bare. "
     "Change the background to matte chroma key blue. Keep her face, hair and skin tone unchanged."
 )
+# Grey-path preprocess: the background must match the carrier's, not chroma blue -- the transplanted
+# head carries its background's fringe into the composite, and with matting (not chroma keying) that
+# fringe stays in the matte. On the grey composite background a grey fringe is invisible; a blue one
+# is the halo this prompt exists to prevent. Measured: the v3-run head showed exactly that blue halo.
+GREY_PREPROCESS_PROMPT = (
+    "Zoom out to show her whole body standing, and remove her clothing so her body is bare. "
+    "Change the background to a flat even medium grey, a few shades darker than her skin. "
+    "Keep her face, hair and skin tone unchanged."
+)
 # Mirrors run_green_carrier_poc.py's validated HEAD_PROMPT shape. Deliberately says nothing about
 # hair length: "the face and hair of the woman in image 2" already takes hers, and an earlier
 # "let long hair fall behind her shoulders" pushed long hair onto performers who do not have it. The
@@ -125,6 +191,14 @@ SAM_PREFIX = "cover-story/qwen2512-skin-head-clothes"
 # shoulders reads slightly soft next to the crisp skin either side of it. Says nothing about pose,
 # shape or proportions -- the mask (production.blend_zone(), a narrow dilated band around the actual
 # blend) is what keeps this from being able to touch either.
+SKIN_BLEND_PROMPT = (
+    "Blend and even out the skin tone, texture and lighting across the masked body so it matches the "
+    "skin of her face and neck. Keep her pose, body shape, proportions, the background and everything "
+    "outside the masked area exactly the same."
+)
+# Low enough to harmonise rather than regenerate. See harmonize_skin() for why 1.0 -- every other
+# edit in this file -- is the wrong regime for a body-shaped mask.
+SKIN_BLEND_DENOISE = 0.4
 SEAM_PROMPT = (
     "Smooth and blend the skin tone, texture and lighting across the masked area where her neck and "
     "shoulders meet, so the join between them is seamless and natural. Keep her pose, body shape, "
@@ -143,10 +217,36 @@ IDENTITY_CONTROL = "canny"
 # The outfit enumeration is the free-form design description the handover calls for, so it stays.
 # What was removed: green "hair" the bald carrier does not have, "green suit" vocabulary belonging
 # to the v20d carrier, and negations that only ever reached the model as positive tokens.
+# One description, used by both clothes modes. They must not drift: GARMENT_REF_PROMPT used to
+# carry no description at all ("the outfit from image 2"), and the resulting plate was missing
+# exactly the four features named here that the image alone did not convey -- collar, gloves, full
+# skirt, shoes. That made the 2026-08-07 garment-ref run a test of "image *instead of* text"
+# rather than "image *plus* text", so its negative result says nothing about garment references.
+# See CLAUDE_PICKUP_HANDOVER.md, 2026-08-08.
+GARMENT_DESCRIPTION = (
+    "a fitted plum Victorian walking dress with a high collar, long sleeves, matching gloves, "
+    "a full skirt and dark leather shoes"
+)
 CLOTHES_PROMPT = (
-    "Keep image 1's {aperture} head, pose, framing and {screen} background unchanged. Dress the masked body in a "
-    "fitted plum Victorian walking dress with a high collar, long sleeves, matching gloves, a full skirt and dark "
-    "leather shoes. The garment may extend beyond the body silhouette for natural cloth bulk."
+    "Keep image 1's {aperture} head, pose, framing and {screen} background unchanged. Dress the masked body in "
+    "{description}. The garment may extend beyond the body silhouette for natural cloth bulk."
+)
+# garment-ref clothes mode: the same masked edit, but the outfit comes from a garment *image*
+# (reference 2) instead of a text description. Masked edits preserve the latent outside the mask,
+# which is the regime where this edit model follows a second reference (see the STATUS reference-
+# collapse notes: mask-free edits return one of the two references, masked edits behave). Image 1
+# still owns pose, framing and background; image 2 supplies colour, fabric and silhouette.
+GARMENT_REF_PROMPT = (
+    "Keep image 1's {aperture} head, pose, framing and {screen} background unchanged. Dress the masked body in "
+    "the outfit from image 2 -- {description} -- matching image 2's colour, fabric, cut and silhouette. The "
+    "garment covers her torso, arms and legs completely, as the outfit requires; no painted skin may remain "
+    "inside the masked region. The garment may extend beyond the body silhouette for natural cloth bulk."
+)
+GREY_GARMENT_REF_PROMPT = (
+    "Keep image 1's head, pose, framing and medium grey background unchanged. Dress the masked body in the "
+    "outfit from image 2 -- {description} -- matching image 2's colour, fabric, cut and silhouette. The "
+    "garment covers her torso, arms and legs completely, as the outfit requires. The garment may extend "
+    "beyond the body silhouette for natural cloth bulk."
 )
 # From layered-costume-catalog.json: victorian / outfit-01 carries "key_color": "green", and
 # production.rejected_key_colors() confirms plum permits either. The PoC previously hardcoded blue
@@ -296,7 +396,8 @@ def sam_mask(server, image, prompt, work, prefix):
     return mask, box
 
 
-def aligned_performer(server, preprocessed, carrier, root, work):
+def aligned_performer(server, preprocessed, carrier, root, work, screen="blue",
+                      reference_screen=None):
     """Put the performer on the carrier's canvas with her face on the carrier's face.
 
     The preprocess stage already arrives at roughly the right scale (measured 0.99 x 1.036 against
@@ -309,11 +410,15 @@ def aligned_performer(server, preprocessed, carrier, root, work):
     _, target = sam_mask(server, carrier, FACE_SAM_PROMPT, work, f"{SAM_PREFIX}/carrier-face")
     with Image.open(carrier) as opened:
         size = opened.size
+    # Pad with the *performer's* own backdrop, not the carrier's, so the whole aligned canvas shares
+    # one background colour. compose_identity() then corrects that single colour to the carrier's
+    # with production.rebackground(), which requires a uniform source backdrop -- padding with the
+    # destination colour would be shifted by the full delta as though it were hers.
     aligned, scale = production.face_align(image_from(preprocessed), face, target, size,
-                                           image_from(carrier).getpixel((8, 8)))
+                                           image_from(preprocessed).getpixel((8, 8)))
     save_png(aligned, path)
-    check = production.aligned_height_check(production.silhouette_box(path),
-                                            production.silhouette_box(carrier))
+    check = production.aligned_height_check(production.silhouette_box(path, screen),
+                                            production.silhouette_box(carrier, reference_screen or screen))
     print(f"  aligned: performer face {face} -> carrier face {target}, scale {scale:.3f}; "
           f"{check['detail']}", flush=True)
     if not check["passed"]:
@@ -377,14 +482,14 @@ def identity_control(server, kind, carrier, preserve, root, work, force, outline
     return path
 
 
-def generate_carrier(server, path, work, force):
+def generate_carrier(server, path, work, force, prompt=CARRIER_PROMPT, negative_prompt=CARRIER_NEGATIVE):
     if path.is_file() and not force:
         return
     result_dir = Path(tempfile.mkdtemp(prefix="carrier-", dir=work))
     result = run(server, production.generation_graph(
-        CARRIER_PROMPT, production.seed_for("qwen2512:carrier:center"),
+        prompt, production.seed_for("qwen2512:carrier:center"),
         "cover-story/qwen2512-skin-head-clothes/carrier", size=(832, 1248), canonical=False,
-        negative_prompt=CARRIER_NEGATIVE,
+        negative_prompt=negative_prompt,
     ), result_dir, 2400)
     save_png(Image.open(production.pick(result, "-raw")).convert("RGB"), path)
 
@@ -402,11 +507,12 @@ def control_image(server, source, kind, prefix, output, work, force):
 
 
 def edit(server, source, prompt, mask, reference, seed, prefix, output, work, force,
-         control=None, control_type="canny", control_strength=1.0):
+         control=None, control_type="canny", control_strength=1.0, denoise=1.0):
     """mask=None runs a full-image, prompt-only edit (no ImageCompositeMasked paste boundary);
     output is then just the decoded result. A mask still produces a debug '-raw' sibling.
 
-    control= a local control image path; see production.edit_graph for what it does."""
+    control= a local control image path; see production.edit_graph for what it does.
+    denoise< 1.0 harmonises the masked region instead of regenerating it; see edit_graph()."""
     if output.is_file() and not force:
         return
     remote_source = upload_image(server, source, subfolder="cover-story/qwen2512-skin-head-clothes/input")
@@ -416,7 +522,7 @@ def edit(server, source, prompt, mask, reference, seed, prefix, output, work, fo
     result_dir = Path(tempfile.mkdtemp(prefix="edit-", dir=work))
     result = run(server, production.edit_graph(remote_source, prompt, seed, prefix, remote_reference,
                                                remote_mask, remote_control, control_type,
-                                               control_strength), result_dir, 2400)
+                                               control_strength, denoise), result_dir, 2400)
     raw = Image.open(production.pick(result, "-raw")).convert("RGB")
     if mask:
         save_png(raw, output.with_name(f"{output.stem}-raw.png"))
@@ -425,18 +531,133 @@ def edit(server, source, prompt, mask, reference, seed, prefix, output, work, fo
         save_png(raw, output)
 
 
-def build_hints(carrier, masks_dir):
+def viton_graph(person_name, garment_name, mask_name, seed, prefix):
+    """CatVTONWrapper graph: person + garment image + garment-region mask. The wrapper pads to its
+    internal 768x1024 working size and restores the output to the input size and position, so the
+    result stays registered to the carrier canvas. mask_grow=0: our envelope is already dilated."""
+    return {
+        "1": {"class_type": "LoadImage", "inputs": {"image": person_name}},
+        "2": {"class_type": "LoadImage", "inputs": {"image": garment_name}},
+        "3": {"class_type": "LoadImage", "inputs": {"image": mask_name}},
+        "4": {"class_type": "ImageToMask", "inputs": {"image": ["3", 0], "channel": "red"}},
+        "5": {"class_type": CATVTON_NODE, "inputs": {
+            "image": ["1", 0], "mask": ["4", 0], "refer_image": ["2", 0],
+            "mask_grow": 0, "mixed_precision": "fp16",
+            "seed": seed, "steps": 40, "cfg": 2.5}},
+        "6": {"class_type": "SaveImage", "inputs": {"images": ["5", 0],
+                                                     "filename_prefix": f"{prefix}-viton"}},
+    }
+
+
+def generate_garment(server, path, work, force, prompt=GARMENT_PROMPT):
+    """T2I flat-lay garment image (Qwen 2512, square). The outfit description drives this; CatVTON
+    pads any aspect to its working size, so a square flat lay is safe for all poses."""
+    if path.is_file() and not force:
+        return
+    result_dir = Path(tempfile.mkdtemp(prefix="garment-", dir=work))
+    result = run(server, production.generation_graph(
+        prompt, production.seed_for("qwen2512:garment-victorian"),
+        "cover-story/qwen2512-skin-head-clothes/garment", size=(1024, 1024), canonical=False,
+    ), result_dir, 2400)
+    save_png(Image.open(production.pick(result, "-raw")).convert("RGB"), path)
+
+
+def run_viton(server, carrier, garment, envelope, root, work, force, tone="light"):
+    """VITON clothes stage (grey-carrier path). Person image is the tone-recolored carrier -- the
+    deterministic recolor, not the [skin] Qwen edit -- so exposed skin carries the tone group's
+    colour with exact shading and zero drift, and the body plate stays a function of
+    (outfit, pose, tone) only, exactly like the chroma recipe's."""
+    clothes = root / "clothes.png"
+    if clothes.is_file() and not force:
+        return clothes
+    person = root / "viton-person.png"
+    foreground = production.screen_foreground(image_from(carrier), "grey")
+    target = production.TONE_RGB[tone]
+    person_img = production.deterministic_skin_recolor(image_from(carrier), foreground, target,
+                                                       paint_channel=None)
+    save_png(person_img, person)
+    remote_person = upload_image(server, person, subfolder="cover-story/qwen2512-skin-head-clothes/input")
+    remote_garment = upload_image(server, garment, subfolder="cover-story/qwen2512-skin-head-clothes/input")
+    remote_mask = upload_image(server, envelope["clothes_mask"],
+                               subfolder="cover-story/qwen2512-skin-head-clothes/input")
+    result_dir = Path(tempfile.mkdtemp(prefix="viton-", dir=work))
+    result = run(server, viton_graph(remote_person, remote_garment, remote_mask,
+                                     production.seed_for("qwen2512:viton"),
+                                     "cover-story/qwen2512-skin-head-clothes/viton"), result_dir, 2400)
+    save_png(Image.open(production.pick(result, "-viton")).convert("RGB"), clothes)
+    return clothes
+
+
+def birefnet_extract(source, aperture, output, model=DEFAULT_BIREFNET_MODEL,
+                     python=DEFAULT_BIREFNET_PYTHON, force=False, upscale=None):
+    """Local matting extraction: alpha = BiRefNet(source) x (1 - aperture), run in the standalone
+    onnxruntime venv (the runner itself is Pillow-only). Mirrors how CorridorKey runs as a separate
+    process; unlike CorridorKey it needs no hint, no key colour, no pod, and no SSH.
+
+    `upscale` names a super-resolution ONNX run over the plate before matting; the alpha comes back
+    at the plate's own size, so nothing about the output RGB or its registration changes. See
+    birefnet_extract.py's upscale() for the measurement that justifies it."""
+    if output.is_file() and not force:
+        return
+    command = [str(python), str(TOOL_ROOT / "birefnet_extract.py"),
+               "--source", str(source), "--model", str(model), "--output", str(output)]
+    if aperture:
+        command += ["--aperture", str(aperture)]
+    if upscale:
+        command += ["--upscale", str(upscale)]
+    result = subprocess.run(command, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"birefnet_extract failed: {result.stderr.strip()}")
+
+
+def viton_checks(person, clothes, envelope, carrier):
+    """The VITON output must stay registered to the carrier silhouette (it is a diffusion warp,
+    not a bit-exact paste) and must actually change the garment region; the head region must stay
+    close to the person image since the aperture post-mask removes it in extract anyway."""
+    image = image_from(clothes)
+    head = image_from(envelope["head_mask"]).convert("L").point(lambda v: 255 if v > 127 else 0)
+    body = ImageOps.invert(head)
+    changed = production.region_tone(image, (0, 0, image.width, image.height), mask=body)
+    silhouette = silhouette_checks(clothes, carrier, screen="grey")
+    return [
+        *silhouette,
+        {"name": "viton_garment_region_changed", "passed": changed is not None, "detail": "mask region carries content"},
+    ]
+
+
+def build_hints(carrier, masks_dir, screen="blue"):
     """Record the carrier's own foreground estimate. This is the drift-check reference and
     provenance only — it must never be used as the hint for a generated plate; see plate_hints()."""
     masks_dir.mkdir(parents=True, exist_ok=True)
-    person_hint = screen_foreground_hint(image_from(carrier))
+    person_hint = screen_foreground_hint(image_from(carrier), screen)
     paths = {
         "person_hint": masks_dir / "carrier-person-hint.png",
-        "background_hint": masks_dir / "carrier-blue-background-hint.png",
+        "background_hint": masks_dir / "carrier-background-hint.png",
     }
     save_png(person_hint, paths["person_hint"])
     save_png(ImageOps.invert(person_hint), paths["background_hint"])
     return paths
+
+
+# How far past the plate's own rough foreground estimate despilled_plate() reaches. Ties the scope
+# to the *plate's own* boundary, not the diffusion edit's permission envelope -- see that function's
+# docstring for why the envelope (dilated 97px for the edit's own working room) was the wrong scope
+# and produced a large, wrong leak of its own.
+# Key-channel dominance (key minus the brighter of the other two) below which a pixel is treated as
+# ambiguous rather than confidently screen-coloured. Measured on a real plate: spill-contaminated
+# edge pixels (a shadowed waist crease, a shoe's dark leather) sit at 39-54, with a marginal fringe up
+# to 67 right at the true boundary (a continuous transition, not a clean binary); confident
+# background, anywhere in the frame, sits at 79-87. 70 sits with comfortable margin on both sides.
+def despilled_plate(source, screen, output, force, radius=production.SPILL_HOLE_CLOSE_RADIUS):
+    """Despill `source` for extraction -- see production.scoped_despill() for the mechanism (small
+    enclosed holes only, found by morphological closing) and the regression a dominance-only version
+    of this caused near hair before landing on closing instead. Also applied, independently, to the
+    colour layers segment_source() builds for the final composite -- this function exists only to
+    prepare a cleaner *hint* for CorridorKey, not to be the sole place despill happens."""
+    if output.is_file() and not force:
+        return output
+    save_png(production.scoped_despill(image_from(source), screen, radius), output)
+    return output
 
 
 def plate_hints(plate, masks_dir, name, screen="blue"):
@@ -452,15 +673,15 @@ def plate_hints(plate, masks_dir, name, screen="blue"):
     return raw_path, hint_path
 
 
-def drift_check(carrier, candidate, name):
+def drift_check(carrier, candidate, name, screen="blue"):
     """The mask-free recolor runs at denoise 1.0 with no latent mask, so the background is
     genuinely re-synthesized and no prompt wording can guarantee registration. Measure it before
     spending the identity and clothing edits."""
     before, after = image_from(carrier), image_from(candidate)
     if before.size != after.size:
         raise RuntimeError(f"{name}: canvas changed {before.size} -> {after.size}")
-    reference = screen_foreground(before)
-    shift = [abs(a - b) for a, b in zip(reference.getbbox(), screen_foreground(after).getbbox())]
+    reference = screen_foreground(before, screen)
+    shift = [abs(a - b) for a, b in zip(reference.getbbox(), screen_foreground(after, screen).getbbox())]
     background = ImageOps.invert(reference).point(lambda value: 255 if value > 127 else 0)
     delta = ImageChops.multiply(ImageChops.difference(before, after).convert("L"), background)
     counted = sum(background.histogram()[1:]) or 1
@@ -606,13 +827,13 @@ def carrier_checks(carrier):
     ]
 
 
-def envelope_checks(carrier, head_path, clothes_path):
+def envelope_checks(carrier, head_path, clothes_path, screen="blue"):
     with Image.open(head_path) as opened:
         head_mask = opened.convert("L")
     with Image.open(clothes_path) as opened:
         clothes_mask = opened.convert("L")
     frame = head_mask.width * head_mask.height
-    person = screen_foreground(image_from(carrier))
+    person = screen_foreground(image_from(carrier), screen)
     head_area = sum(head_mask.point(lambda v: 255 if v > 127 else 0).histogram()[1:]) / frame
     clothes_area = sum(clothes_mask.point(lambda v: 255 if v > 127 else 0).histogram()[1:]) / frame
     overlap = sum(ImageChops.multiply(head_mask, clothes_mask).histogram()[1:])
@@ -627,17 +848,21 @@ def envelope_checks(carrier, head_path, clothes_path):
     ]
 
 
-def preprocess_checks(preprocessed, reference):
+def preprocess_checks(preprocessed, reference, screen="blue", reference_screen=None):
     """Technical checks only. Whether the hair outline is clean, the earrings are gone and the
     identity survived are human calls — HANDOVER.md keeps identity and styling out of automation,
     so this stage is a review stop, not a pass/fail verdict on quality."""
+    # `screen` keys the preprocessed plate, `reference_screen` the carrier. They differ the moment
+    # the preprocess renders on grey while the carrier stays chroma; sharing one screen was fine
+    # only while both backdrops were blue.
+    reference_screen = reference_screen or screen
     image = image_from(preprocessed)
-    foreground = screen_foreground(image)
+    foreground = screen_foreground(image, screen)
     inside = region_fractions(image, foreground)
     outside = region_fractions(image, ImageOps.invert(foreground))
     box = foreground.getbbox() or (0, 0, 1, 1)
     reference_image = image_from(reference)
-    target = screen_foreground(reference_image).getbbox() or (0, 0, 1, 1)
+    target = screen_foreground(reference_image, reference_screen).getbbox() or (0, 0, 1, 1)
     scale = [(box[2] - box[0]) / max(1, target[2] - target[0]), (box[3] - box[1]) / max(1, target[3] - target[1])]
     # Two-reference edits in this graph collapse onto one reference and discard the other. When
     # image 2 wins, the output is simply a copy of it and the performer is gone — an attempt that
@@ -646,10 +871,16 @@ def preprocess_checks(preprocessed, reference):
     # attempt measured 4.08, genuine ones 50.11 and 57.84.
     collapsed = sum(ImageStat.Stat(ImageChops.difference(
         image.resize(reference_image.size), reference_image)).mean) / 3
+    if screen == "grey":
+        background_check = {"name": "preprocess_background_is_grey",
+                            "passed": max(outside["green"], outside["blue"]) < 0.25, "detail": outside}
+    else:
+        background_check = {"name": "preprocess_background_is_blue", "passed": outside["blue"] > 0.85,
+                            "detail": outside["blue"]}
     return [
         {"name": "preprocess_is_not_a_copy_of_reference", "passed": collapsed > 20,
          "detail": round(collapsed, 2)},
-        {"name": "preprocess_background_is_blue", "passed": outside["blue"] > 0.85, "detail": outside["blue"]},
+        background_check,
         {"name": "preprocess_figure_coverage", "passed": 0.05 < inside["coverage"] < 0.70,
          "detail": inside["coverage"]},
         # She must arrive as natural skin; green here means the carrier's body paint bled into her.
@@ -675,9 +906,43 @@ def skin_checks(carrier, skin):
     ]
 
 
-def drift_check_result(carrier, candidate):
+def grey_carrier_checks(carrier):
+    """PIL-only checks for the flat-grey carrier: figure present via corner-distance, background grey
+    (no channel dominance, unlike the chroma carriers), feet visible. The bald check needs SAM, which
+    is color-independent and covered by the envelope stage anyway, so it is not repeated here."""
+    image = image_from(carrier)
+    foreground = screen_foreground(image, "grey")
+    box = foreground.getbbox()
+    inside = region_fractions(image, foreground)
+    outside = region_fractions(image, ImageOps.invert(foreground))
+    feet_margin = image.height - box[3] if box else image.height
+    return [
+        {"name": "figure_coverage_plausible", "passed": 0.08 < inside["coverage"] < 0.45, "detail": inside["coverage"]},
+        {"name": "figure_not_chroma", "passed": inside["green"] < 0.5 and inside["blue"] < 0.5, "detail": inside},
+        {"name": "background_is_grey", "passed": max(outside["green"], outside["blue"]) < 0.25, "detail": outside},
+        {"name": "feet_visible", "passed": feet_margin < image.height * 0.06, "detail": feet_margin},
+    ]
+
+
+def grey_skin_checks(carrier, skin):
+    """Grey-carrier equivalent of skin_checks: the suit has been recolored to natural skin (no
+    chroma paint to measure), the background stayed grey, the head stayed bald, registration held."""
+    image = image_from(skin)
+    foreground = screen_foreground(image, "grey")
+    inside = region_fractions(image, foreground)
+    outside = region_fractions(image, ImageOps.invert(foreground))
+    dark = crown_darkness(image, foreground)
+    return [
+        {"name": "suit_recolored_to_skin", "passed": inside["green"] < 0.5 and inside["blue"] < 0.5, "detail": inside},
+        {"name": "background_still_grey", "passed": max(outside["green"], outside["blue"]) < 0.25, "detail": outside},
+        {"name": "still_bald", "passed": dark < 0.05, "detail": dark},
+        drift_check_result(carrier, skin, "grey"),
+    ]
+
+
+def drift_check_result(carrier, candidate, screen="blue"):
     try:
-        return {"name": "registration", "passed": True, "detail": drift_check(carrier, candidate, "skin-tone")}
+        return {"name": "registration", "passed": True, "detail": drift_check(carrier, candidate, "skin-tone", screen)}
     except RuntimeError as error:
         return {"name": "registration", "passed": False, "detail": str(error)}
 
@@ -694,6 +959,9 @@ def masked_edit_checks(reference, candidate, mask, screen=None):
     inside_changed = sum(changed.histogram()[1:])
     checks = [outside, {"name": "inside_mask_changed", "passed": inside_changed > 0, "detail": inside_changed}]
     if screen:
+        if screen == "grey":
+            # No body paint exists on a grey carrier; there is nothing to measure.
+            return checks
         # Uncovered body paint is the defect; the screen showing through the envelope around the
         # garment is not. Those are different colours and they swap with the key, so this has to
         # follow the screen. Hardcoded "green" read the screen itself once the key moved to green
@@ -705,7 +973,31 @@ def masked_edit_checks(reference, candidate, mask, screen=None):
     return checks
 
 
-def compose_identity(server, aligned, carrier, root, work):
+def sample_face_tone(image):
+    """Median RGB of skin-toned pixels in the face region (top third, skin-hue heuristic).
+    A box-mean on the SAM head box landed on hair/shadows at (147,114,93) against the true face
+    tone (196,158,126) measured on the same image -- the face is small relative to the hair, so a
+    mean over an imperfect box is dragged down. The median over hue-filtered pixels is robust to
+    both."""
+    image = image.convert("RGB")
+    r, g, b = image.split()
+    skin = ImageChops.multiply(
+        ImageChops.multiply(
+            ImageChops.subtract(r, g).point(lambda v: 255 if v > 0 else 0),
+            ImageChops.subtract(g, b).point(lambda v: 255 if v > 0 else 0),
+        ),
+        ImageChops.multiply(
+            r.point(lambda v: 255 if v > 80 else 0),
+            ImageChops.subtract(r, b).point(lambda v: 255 if v > 20 else 0),
+        ),
+    )
+    box = (0, 0, image.width, max(1, image.height // 3))
+    stats = ImageStat.Stat(image.crop(box), mask=skin.crop(box))
+    return tuple(round(value) for value in stats.median)
+
+
+def compose_identity(server, aligned, carrier, root, work, screen="blue",
+                     birefnet_model=DEFAULT_BIREFNET_MODEL, birefnet_python=DEFAULT_BIREFNET_PYTHON):
     """Build the identity plate by pasting the performer's own head onto the carrier's own body,
     instead of asking diffusion to regenerate a body that only approximates the carrier's
     proportions.
@@ -733,14 +1025,27 @@ def compose_identity(server, aligned, carrier, root, work):
     head, head_box = sam_mask(server, aligned, HEAD_SAM_PROMPT, work, f"{SAM_PREFIX}/head")
     preserve = dilate(head, production.NECK_OVERLAP)
     save_png(preserve, preserve_path)
-    aligned_image, carrier_image = image_from(aligned), image_from(carrier)
-    performer_tone = production.region_tone(aligned_image, production.inset(head_box, 0.3))
+    carrier_image = image_from(carrier)
+    # The transplant mask is geometric, so the performer's own backdrop rides along inside it
+    # (measured: 17.6% of the mask, 6,406 px of 36,377). Correct that backdrop to the carrier's
+    # before compositing, using her matte to get the hair's blend band right rather than only the
+    # solid background. Invisible while both backdrops are the same colour, which is why this went
+    # unnoticed; required the moment the preprocess stage renders her on grey to keep blue spill
+    # out of her hair edge. Local matting, no pod. See production.rebackground().
+    aligned_alpha_path = root / "masks" / "performer-aligned-alpha.png"
+    birefnet_extract(aligned, None, aligned_alpha_path, birefnet_model, birefnet_python)
+    aligned_image = production.rebackground(image_from(aligned),
+                                            image_from(aligned_alpha_path).convert("L"),
+                                            image_from(aligned).getpixel((8, 8)),
+                                            carrier_image.getpixel((8, 8)))
+    save_png(aligned_image, root / "performer-aligned-rebackgrounded.png")
+    performer_tone = sample_face_tone(aligned_image)
     # screen_foreground()'s screen= names the *background* colour to key out (blue, for the
     # carrier) -- unrelated to deterministic_skin_recolor()'s paint_channel=, which names the
     # *figure's own paint* colour (green) it reads as a shading map. Same word, opposite ends of
     # the same image; this collision produced a real bug the first time through -- see
     # LAYERED_COSTUME_PRODUCTION_STATUS.md, 2026-08-05.
-    body_foreground = screen_foreground(carrier_image)
+    body_foreground = screen_foreground(carrier_image, screen)
     toned_body = production.deterministic_skin_recolor(carrier_image, body_foreground, performer_tone,
                                                         paint_channel="green")
     save_png(toned_body, toned_body_path)
@@ -750,7 +1055,7 @@ def compose_identity(server, aligned, carrier, root, work):
     return composite, preserve_path, toned_body_path
 
 
-def silhouette_checks(candidate, carrier):
+def silhouette_checks(candidate, carrier, screen="blue"):
     """Does the result's silhouette still match the carrier's -- the one thing that has to hold for
     the clothes plate, built from that same carrier, to fit. Compared against carrier.png directly,
     not skin.png: an earlier revision compared against skin.png, which is itself an independently
@@ -758,18 +1063,26 @@ def silhouette_checks(candidate, carrier):
     straight through as if it were not there. Valid at any stage of the identity pipeline, since
     nothing after compose_identity() is allowed to touch the outer body silhouette (the seam mask
     sits at the neck/shoulders, nowhere near it)."""
-    candidate_box, carrier_box = production.silhouette_box(candidate), production.silhouette_box(carrier)
+    candidate_box, carrier_box = (production.silhouette_box(candidate, screen),
+                                  production.silhouette_box(carrier, screen))
     drift = {"left": abs(candidate_box[0] - carrier_box[0]), "right": abs(candidate_box[2] - carrier_box[2]),
              "bottom": abs(candidate_box[3] - carrier_box[3])}
+    if screen == "grey":
+        outside = region_fractions(image_from(candidate),
+                                   ImageOps.invert(production.screen_foreground(image_from(candidate), "grey")))
+        background_check = {"name": "background_still_grey", "passed": max(outside["green"], outside["blue"]) < 0.25,
+                            "detail": outside}
+    else:
+        background_check = {"name": "background_still_blue", "passed": production.screen_color(candidate) == "blue",
+                            "detail": production.screen_color(candidate)}
     return [
         {"name": "body_matches_carrier", "passed": max(drift.values()) <= 1,
          "detail": {"body_drift_px": drift, "head_top_offset_px": candidate_box[1] - carrier_box[1]}},
-        {"name": "background_still_blue", "passed": production.screen_color(candidate) == "blue",
-         "detail": production.screen_color(candidate)},
+        background_check,
     ]
 
 
-def identity_composite_checks(aligned, carrier, toned_body, candidate, preserve_path):
+def identity_composite_checks(aligned, carrier, toned_body, candidate, preserve_path, screen="blue"):
     """Did the head survive untouched, did the body outside the blend band survive untouched against
     the *toned* body it was actually composited from, plus silhouette_checks(). Valid only for
     compose_identity()'s direct output: it asserts bit-exactness right up to the raw blend boundary,
@@ -798,7 +1111,61 @@ def identity_composite_checks(aligned, carrier, toned_body, candidate, preserve_
     return [
         {"name": "head_region_bit_exact", "passed": head_changed == 0, "detail": head_changed},
         {"name": "body_region_bit_exact", "passed": body_changed == 0, "detail": body_changed},
-        *silhouette_checks(candidate, carrier),
+        *silhouette_checks(candidate, carrier, screen),
+    ]
+
+
+def harmonize_skin(server, source, preserve_path, carrier, root, work, force, screen="blue",
+                   denoise=SKIN_BLEND_DENOISE):
+    """Composite first, then let a masked edit harmonise it -- the same mechanism smooth_seam()
+    already uses on the neck band, applied to the whole body.
+
+    Why this shape rather than a prompt naming a skin tone: deterministic_skin_recolor() already
+    puts the *mean* exactly right (measured hue 28.6 against real skin's 28.4) and cannot produce
+    variance (saturation spread 2.0 against 9.9), because `target_rgb * ratio` confines every pixel
+    to one line through colour space. So the composite states the target in pixels and the edit only
+    has to supply the variation that is missing. A prompt naming a tone is strictly worse: it cannot
+    express *this* performer's colouring -- SKIN_PROMPT's "one fair, warm natural skin tone" is the
+    same words for everyone -- whereas her transplanted head is right there in frame to match.
+
+    Two things keep this from being the abandoned repaint:
+
+    - `denoise` below 1.0 harmonises instead of regenerating. At 1.0 a body-shaped mask reproduces
+      the 2026-08-05 construction whose chest size and thigh gap varied by seed.
+    - The mask is eroded off the silhouette by SKIN_BLEND_EDGE_GUARD, so the outermost ring of the
+      figure keeps its original pixels and the silhouette cannot move at all. ImageCompositeMasked
+      only guarantees bit-exactness *outside* the mask; a mask that included the boundary would let
+      the model shrink the body within it."""
+    mask_path = root / "masks" / "identity-skin-blend-mask.png"
+    output = root / "identity-harmonized.png"
+    with Image.open(preserve_path) as opened:
+        preserve = opened.convert("L")
+    body = ImageChops.subtract(
+        production.erode(screen_foreground(image_from(carrier), screen), production.SKIN_BLEND_EDGE_GUARD),
+        dilate(preserve, production.NECK_OVERLAP))
+    save_png(body, mask_path)
+    edit(server, source, SKIN_BLEND_PROMPT, mask_path, None,
+         production.seed_for("qwen2512:identity-skin-blend"), f"{SAM_PREFIX}/identity-skin-blend",
+         output, work, force, denoise=denoise)
+    return output, mask_path
+
+
+def skin_blend_checks(before, after, mask, carrier, screen="blue"):
+    """Harmonisation must add chromatic variation without moving the body.
+
+    The spread number is the whole point: mean tone was already correct before this stage, so a
+    check on mean would pass on the flat plate this exists to fix. Real skin measured 9.9 against
+    the deterministic recolor's 2.0, so 4.0 sits clear of the flat case without demanding the edit
+    fully reach a different performer's reference."""
+    region = image_from(mask).convert("L").point(lambda value: 255 if value > 127 else 0)
+    was = production.chroma_spread(image_from(before), region)
+    now = production.chroma_spread(image_from(after), region)
+    return [
+        *masked_edit_checks(before, after, mask),
+        *silhouette_checks(after, carrier, screen),
+        {"name": "skin_gained_chromatic_variation",
+         "passed": now["saturation_spread"] >= 4.0,
+         "detail": {"before": was, "after": now, "floor": 4.0}},
     ]
 
 
@@ -879,9 +1246,13 @@ def remote_bootstrap(ssh, ssh_port, ssh_target):
     return "pod_bootstrap", result.returncode == 0, lines
 
 
-def preflight(server, ssh_target, ssh_port, performer, edit_model, corridor_root):
+def preflight(server, ssh_target, ssh_port, performer, edit_model, corridor_root,
+              clothes_mode="qwen", extract_mode="corridorkey"):
     """Fail on a misconfigured instance before any GPU time is spent. Without this the SSH and
-    CorridorKey settings are only exercised after four Qwen generations have already run."""
+    CorridorKey settings are only exercised after four Qwen generations have already run.
+
+    Mode-aware: the grey/VITON path needs the CatVTON node and has no use for CorridorKey or
+    rsync (matting is local), so those checks are skipped there instead of failing a healthy pod."""
     checks = []
 
     def record(name, passed, detail):
@@ -901,6 +1272,13 @@ def preflight(server, ssh_target, ssh_port, performer, edit_model, corridor_root
                {"wanted": edit_model, "available": available})
     except Exception as error:                                      # noqa: BLE001
         record("edit_model_present", False, str(error))
+    if clothes_mode == "viton":
+        try:
+            node = api(server, f"/object_info/{CATVTON_NODE}", timeout=15)
+            present = CATVTON_NODE in node and "image" in node[CATVTON_NODE]["input"]["required"]
+            record("catvton_node_exposed", present, CATVTON_NODE)
+        except Exception as error:                                  # noqa: BLE001
+            record("catvton_node_exposed", False, str(error))
 
     ssh = ["ssh", "-q", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", "-p", str(ssh_port), ssh_target]
     try:
@@ -911,14 +1289,27 @@ def preflight(server, ssh_target, ssh_port, performer, edit_model, corridor_root
     else:
         record("ssh_reachable", reachable, f"{ssh_target}:{ssh_port}")
     if reachable:
+        if clothes_mode == "viton":
+            # The bootstrap installs CatVTON only when asked: touch the flag so a one-time
+            # multi-GB download does not run for the chroma recipe's preflight.
+            subprocess.run([*ssh, "mkdir -p /workspace/runpod-slim && touch /workspace/runpod-slim/install-catvton"],
+                           timeout=30, check=False)
+        if args.matte_upscale:
+            # Same flag-gating for the GPU matting venv (bootstrap step 8). Matting still runs
+            # locally -- this only prepares and *verifies* the pod-side environment, so the
+            # 25m30s-per-plate CPU cost has somewhere faster to go once the runner learns to
+            # matte over SSH the way standalone_alpha() already does for CorridorKey.
+            subprocess.run([*ssh, "mkdir -p /workspace/runpod-slim && touch /workspace/runpod-slim/install-matting"],
+                           timeout=30, check=False)
         record(*remote_bootstrap(ssh, ssh_port, ssh_target))
-        probe = f"test -x {corridor_root}/.venv/bin/python && test -d {corridor_root}/CorridorKeyModule/checkpoints"
-        record("corridorkey_installed", subprocess.run([*ssh, probe], timeout=60).returncode == 0, corridor_root)
-        # standalone_alpha() stages and retrieves over rsync; a pod without it fails only after
-        # every generation has already run.
-        record("remote_rsync_present",
-               subprocess.run([*ssh, "command -v rsync"], timeout=60).returncode == 0, "rsync on the pod")
-    else:
+        if extract_mode == "corridorkey":
+            probe = f"test -x {corridor_root}/.venv/bin/python && test -d {corridor_root}/CorridorKeyModule/checkpoints"
+            record("corridorkey_installed", subprocess.run([*ssh, probe], timeout=60).returncode == 0, corridor_root)
+            # standalone_alpha() stages and retrieves over rsync; a pod without it fails only after
+            # every generation has already run.
+            record("remote_rsync_present",
+                   subprocess.run([*ssh, "command -v rsync"], timeout=60).returncode == 0, "rsync on the pod")
+    elif extract_mode == "corridorkey":
         record("corridorkey_installed", False, "skipped: ssh unreachable")
         record("remote_rsync_present", False, "skipped: ssh unreachable")
     return checks
@@ -1056,6 +1447,24 @@ def self_test():
             assert "different carrier" in str(error)
         else:
             raise AssertionError("an envelope accepted against another carrier must be refused")
+
+        # despilled_plate(): an enclosed weak-dominance hole surrounded by solid figure gets
+        # corrected; background -- even right beside the figure's true edge, which a
+        # dominance-strength-only version of this once wrongly flagged near hair -- does not.
+        plate = Image.new("RGB", (100, 100), (0, 200, 0))
+        draw = ImageDraw.Draw(plate)
+        draw.rectangle((20, 20, 79, 79), fill=(30, 25, 28))
+        draw.rectangle((45, 45, 54, 54), fill=(20, 80, 50))
+        plate_path = root / "spill-plate.png"
+        save_png(plate, plate_path)
+        despilled_out = despilled_plate(plate_path, "green", root / "spill-out.png", False, radius=24)
+        result = image_from(despilled_out)
+        assert result.getpixel((49, 49)) == (20, 50, 50), "the enclosed hole's colour must be corrected"
+        assert result.getpixel((15, 50)) == (0, 200, 0), \
+            "background beside the figure's true edge must be untouched"
+        before = despilled_out.read_bytes()
+        despilled_plate(plate_path, "green", despilled_out, False, radius=24)
+        assert despilled_out.read_bytes() == before, "an existing output must not be recomputed"
 
         # Config resolution: placeholders count as unset, typos are refused, and the config must
         # beat a stale exported variable rather than be silently shadowed by it.
@@ -1198,6 +1607,131 @@ def self_test():
                                                       root / "band.png", screen="green")
                         if c["name"] == "no_paint_remnant_in_edit")["passed"]
 
+    # --- grey-carrier / VITON path (VITON_CLOTHING_POC_HANDOVER.md) ---
+
+    # screen_foreground("grey") keys on distance from the corner colour, and only there.
+    grey_carrier_img = Image.new("RGB", (200, 300), (118, 118, 120))
+    ImageDraw.Draw(grey_carrier_img).rectangle((60, 30, 140, 290), fill=(205, 205, 208))
+    grey_fg = production.screen_foreground(grey_carrier_img, "grey")
+    assert grey_fg.getbbox() == (60, 30, 141, 291), grey_fg.getbbox()  # rectangle() is inclusive
+    assert grey_fg.getpixel((10, 10)) == 0 and grey_fg.getpixel((100, 100)) == 255
+    # The chroma screens must be unaffected by the grey branch.
+    blue_probe = Image.new("RGB", (32, 32), (20, 80, 220))
+    ImageDraw.Draw(blue_probe).rectangle((12, 12, 19, 19), fill=(20, 140, 40))
+    assert production.screen_foreground(blue_probe).getpixel((16, 16)) == 255
+
+    # luminance recolor (paint_channel=None): figure gets target tone scaled by its own luma,
+    # background untouched.
+    recolor = production.deterministic_skin_recolor(grey_carrier_img, grey_fg, (212, 176, 150),
+                                                    paint_channel=None)
+    assert recolor.getpixel((10, 10)) == grey_carrier_img.getpixel((10, 10))  # bg untouched
+    r, g, b = recolor.getpixel((100, 150))
+    assert r > 150 and r > g > b, (r, g, b)  # skin-toned, red-dominant (saturates on the toy canvas)
+
+    # despill must be a no-op for grey screens (no chroma spill exists to remove).
+    assert production.scoped_despill(grey_carrier_img, "grey").tobytes() == \
+        grey_carrier_img.convert("RGB").tobytes()
+
+    # grey_carrier_checks on a synthetic grey carrier.
+    save_png(grey_carrier_img, root / "grey-carrier.png")
+    grey_checks = {c["name"]: c["passed"] for c in grey_carrier_checks(root / "grey-carrier.png")}
+    assert grey_checks["figure_coverage_plausible"] and grey_checks["feet_visible"] and \
+        grey_checks["background_is_grey"] and grey_checks["figure_not_chroma"], grey_checks
+
+    # viton_graph: exact node classes and wiring for the installed CatVTON wrapper.
+    graph = viton_graph("person.png", "garment.png", "mask.png", 7, "test")
+    assert graph["1"]["class_type"] == "LoadImage" and graph["1"]["inputs"]["image"] == "person.png"
+    assert graph["2"]["inputs"]["image"] == "garment.png"
+    assert graph["3"]["inputs"]["image"] == "mask.png"
+    assert graph["4"]["class_type"] == "ImageToMask" and graph["4"]["inputs"]["channel"] == "red"
+    assert graph["5"]["class_type"] == CATVTON_NODE
+    assert graph["5"]["inputs"]["image"] == ["1", 0]
+    assert graph["5"]["inputs"]["mask"] == ["4", 0]
+    assert graph["5"]["inputs"]["refer_image"] == ["2", 0]
+    assert graph["5"]["inputs"]["mask_grow"] == 0 and graph["5"]["inputs"]["seed"] == 7
+    assert graph["6"]["inputs"]["filename_prefix"] == "test-viton"
+
+    # birefnet extraction wiring: the standalone script and model must exist at the defaults, so a
+    # fresh pod run fails at configuration time, not after the GPU stages.
+    assert DEFAULT_BIREFNET_MODEL.is_file(), DEFAULT_BIREFNET_MODEL
+    assert DEFAULT_BIREFNET_PYTHON.is_file(), DEFAULT_BIREFNET_PYTHON
+    assert (TOOL_ROOT / "birefnet_extract.py").is_file()
+
+    # --- garment-ref clothes mode ---
+
+    # Grey-mode masked_edit_checks must not touch APERTURE_COLOR (no paint on a grey carrier).
+    dressed = image_from(root / "grey-carrier.png").copy()
+    ImageDraw.Draw(dressed).rectangle((70, 40, 130, 200), fill=(142, 69, 133))
+    save_png(dressed, root / "grey-dressed.png")
+    grey_mask = Image.new("L", grey_carrier_img.size, 0)
+    ImageDraw.Draw(grey_mask).rectangle((60, 30, 140, 210), fill=255)
+    save_png(grey_mask, root / "grey-mask.png")
+    grey_edit_checks = {c["name"]: c["passed"] for c in
+                        masked_edit_checks(root / "grey-carrier.png", root / "grey-dressed.png",
+                                           root / "grey-mask.png", screen="grey")}
+    assert grey_edit_checks["inside_mask_changed"]
+    assert grey_edit_checks["outside_mask_unchanged"]
+    assert "no_paint_remnant_in_edit" not in grey_edit_checks  # grey has no paint to measure
+    # The chroma path still measures paint residue against the key colour.
+    assert APERTURE_COLOR["green"] == "blue" and APERTURE_COLOR["blue"] == "green"
+    assert "{aperture}" in GARMENT_REF_PROMPT and "image 2" in GARMENT_REF_PROMPT
+    assert "image 2" in GREY_GARMENT_REF_PROMPT and "{aperture}" not in GREY_GARMENT_REF_PROMPT
+    # Every clothes prompt must name the outfit as well as reference it. Dropping the description
+    # from the garment-ref prompt is the confound that made the 2026-08-07 run untestable, and the
+    # four features it lost are exactly the four named here.
+    for template in (CLOTHES_PROMPT, GARMENT_REF_PROMPT, GREY_GARMENT_REF_PROMPT):
+        assert "{description}" in template, "a clothes prompt must carry the outfit description"
+    for feature in ("high collar", "gloves", "full skirt", "shoes"):
+        assert feature in GARMENT_DESCRIPTION, f"{feature} must survive into the description"
+    rendered = GARMENT_REF_PROMPT.format(aperture="blue", screen="green",
+                                         description=GARMENT_DESCRIPTION)
+    assert "high collar" in rendered and "image 2" in rendered, \
+        "the garment-ref prompt must carry both the image reference and the text description"
+
+    # --grey-preprocess: the preprocessed plate and the carrier no longer share a backdrop, so the
+    # checks must key each with its own screen. Sharing one -- the bug class that cost the 08-07
+    # session several GPU cycles -- makes the carrier's blue read as *figure* under a grey key.
+    grey_plate = Image.new("RGB", (120, 160), (128, 128, 128))
+    ImageDraw.Draw(grey_plate).rectangle((40, 30, 79, 159), fill=(210, 170, 140))
+    blue_ref = Image.new("RGB", (120, 160), (0, 80, 200))
+    ImageDraw.Draw(blue_ref).rectangle((42, 28, 77, 159), fill=(0, 200, 0))
+    grey_path, ref_path = root / "grey-pre.png", root / "blue-ref.png"
+    save_png(grey_plate, grey_path)
+    save_png(blue_ref, ref_path)
+    mixed = {c["name"]: c for c in preprocess_checks(grey_path, ref_path, "grey", "blue")}
+    assert mixed["preprocess_background_is_grey"]["passed"], "the grey plate must key as grey"
+    assert mixed["preprocess_scale_vs_carrier"]["passed"], \
+        f"a grey plate must scale against a blue carrier: {mixed['preprocess_scale_vs_carrier']['detail']}"
+    # The negative control runs the other way round. screen="grey" estimates the backdrop from the
+    # border bands, so it copes with a blue frame too; what does *not* cope is keying the grey plate
+    # as blue -- grey is not blue-dominant, so the whole frame reads as figure. That is the failure
+    # this threading exists to prevent, and it must be visible.
+    wrong_screen = {c["name"]: c for c in preprocess_checks(grey_path, ref_path, "blue", "blue")}
+    assert not wrong_screen["preprocess_figure_coverage"]["passed"], \
+        f"a grey plate keyed as blue must fail coverage: {wrong_screen['preprocess_figure_coverage']['detail']}"
+
+    # Skin harmonisation. The mask must cover the body, spare the head, and -- the property that
+    # keeps this from becoming the abandoned repaint -- stop short of the silhouette, since
+    # ImageCompositeMasked only guarantees bit-exactness outside the mask.
+    blend_carrier = Image.new("RGB", (200, 300), (0, 0, 255))
+    ImageDraw.Draw(blend_carrier).rectangle((60, 40, 139, 279), fill=(0, 200, 0))
+    blend_head = Image.new("L", (200, 300))
+    ImageDraw.Draw(blend_head).rectangle((80, 40, 119, 89), fill=255)
+    body_mask = ImageChops.subtract(
+        production.erode(screen_foreground(blend_carrier), production.SKIN_BLEND_EDGE_GUARD),
+        dilate(blend_head, production.NECK_OVERLAP))
+    assert body_mask.getpixel((100, 200)) == 255, "the body must be editable"
+    assert body_mask.getpixel((100, 60)) == 0, "the transplanted head must be protected"
+    assert body_mask.getpixel((61, 200)) == 0, "the mask must stop short of the silhouette edge"
+    assert body_mask.getpixel((100, 20)) == 0, "the background must never be editable"
+    # denoise must actually reach the sampler, or "harmonise" silently becomes "regenerate".
+    graph = production.edit_graph("a.png", "p", 1, "pre", denoise=0.4)
+    sampler = next(n for n in graph.values() if n["class_type"] == "KSampler")
+    assert sampler["inputs"]["denoise"] == 0.4, "denoise must reach the KSampler"
+    assert next(n for n in production.edit_graph("a.png", "p", 1, "pre").values()
+                if n["class_type"] == "KSampler")["inputs"]["denoise"] == 1.0, \
+        "every existing caller must keep denoise 1.0"
+
     print("qwen2512 skin/head/clothes POC self-test passed")
 
 
@@ -1218,7 +1752,53 @@ def main():
     parser.add_argument("--stop-after", choices=STAGES, help="run up to this stage, then stop for review")
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--self-test", action="store_true")
+    # VITON / matting path (see VITON_CLOTHING_POC_HANDOVER.md): grey carrier, local BiRefNet
+    # extraction, CatVTON clothes. --grey-carrier implies viton clothes mode; viton clothes mode
+    # implies birefnet extraction.
+    parser.add_argument("--grey-carrier", action="store_true",
+                        help="flat-grey carrier instead of the chroma screen (implies --clothes-mode viton)")
+    parser.add_argument("--clothes-mode", choices=("qwen", "garment-ref", "viton"), default="qwen",
+                        help="qwen = prompt-only masked edit (current recipe); garment-ref = masked edit "
+                             "conditioned on a T2I garment image (modern, no SD1.5); viton = CatVTON try-on "
+                             "(geometry probe)")
+    parser.add_argument("--extract-mode", choices=("corridorkey", "birefnet"), default=None,
+                        help="corridorkey = pod-side chroma keying; birefnet = local BiRefNet matting "
+                             "(default: birefnet when grey/viton, else corridorkey)")
+    parser.add_argument("--birefnet-model", type=Path, default=DEFAULT_BIREFNET_MODEL)
+    parser.add_argument("--birefnet-python", type=Path, default=DEFAULT_BIREFNET_PYTHON)
+    # Bulk review mode: the operator is not at the gates. Auto-accepts the envelope (the only hard
+    # human gate; the review page marks it pending), runs every stage in one command, and the
+    # poc_review.py generator renders a review.html on the shared NFS drive for later review.
+    parser.add_argument("--auto-accept-envelope", action="store_true",
+                        help="flip envelope-status.json to accepted without a human (bulk mode; "
+                             "review.html marks it pending)")
+    parser.add_argument("--garment-worn", action="store_true",
+                        help="generate the garment reference worn on a model instead of a flat lay "
+                             "(carries coverage cues; see GARMENT_WORN_PROMPT)")
+    parser.add_argument("--matte-upscale", action="store_true",
+                        help="super-resolve each plate before matting (birefnet mode only). The "
+                             "alpha is scaled back down, so output RGB and registration are "
+                             "unchanged; measured to cut retained spill ~14%% against a "
+                             "same-resolution control. Off by default: proven on a head crop, not "
+                             "yet on a whole plate.")
+    parser.add_argument("--upscale-model", type=Path, default=DEFAULT_UPSCALE_MODEL)
+    parser.add_argument("--grey-preprocess", action="store_true",
+                        help="render the performer preprocess on a flat grey backdrop instead of "
+                             "chroma blue. The transplanted head carries its own backdrop into the "
+                             "plate, so a neutral one keeps blue spill out of her hair edge at "
+                             "source. Independent of --grey-carrier, which is shelved; implied by "
+                             "it. Off by default: not yet run on a pod.")
+    parser.add_argument("--harmonize-skin", action="store_true",
+                        help="after the seam smoothing, run a body-masked harmonisation pass so the "
+                             "skin gains the chromatic variation deterministic_skin_recolor() cannot "
+                             "produce (measured saturation spread 2.0 against real skin's 9.9). Off "
+                             "by default: not yet run on a pod.")
+    parser.add_argument("--skin-blend-denoise", type=float, default=SKIN_BLEND_DENOISE,
+                        help=f"denoise for --harmonize-skin (default {SKIN_BLEND_DENOISE}). At 1.0 a "
+                             "body-shaped mask regenerates the body instead of harmonising it.")
     args = parser.parse_args()
+    if not 0.0 < args.skin_blend_denoise <= 1.0:
+        parser.error("--skin-blend-denoise must be in (0, 1]")
     if args.self_test:
         self_test()
         return
@@ -1242,6 +1822,20 @@ def main():
     if missing:
         parser.error(f"missing required settings: {', '.join(missing)}. Run --init-config to create "
                      f"{args.config}, or pass them as flags/environment variables")
+    # Mode resolution: the grey carrier exists for the matting paths; VITON clothes needs matting
+    # extraction (no key colour exists to drive CorridorKey). Anything else is a rejected combo.
+    grey_carrier = args.grey_carrier
+    clothes_mode = args.clothes_mode
+    if grey_carrier and clothes_mode == "qwen":
+        parser.error("--grey-carrier requires --clothes-mode garment-ref or viton (the grey carrier "
+                     "exists for the matting paths; the chroma recipe is unchanged)")
+    extract_mode = args.extract_mode or ("birefnet" if (grey_carrier or clothes_mode == "viton") else "corridorkey")
+    if clothes_mode == "viton" and extract_mode != "birefnet":
+        parser.error("--clothes-mode viton requires --extract-mode birefnet (no key colour to key)")
+    screen = "grey" if grey_carrier else "blue"
+    if args.clothes_mode != "qwen" or extract_mode != "corridorkey" or grey_carrier:
+        print(f"  recipe   {'grey-carrier' if grey_carrier else 'chroma-carrier'} / "
+              f"clothes={clothes_mode} / extract={extract_mode}", flush=True)
     for name, value in (("server", server), ("ssh_target", ssh_target), ("ssh_port", ssh_port),
                         ("edit_model", edit_model), ("corridorkey_root", corridorkey_root),
                         ("performer", performer), ("output_dir", root)):
@@ -1262,14 +1856,15 @@ def main():
 
     print("[preflight]", flush=True)
     report(root, "preflight", preflight(server, ssh_target, int(ssh_port), performer,
-                                        edit_model, corridorkey_root))
+                                        edit_model, corridorkey_root, clothes_mode, extract_mode))
     if done("preflight"):
         return print(root)
 
     print("[carrier]", flush=True)
     carrier = root / "carrier.png"
-    generate_carrier(server, carrier, work, args.force)
-    report(root, "carrier", carrier_checks(carrier))
+    generate_carrier(server, carrier, work, args.force,
+                     prompt=GREY_CARRIER_PROMPT if grey_carrier else CARRIER_PROMPT)
+    report(root, "carrier", grey_carrier_checks(carrier) if grey_carrier else carrier_checks(carrier))
     if done("carrier"):
         return print(root)
 
@@ -1277,21 +1872,47 @@ def main():
     # No free before SAM: ComfyUI's load_models_gpu evicts enough of the LRU model itself, and with
     # weights kept in RAM (see soft_free) the eviction it does is a PCIe copy rather than a re-read.
     # The only transition ComfyUI cannot see coming is the one into CorridorKey, below.
-    hints = build_hints(carrier, root / "masks")
-    bootstrap_envelope(server, carrier, root, work, args.force)
+    hints = build_hints(carrier, root / "masks", screen)
+    envelope_status = bootstrap_envelope(server, carrier, root, work, args.force)
+    if args.auto_accept_envelope and json.loads(envelope_status.read_text(encoding="utf-8")).get("status") != ENVELOPE_ACCEPTED:
+        status = json.loads(envelope_status.read_text(encoding="utf-8"))
+        status.update({"status": ENVELOPE_ACCEPTED, "auto_accepted": True})
+        envelope_status.write_text(json.dumps(status, indent=2) + "\n", encoding="utf-8")
+        print("  envelope AUTO-ACCEPTED (bulk mode); review masks/envelope-review.png on the review page",
+              flush=True)
     report(root, "envelope", envelope_checks(carrier, root / "masks" / "identity-head-mask.png",
-                                             root / "masks" / "clothes-body-mask.png"))
+                                             root / "masks" / "clothes-body-mask.png", screen))
     if done("envelope"):
         return print(root)
 
     print("[skin]", flush=True)
     # Single reference and mask-free: see SKIN_PROMPT for why image 2 is not used here.
-    skin = root / "skin-tone.png"
-    edit(server, carrier, SKIN_PROMPT, None, None, production.seed_for("qwen2512:skin-tone"),
-         "cover-story/qwen2512-skin-head-clothes/skin-tone", skin, work, args.force)
-    report(root, "skin", skin_checks(carrier, skin))
-    if done("skin"):
-        return print(root)
+    if clothes_mode != "qwen":
+        # Vestigial for both alternative clothes paths: the VITON person image is the deterministic
+        # tone recolor (run_viton), and garment-ref edits the carrier directly. Nothing downstream
+        # reads skin-tone.png, so skipping keeps the run honest.
+        print(f"  skipped in {clothes_mode} mode (nothing downstream reads skin-tone.png)", flush=True)
+        if done("skin"):
+            return print(root)
+    else:
+        skin = root / "skin-tone.png"
+        edit(server, carrier, GREY_SKIN_PROMPT if grey_carrier else SKIN_PROMPT, None, None,
+             production.seed_for("qwen2512:skin-tone"),
+             "cover-story/qwen2512-skin-head-clothes/skin-tone", skin, work, args.force)
+        report(root, "skin", grey_skin_checks(carrier, skin) if grey_carrier else skin_checks(carrier, skin))
+        if done("skin"):
+            return print(root)
+
+    print("[garment]", flush=True)
+    if clothes_mode != "qwen":
+        garment = root / "garment.png"
+        generate_garment(server, garment, work, args.force, prompt=GARMENT_WORN_PROMPT if args.garment_worn else GARMENT_PROMPT)
+        if done("garment"):
+            return print(root)
+    else:
+        print("  skipped in qwen mode (outfit described in CLOTHES_PROMPT)", flush=True)
+        if done("garment"):
+            return print(root)
 
     print("[preprocess]", flush=True)
     # performer = image 1, no second reference: see PREPROCESS_PROMPT for why. Unconditioned: an
@@ -1301,9 +1922,16 @@ def main():
     # aligned_performer(); the rest of preprocessed.png is discarded, so matching its body to the
     # carrier bought nothing and cost a SAM call, a ControlNet edit, and the risk both carried.
     preprocessed = root / "preprocessed.png"
-    edit(server, performer, PREPROCESS_PROMPT, None, None, production.seed_for("qwen2512:preprocess"),
+    # --grey-preprocess is independent of the shelved --grey-carrier: the backdrop behind the
+    # *performer* is what fringes her transplanted hair, and it is the only part of the grey
+    # experiment worth keeping. compose_identity() corrects that backdrop to the carrier's with
+    # production.rebackground() before the transplant, so the two can differ safely.
+    grey_preprocess = args.grey_preprocess or grey_carrier
+    preprocess_screen = "grey" if grey_preprocess else screen
+    edit(server, performer, GREY_PREPROCESS_PROMPT if grey_preprocess else PREPROCESS_PROMPT, None, None,
+         production.seed_for("qwen2512:preprocess"),
          "cover-story/qwen2512-skin-head-clothes/preprocess", preprocessed, work, args.force)
-    report(root, "preprocess", preprocess_checks(preprocessed, carrier))
+    report(root, "preprocess", preprocess_checks(preprocessed, carrier, preprocess_screen, screen))
     if done("preprocess"):
         return print(root)
 
@@ -1312,56 +1940,154 @@ def main():
     # Deterministic: her head pasted onto the carrier's own body, not a diffusion repaint. See
     # compose_identity(). Checked before spending GPU on the seam smoothing below, so a geometry
     # problem fails fast rather than after an edit call that would only inherit it.
-    aligned = aligned_performer(server, preprocessed, carrier, root, work)
-    composite, preserved_head, toned_body = compose_identity(server, aligned, carrier, root, work)
+    aligned = aligned_performer(server, preprocessed, carrier, root, work, preprocess_screen, screen)
+    composite, preserved_head, toned_body = compose_identity(server, aligned, carrier, root, work, screen,
+                                                          args.birefnet_model, args.birefnet_python)
     report(root, "identity-composite",
-           identity_composite_checks(aligned, carrier, toned_body, composite, preserved_head))
+           identity_composite_checks(aligned, carrier, toned_body, composite, preserved_head, screen))
     # A small, local touch-up on the join; see smooth_seam(). masked_edit_checks() already proves
     # outside its (wider) seam mask is bit-exact vs the composite, and the composite's own check
     # above already proved it bit-exact vs aligned/toned_body out to the narrower raw blend boundary
     # -- so only the silhouette is worth re-verifying here, not head/body bit-exactness against a
     # boundary the touch-up was deliberately allowed to cross.
     identity, seam_mask = smooth_seam(server, composite, preserved_head, root, work, args.force)
-    report(root, "identity", [*masked_edit_checks(composite, identity, seam_mask),
-                              *silhouette_checks(identity, carrier)])
+    identity_checks = [*masked_edit_checks(composite, identity, seam_mask),
+                       *silhouette_checks(identity, carrier, screen)]
+    if args.harmonize_skin:
+        # Composite-then-harmonise: the deterministic recolor states the target tone in pixels and
+        # this supplies the chromatic variation it cannot. Runs after the seam smoothing so the
+        # neck join is already resolved and the body has one continuous tone to match against.
+        harmonized, blend_mask = harmonize_skin(server, identity, preserved_head, carrier, root,
+                                                work, args.force, screen, args.skin_blend_denoise)
+        identity_checks += skin_blend_checks(identity, harmonized, blend_mask, carrier, screen)
+        identity = harmonized
+    report(root, "identity", identity_checks)
     if done("identity"):
         return print(root)
 
     print("[clothes]", flush=True)
-    clothes = root / "clothes.png"
-    # The garment keys against the outfit's own key colour, not a pipeline-wide constant.
-    clothes_carrier = carrier_for_screen(carrier, CLOTHES_KEY_COLOR, root)
-    edit(server, clothes_carrier,
-         CLOTHES_PROMPT.format(aperture=APERTURE_COLOR[CLOTHES_KEY_COLOR], screen=CLOTHES_KEY_COLOR),
-         envelope["clothes_mask"], None,
-         production.seed_for("qwen2512:clothes-victorian"), "cover-story/qwen2512-skin-head-clothes/clothes", clothes, work, args.force)
-    # The one free that has to be explicit: [extract] runs CorridorKey as a separate process on the
-    # same GPU, and ComfyUI has no way to know it needs to give the VRAM back.
-    soft_free(server)
-    report(root, "clothes", [
-        *masked_edit_checks(clothes_carrier, clothes, envelope["clothes_mask"], screen=CLOTHES_KEY_COLOR),
-        # A plate left over from a run at a different key colour would compose silently wrong;
-        # every stage is resumable by file existence, so the artifact has to declare its own screen.
-        {"name": "clothes_plate_screen", "passed": production.screen_color(clothes) == CLOTHES_KEY_COLOR,
-         "detail": {"wanted": CLOTHES_KEY_COLOR, "found": production.screen_color(clothes)}},
-    ])
-    if done("clothes"):
-        return print(root)
+    if clothes_mode == "viton":
+        # VITON on the tone-recolored carrier; the envelope's clothes mask is the garment region.
+        envelope = load_accepted_envelope(root, carrier)
+        clothes = run_viton(server, carrier, root / "garment.png", envelope, root, work, args.force)
+        report(root, "clothes", viton_checks(root / "viton-person.png", clothes, envelope, carrier))
+        if done("clothes"):
+            return print(root)
+    elif clothes_mode == "garment-ref":
+        # Masked Qwen edit conditioned on the T2I garment image (reference 2). Masked edits preserve
+        # the latent outside the mask, the regime where this model follows a second reference. In
+        # grey mode the carrier is edited directly; on chroma the key-color variant is used and the
+        # plate is checked against it.
+        envelope = load_accepted_envelope(root, carrier)
+        clothes = root / "clothes.png"
+        if grey_carrier:
+            # Image 1 is the *toned body* (identity-toned-body.png), not the raw carrier: the
+            # garment edit preserves everything outside the mask, so exposed arms/neck/hands come
+            # out at the performer's tone instead of the carrier's own skin -- the mismatch the
+            # chroma recipe handled with tone variants. Its head is the recolored bald carrier
+            # head, which the aperture post-mask removes at extract.
+            edit(server, root / "identity-toned-body.png",
+                 GREY_GARMENT_REF_PROMPT.format(description=GARMENT_DESCRIPTION),
+                 envelope["clothes_mask"], root / "garment.png",
+                 production.seed_for("qwen2512:clothes-victorian"),
+                 "cover-story/qwen2512-skin-head-clothes/clothes", clothes, work, args.force)
+            report(root, "clothes", [*masked_edit_checks(root / "identity-toned-body.png", clothes,
+                                                         envelope["clothes_mask"], screen="grey")])
+        else:
+            clothes_carrier = carrier_for_screen(carrier, CLOTHES_KEY_COLOR, root)
+            edit(server, clothes_carrier,
+                 GARMENT_REF_PROMPT.format(aperture=APERTURE_COLOR[CLOTHES_KEY_COLOR], screen=CLOTHES_KEY_COLOR,
+                                           description=GARMENT_DESCRIPTION),
+                 envelope["clothes_mask"], root / "garment.png",
+                 production.seed_for("qwen2512:clothes-victorian"),
+                 "cover-story/qwen2512-skin-head-clothes/clothes", clothes, work, args.force)
+            report(root, "clothes", [
+                *masked_edit_checks(clothes_carrier, clothes, envelope["clothes_mask"], screen=CLOTHES_KEY_COLOR),
+                {"name": "clothes_plate_screen", "passed": production.screen_color(clothes) == CLOTHES_KEY_COLOR,
+                 "detail": {"wanted": CLOTHES_KEY_COLOR, "found": production.screen_color(clothes)}},
+            ])
+        if done("clothes"):
+            return print(root)
+    else:
+        clothes = root / "clothes.png"
+        # The garment keys against the outfit's own key colour, not a pipeline-wide constant.
+        clothes_carrier = carrier_for_screen(carrier, CLOTHES_KEY_COLOR, root)
+        envelope = load_accepted_envelope(root, carrier)
+        edit(server, clothes_carrier,
+             CLOTHES_PROMPT.format(aperture=APERTURE_COLOR[CLOTHES_KEY_COLOR], screen=CLOTHES_KEY_COLOR,
+                                   description=GARMENT_DESCRIPTION),
+             envelope["clothes_mask"], None,
+             production.seed_for("qwen2512:clothes-victorian"), "cover-story/qwen2512-skin-head-clothes/clothes", clothes, work, args.force)
+        # The one free that has to be explicit: [extract] runs CorridorKey as a separate process on the
+        # same GPU, and ComfyUI has no way to know it needs to give the VRAM back.
+        soft_free(server)
+        report(root, "clothes", [
+            *masked_edit_checks(clothes_carrier, clothes, envelope["clothes_mask"], screen=CLOTHES_KEY_COLOR),
+            # A plate left over from a run at a different key colour would compose silently wrong;
+            # every stage is resumable by file existence, so the artifact has to declare its own screen.
+            {"name": "clothes_plate_screen", "passed": production.screen_color(clothes) == CLOTHES_KEY_COLOR,
+             "detail": {"wanted": CLOTHES_KEY_COLOR, "found": production.screen_color(clothes)}},
+        ])
+        if done("clothes"):
+            return print(root)
 
     print("[extract]", flush=True)
-    identity_raw_hint, identity_hint = plate_hints(identity, root / "masks", "identity")
-    clothes_raw_hint, clothes_hint = plate_hints(clothes, root / "masks", "clothes", CLOTHES_KEY_COLOR)
-    identity_alpha = extract(server, identity, identity_raw_hint, identity_hint, "blue",
-                             "poc:qwen2512-identity", ssh_target, int(ssh_port), root)
-    # The clothes plate's painted aperture must be keyed away; the identity plate has no paint.
-    clothes_aperture = key_aperture(image_from(clothes), CLOTHES_KEY_COLOR)
-    save_png(clothes_aperture, root / "masks" / f"clothes-{APERTURE_COLOR[CLOTHES_KEY_COLOR]}-aperture.png")
-    clothes_alpha = extract(server, clothes, clothes_raw_hint, clothes_hint, CLOTHES_KEY_COLOR,
-                            "poc:qwen2512-clothes", ssh_target, int(ssh_port), root, clothes_aperture)
-    aperture_left = sum(ImageChops.multiply(clothes_alpha, clothes_aperture).histogram()[128:])
-    report(root, "extract", [*alpha_checks(carrier, identity, identity_alpha, "identity"),
-                             *alpha_checks(clothes_carrier, clothes, clothes_alpha, "clothes", clothes_aperture,
-                                           CLOTHES_KEY_COLOR),
+    # Reverted to plain, undespilled plates for now: despilled_plate() closed the waist/feet holes
+    # but every scoping tried for it (edit envelope, dilated rough foreground, dominance ceiling,
+    # morphological hole-closing) also mis-fired somewhere else -- a teal halo, a jagged hair edge,
+    # a wrongly-filled underarm gap -- because each was diagnosed against the composite rather than
+    # against each plate's own extraction in isolation. Going back to a known baseline to characterize
+    # each plate's native keying quality on its own before trying another scoped fix. See
+    # LAYERED_COSTUME_PRODUCTION_STATUS.md, 2026-08-06.
+    clothes_screen = screen if grey_carrier else CLOTHES_KEY_COLOR
+    if extract_mode == "birefnet":
+        # Local learned matting: no hints, no key colour, no pod, no SSH.
+        # The clothes aperture is the *painted head* region, key_aperture() -- exactly as the
+        # corridorkey path derives it. Using the identity head envelope instead was a bug: that
+        # mask is dilated 97px and reaches below the bust (y~473), so the post-multiply punched a
+        # transparent hole through the dress bodice and the composite showed bare skin where the
+        # garment should be (measured 15.7% of the garment region). The grey path has no paint to
+        # derive the aperture from, so it uses the SAM head-stop mask saved by bootstrap_envelope.
+        matte_upscale = args.upscale_model if args.matte_upscale else None
+        identity_alpha_path = root / "poc:qwen2512-identity-alpha.png"
+        birefnet_extract(identity, None, identity_alpha_path, args.birefnet_model, args.birefnet_python,
+                         args.force, matte_upscale)
+        if grey_carrier:
+            envelope = load_accepted_envelope(root, carrier)
+            clothes_aperture_path = envelope["head_stop"]
+        else:
+            clothes_aperture_path = root / "masks" / f"clothes-{APERTURE_COLOR[CLOTHES_KEY_COLOR]}-aperture.png"
+            key_aperture(image_from(clothes), CLOTHES_KEY_COLOR).save(clothes_aperture_path)
+        clothes_aperture = image_from(clothes_aperture_path).convert("L")
+        clothes_alpha_path = root / "poc:qwen2512-clothes-alpha.png"
+        birefnet_extract(clothes, clothes_aperture_path, clothes_alpha_path, args.birefnet_model,
+                         args.birefnet_python, args.force, matte_upscale)
+        # Hybrid matte: BiRefNet decides shape, chroma decides whether a boundary pixel is subject
+        # at all. BiRefNet has no colour semantics, so on a chroma plate its matte swallows the
+        # spill band whole -- see production.chroma_gate(). Idempotent, so a resumed run that reads
+        # an already-gated alpha off disk gates to the same result.
+        identity_alpha = production.chroma_gate(image_from(identity_alpha_path).convert("L"),
+                                                image_from(identity), screen)
+        clothes_alpha = production.chroma_gate(image_from(clothes_alpha_path).convert("L"),
+                                               image_from(clothes), clothes_screen)
+        save_png(identity_alpha, identity_alpha_path)
+        save_png(clothes_alpha, clothes_alpha_path)
+        aperture_left = 0  # post-multiplied, so the aperture is transparent by construction
+    else:
+        identity_raw_hint, identity_hint = plate_hints(identity, root / "masks", "identity")
+        clothes_raw_hint, clothes_hint = plate_hints(clothes, root / "masks", "clothes", CLOTHES_KEY_COLOR)
+        identity_alpha = extract(server, identity, identity_raw_hint, identity_hint, "blue",
+                                 "poc:qwen2512-identity", ssh_target, int(ssh_port), root)
+        # The clothes plate's painted aperture must be keyed away; the identity plate has no paint.
+        clothes_aperture = key_aperture(image_from(clothes), CLOTHES_KEY_COLOR)
+        save_png(clothes_aperture, root / "masks" / f"clothes-{APERTURE_COLOR[CLOTHES_KEY_COLOR]}-aperture.png")
+        clothes_alpha = extract(server, clothes, clothes_raw_hint, clothes_hint, CLOTHES_KEY_COLOR,
+                                "poc:qwen2512-clothes", ssh_target, int(ssh_port), root, clothes_aperture)
+        aperture_left = sum(ImageChops.multiply(clothes_alpha, clothes_aperture).histogram()[128:])
+    report(root, "extract", [*alpha_checks(carrier, identity, identity_alpha, "identity", screen=screen),
+                             *alpha_checks(clothes_carrier if extract_mode == "corridorkey" else carrier,
+                                           clothes, clothes_alpha, "clothes", clothes_aperture,
+                                           clothes_screen),
                              # A painted head surviving here would cover the skin plate underneath.
                              {"name": "clothes_aperture_keyed_away", "passed": aperture_left < 500,
                               "detail": aperture_left}])
@@ -1372,12 +2098,13 @@ def main():
     hair_hints = sam_hints(server, identity, ["hair"], "cover-story/qwen2512-skin-head-clothes/hair", work)
     hair_hint = root / "masks" / "identity-hair-sam.png"
     save_png(hair_hints[0], hair_hint)
-    skin_rgba, hair_rgba = production.split_head_layers(identity, identity_alpha, hair_hints[0], "blue")
-    clothes_rgba = production.segment_source(clothes, clothes_alpha, CLOTHES_KEY_COLOR)
+    skin_rgba, hair_rgba = production.split_head_layers(identity, identity_alpha, hair_hints[0], screen)
+    clothes_rgba = production.segment_source(clothes, clothes_alpha, clothes_screen)
     save_png(skin_rgba, root / "identity-skin-rgba.png")
     save_png(hair_rgba, root / "identity-hair-rgba.png")
     save_png(clothes_rgba, root / "clothes-rgba.png")
-    background = Image.new("RGBA", image_from(carrier).size, (44, 48, 58, 255))
+    background = Image.new("RGBA", image_from(carrier).size,
+                           (90, 92, 95, 255) if grey_carrier else (44, 48, 58, 255))
     # background, skin, clothing, hair -- production.compose()'s order, which this PoC prototypes.
     # Hair goes on top so it falls over the garment's shoulders; putting the garment last buries
     # it. No effect on this run (the hair stops above the neckline, so the swap moved 0 px), which
@@ -1386,25 +2113,58 @@ def main():
     composite = Image.alpha_composite(composite, clothes_rgba)
     composite = Image.alpha_composite(composite, hair_rgba)
     save_png(composite, root / "composite.png")
+    # The gate that would have caught the aperture bug: skin visible where the garment should be.
+    # The birefnet extract path once used the identity head envelope as the clothes aperture; that
+    # mask reaches below the bust, so the post-multiply punched a hole through the dress bodice and
+    # the composite showed 15.7% of its garment region as bare skin. Coverage is the cheapest
+    # visual proxy that separates "mechanically fine" from "visibly broken".
+    garment_region = image_from(envelope["clothes_mask"]).convert("L").point(lambda v: 255 if v > 127 else 0)
+    comp_r, comp_g, comp_b = composite.convert("RGB").split()
+    skin_mask = ImageChops.multiply(ImageChops.multiply(
+        ImageChops.subtract(comp_r, comp_g).point(lambda v: 255 if v > 0 else 0),
+        ImageChops.subtract(comp_g, comp_b).point(lambda v: 255 if v > 0 else 0)),
+        ImageChops.multiply(comp_r.point(lambda v: 255 if v > 80 else 0),
+                            ImageChops.subtract(comp_r, comp_b).point(lambda v: 255 if v > 20 else 0)))
+    skin_in_garment = sum(ImageChops.multiply(skin_mask, garment_region).histogram()[1:])
+    garment_area = max(1, garment_region.width * garment_region.height)
+    region_fraction = skin_in_garment / max(1, sum(garment_region.histogram()[1:]))
+    # The second visual proxy, added 2026-08-08: a coloured halo around the figure. Every
+    # mechanical check passed on a composite with a pronounced blue hair halo and a green dress
+    # fringe, because nothing measured edge *colour*. Per layer, not on the composite, since the
+    # composite's own opaque background would swamp the edge band.
+    fringes = [("identity-skin", skin_rgba, screen), ("identity-hair", hair_rgba, screen),
+               ("clothes", clothes_rgba, clothes_screen)]
+    report(root, "composite", [
+        {"name": "no_skin_in_garment_region", "passed": region_fraction < 0.05,
+         "detail": round(region_fraction, 4)},
+        *[{"name": f"no_screen_fringe_{name}",
+           "passed": production.fringe_fraction(layer, layer_screen) < production.FRINGE_LIMIT,
+           "detail": {"screen": layer_screen,
+                      "fraction": round(production.fringe_fraction(layer, layer_screen), 4),
+                      "limit": production.FRINGE_LIMIT}}
+          for name, layer, layer_screen in fringes],
+    ])
     (root / "poc.json").write_text(json.dumps({
         "version": 1, "run_id": POC_RUN_ID, "carrier_model": production.CARRIER_MODEL, "edit_model": production.EDIT_MODEL,
         "carrier_dimensions": list(image_from(carrier).size),
+        "recipe": {"carrier": "grey" if grey_carrier else "chroma", "clothes": clothes_mode, "extract": extract_mode},
         # Per-layer, not per-run: the garment keys against its outfit's catalog key_color while
         # skin and identity stay on the carrier's own screen.
-        "screen": {"identity": "blue", "clothes": CLOTHES_KEY_COLOR},
-        "carrier_positive_prompt": CARRIER_PROMPT, "carrier_negative_prompt": CARRIER_NEGATIVE,
-        "alpha_policy": "CorridorKey alpha only; RGB preserved from each source",
-        "hint_policy": "blue-dominance hint derived from each plate, never from the carrier",
+        "screen": {"identity": screen, "clothes": clothes_screen},
+        "carrier_positive_prompt": GREY_CARRIER_PROMPT if grey_carrier else CARRIER_PROMPT,
+        "carrier_negative_prompt": CARRIER_NEGATIVE,
+        "alpha_policy": ("BiRefNet alpha (local matting); RGB preserved from each source" if extract_mode == "birefnet"
+                          else "CorridorKey alpha only; RGB preserved from each source"),
+        "hint_policy": "none (matting needs no hint)" if extract_mode == "birefnet"
+                        else "blue-dominance hint derived from each plate, never from the carrier",
         "carrier_reference_hints": {name: str(path) for name, path in hints.items()},
-        "hints": {"identity": [str(identity_raw_hint), str(identity_hint)],
-                  "clothes": [str(clothes_raw_hint), str(clothes_hint)]},
         "envelope": {name: str(path) for name, path in envelope.items()},
         "envelope_status": json.loads((root / "masks" / "envelope-status.json").read_text(encoding="utf-8")),
         "checks": json.loads((root / "checks.json").read_text(encoding="utf-8")),
         "performer_source": str(performer), "preprocess_prompt": PREPROCESS_PROMPT,
-        "sequence": ["carrier", "performer preprocess (mask-free)", "full-body skin recolor (mask-free)",
-                     "drift check", "head identity transfer", "carrier-based clothing",
-                     "alpha extraction", "composite"],
+        "sequence": ["carrier", "performer preprocess (mask-free)", "head identity transfer",
+                      ("garment T2I + CatVTON try-on" if clothes_mode == "viton" else "carrier-based clothing"),
+                      "alpha extraction", "composite"],
         "outputs": [p.name for p in sorted(root.glob("*.png"))],
     }, indent=2) + "\n", encoding="utf-8")
     print(root)
