@@ -2,9 +2,11 @@
 """Run the carrier -> full-body skin -> head identity -> clothing PoC."""
 
 import argparse
+import hashlib
 import json
 import os
 import re
+import shutil
 import tempfile
 from pathlib import Path
 import time
@@ -266,7 +268,15 @@ HINT_DILATION = 9
 # has to cover in the composite; see head_stop_region() for why that subtraction is clipped at the
 # neck base rather than simply dilated less.
 IDENTITY_SAM_PROMPT = "head, hair, face, ears, neck, clavicles, shoulders and upper chest"
-CLOTHES_STOP_SAM_PROMPT = "head, face, ears and neck"
+# Head only -- deliberately NOT the neck. head_stop_region() cuts the forbidden zone off at the
+# bottom of *this* region's bbox, so including the neck here put the cutoff at the neck base and
+# made the neck unpaintable, which is why every run through 2026-08-08 produced a boat neckline
+# with a flat horizontal cut and no collar could exist at any prompt or garment reference. The
+# function's own docstring already said it "must stop at the neck base so the garment keeps its
+# shoulders and collar" -- the prompt contradicted the intent. With the head alone the cutoff
+# lands at the chin, the neck becomes paintable, and the 97px dilation still protects the skull
+# sideways and upward against CLOTHES_PROMPT's forbidden bonnet.
+CLOTHES_STOP_SAM_PROMPT = "head, face and ears"
 IDENTITY_DILATION = 97
 SUPPORT_DILATION = 97
 CLOTHES_STOP_DILATION = 97
@@ -588,6 +598,38 @@ def run_viton(server, carrier, garment, envelope, root, work, force, tone="light
     return clothes
 
 
+# Matte cache, keyed on the source image's own bytes and shared across runs. The aligned performer
+# is deterministic for a given performer and pose, so without this every run re-derives an identical
+# matte -- measured at ~2 min of CPU on the dev VM, on the critical path of every single run, and
+# ~30 min across a 4-performer x 4-pose sweep. Lives outside the repo so it is never committed and
+# survives output directories being deleted.
+MATTE_CACHE = Path.home() / ".cache" / "cover-story" / "mattes"
+
+
+def cached_matte(source, output, model=None, python=None, upscale=None):
+    """birefnet_extract(), but reused across runs when the source bytes are identical.
+
+    Content-addressed rather than path-addressed: two runs write performer-aligned.png to different
+    output directories, but the same performer in the same pose produces byte-identical files, so
+    the hash is what makes the cache hit. The model and upscale choice are part of the key -- a
+    different matting model must not silently return the previous one's alpha."""
+    if output.is_file():
+        return output
+    key = hashlib.sha256(Path(source).read_bytes())
+    key.update(str(model or DEFAULT_BIREFNET_MODEL).encode())
+    key.update(str(upscale or "").encode())
+    cached = MATTE_CACHE / f"{key.hexdigest()[:16]}.png"
+    if not cached.is_file():
+        MATTE_CACHE.mkdir(parents=True, exist_ok=True)
+        birefnet_extract(source, None, cached, model or DEFAULT_BIREFNET_MODEL,
+                         python or DEFAULT_BIREFNET_PYTHON, False, upscale)
+    else:
+        print(f"  matte: cache hit {cached.name}", flush=True)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(cached, output)
+    return output
+
+
 def birefnet_extract(source, aperture, output, model=DEFAULT_BIREFNET_MODEL,
                      python=DEFAULT_BIREFNET_PYTHON, force=False, upscale=None):
     """Local matting extraction: alpha = BiRefNet(source) x (1 - aperture), run in the standalone
@@ -710,11 +752,18 @@ def envelope_overlay(carrier, head_mask, clothes_mask):
 
 
 def head_stop_region(stop):
-    """The region the clothing edit may never touch. Subtracting the head must be generous
-    sideways and upward — otherwise the dilated person envelope leaves a halo around the skull
-    and CLOTHES_PROMPT's forbidden bonnet becomes paintable — but must stop at the neck base so
-    the garment keeps its shoulders and collar. The cutoff row comes from SAM, so it stays
-    pose-aware rather than a fixed center-pose constant."""
+    """The region the clothing edit may never touch. Deliberately anisotropic: generous sideways and
+    upward — otherwise the dilated person envelope leaves a halo around the skull and
+    CLOTHES_PROMPT's forbidden bonnet becomes paintable — but cut off at the chin so the neck stays
+    paintable and a collar can exist. The cutoff row comes from SAM, so it stays pose-aware rather
+    than a fixed center-pose constant.
+
+    This is one half of the edit-mask / transparency-aperture split. The other half needs no code:
+    the aperture is *colour*-derived (key_aperture() finds the carrier's paint on the finished
+    plate), so it follows whatever the model actually painted. Paint a collar over the neck and that
+    region is garment, hence opaque; leave it unpainted and it stays carrier paint, hence keyed
+    transparent so the skin layer shows through. Deep necklines and high collars both become
+    reachable from the same mask, which is what the catalog asks for."""
     box = stop.getbbox()
     if box is None:
         raise RuntimeError(f"SAM returned an empty '{CLOTHES_STOP_SAM_PROMPT}' region")
@@ -1020,8 +1069,14 @@ def compose_identity(server, aligned, carrier, root, work, screen="blue",
     composite = root / "identity-composite.png"
     preserve_path = root / "masks" / "identity-preserved-head.png"
     toned_body_path = root / "identity-toned-body.png"
-    if composite.is_file() and preserve_path.is_file() and toned_body_path.is_file():
-        return composite, preserve_path, toned_body_path
+    # The plate the transplant actually pastes from, which is the rebackgrounded aligned image and
+    # no longer performer-aligned.png itself. identity_composite_checks() asserts bit-exactness
+    # against it, so returning the wrong one measures the head against a plate it was never built
+    # from -- the same class of mistake as checking identity against skin.png on 2026-08-05.
+    transplant_source = root / "performer-aligned-rebackgrounded.png"
+    if (composite.is_file() and preserve_path.is_file() and toned_body_path.is_file()
+            and transplant_source.is_file()):
+        return composite, preserve_path, toned_body_path, transplant_source
     head, head_box = sam_mask(server, aligned, HEAD_SAM_PROMPT, work, f"{SAM_PREFIX}/head")
     preserve = dilate(head, production.NECK_OVERLAP)
     save_png(preserve, preserve_path)
@@ -1033,12 +1088,12 @@ def compose_identity(server, aligned, carrier, root, work, screen="blue",
     # unnoticed; required the moment the preprocess stage renders her on grey to keep blue spill
     # out of her hair edge. Local matting, no pod. See production.rebackground().
     aligned_alpha_path = root / "masks" / "performer-aligned-alpha.png"
-    birefnet_extract(aligned, None, aligned_alpha_path, birefnet_model, birefnet_python)
+    cached_matte(aligned, aligned_alpha_path, birefnet_model, birefnet_python)
     aligned_image = production.rebackground(image_from(aligned),
                                             image_from(aligned_alpha_path).convert("L"),
                                             image_from(aligned).getpixel((8, 8)),
                                             carrier_image.getpixel((8, 8)))
-    save_png(aligned_image, root / "performer-aligned-rebackgrounded.png")
+    save_png(aligned_image, transplant_source)
     performer_tone = sample_face_tone(aligned_image)
     # screen_foreground()'s screen= names the *background* colour to key out (blue, for the
     # carrier) -- unrelated to deterministic_skin_recolor()'s paint_channel=, which names the
@@ -1052,7 +1107,7 @@ def compose_identity(server, aligned, carrier, root, work, screen="blue",
     composed = production.head_transplant(aligned_image, toned_body, preserve)
     save_png(composed, composite)
     print(f"  compose: performer tone {performer_tone}", flush=True)
-    return composite, preserve_path, toned_body_path
+    return composite, preserve_path, toned_body_path, transplant_source
 
 
 def silhouette_checks(candidate, carrier, screen="blue"):
@@ -1150,22 +1205,38 @@ def harmonize_skin(server, source, preserve_path, carrier, root, work, force, sc
     return output, mask_path
 
 
+# Saturation spread, measured by production.chroma_spread() over the body mask, on real plates:
+# the deterministic recolor sits at 4.37 and the performer's own bare body at 10.93. The floor is
+# placed between them, nearer the flat end, so the gate demands real progress without requiring a
+# carrier to fully match a photograph.
+#
+# These numbers are specific to *this* measurement -- PIL saturation over the whole body mask. An
+# earlier version of this gate used 4.0, carried over from a numpy HSV measurement taken over a
+# torso *crop* where flat read 2.0 and real skin 9.9. On this scale 4.0 sits *below* the flat
+# baseline, so the gate passed before the stage had run: it could not fail. Re-derive the threshold
+# whenever the measurement changes; do not port it across.
+SKIN_SPREAD_FLOOR = 7.0
+
+
 def skin_blend_checks(before, after, mask, carrier, screen="blue"):
     """Harmonisation must add chromatic variation without moving the body.
 
-    The spread number is the whole point: mean tone was already correct before this stage, so a
-    check on mean would pass on the flat plate this exists to fix. Real skin measured 9.9 against
-    the deterministic recolor's 2.0, so 4.0 sits clear of the flat case without demanding the edit
-    fully reach a different performer's reference."""
+    Spread is the whole point: the *mean* tone was already correct before this stage, so a check on
+    mean would pass on exactly the flat plate this exists to fix."""
     region = image_from(mask).convert("L").point(lambda value: 255 if value > 127 else 0)
     was = production.chroma_spread(image_from(before), region)
     now = production.chroma_spread(image_from(after), region)
+    gained = now["saturation_spread"] - was["saturation_spread"]
     return [
         *masked_edit_checks(before, after, mask),
         *silhouette_checks(after, carrier, screen),
         {"name": "skin_gained_chromatic_variation",
-         "passed": now["saturation_spread"] >= 4.0,
-         "detail": {"before": was, "after": now, "floor": 4.0}},
+         # Both an absolute floor and a real move from where this run started: an already-varied
+         # input must not coast through on the floor alone, and a flat one must not pass by
+         # wobbling a fraction of a point.
+         "passed": now["saturation_spread"] >= SKIN_SPREAD_FLOOR and gained >= 1.0,
+         "detail": {"before": was, "after": now, "gained": round(gained, 2),
+                    "floor": SKIN_SPREAD_FLOOR, "real_skin_reference": 10.93}},
     ]
 
 
@@ -1247,7 +1318,7 @@ def remote_bootstrap(ssh, ssh_port, ssh_target):
 
 
 def preflight(server, ssh_target, ssh_port, performer, edit_model, corridor_root,
-              clothes_mode="qwen", extract_mode="corridorkey"):
+              clothes_mode="qwen", extract_mode="corridorkey", matte_upscale=False):
     """Fail on a misconfigured instance before any GPU time is spent. Without this the SSH and
     CorridorKey settings are only exercised after four Qwen generations have already run.
 
@@ -1294,7 +1365,7 @@ def preflight(server, ssh_target, ssh_port, performer, edit_model, corridor_root
             # multi-GB download does not run for the chroma recipe's preflight.
             subprocess.run([*ssh, "mkdir -p /workspace/runpod-slim && touch /workspace/runpod-slim/install-catvton"],
                            timeout=30, check=False)
-        if args.matte_upscale:
+        if matte_upscale:
             # Same flag-gating for the GPU matting venv (bootstrap step 8). Matting still runs
             # locally -- this only prepares and *verifies* the pod-side environment, so the
             # 25m30s-per-plate CPU cost has somewhere faster to go once the runner learns to
@@ -1414,6 +1485,9 @@ def self_test():
     head_mask, clothes_mask = envelope_masks(person_region, broad_head, narrow_head)
     assert ImageChops.multiply(clothes_mask, head_mask).getbbox() is not None, "envelopes must not butt together"
     assert head_mask.getpixel((200, 190)) and clothes_mask.getpixel((200, 190)), "shoulder junction must be in both"
+    # The neck, just below the stop region's chin line, must be paintable or no collar can exist --
+    # the defect that survived every prompt and garment-reference change through 2026-08-08.
+    assert clothes_mask.getpixel((200, 140)), "the neck must be paintable so a collar can exist"
     assert clothes_mask.getpixel((110, 400)) and not person_region.getpixel((110, 400)), "garment bulk must clear the body"
     # The dilated person envelope leaves a halo around the skull; the clothing edit must not own it,
     # or CLOTHES_PROMPT's forbidden bonnet becomes paintable.
@@ -1688,6 +1762,29 @@ def self_test():
     assert "high collar" in rendered and "image 2" in rendered, \
         "the garment-ref prompt must carry both the image reference and the text description"
 
+    # cached_matte(): content-addressed, so an identical plate written to a different output
+    # directory hits the cache, and a different model does not.
+    matte_src = root / "matte-src.png"
+    save_png(Image.new("RGB", (16, 16), (10, 120, 30)), matte_src)
+    calls = []
+    real_extract = globals()["birefnet_extract"]
+    globals()["birefnet_extract"] = lambda src, ap, out, *a, **k: (
+        calls.append(out), save_png(Image.new("L", (16, 16), 200), out))
+    try:
+        cache_home = MATTE_CACHE
+        globals()["MATTE_CACHE"] = root / "matte-cache"
+        first, second = root / "a" / "m.png", root / "b" / "m.png"
+        cached_matte(matte_src, first)
+        cached_matte(matte_src, second)
+        assert len(calls) == 1, "identical source bytes in a new directory must reuse the cache"
+        assert second.is_file(), "the cached matte must be copied into the run directory"
+        assert image_from(second).convert("L").getpixel((0, 0)) == 200, "and must be the cached alpha"
+        cached_matte(matte_src, root / "c" / "m.png", model="other-model.onnx")
+        assert len(calls) == 2, "a different matting model must not return the previous alpha"
+    finally:
+        globals()["birefnet_extract"] = real_extract
+        globals()["MATTE_CACHE"] = cache_home
+
     # --grey-preprocess: the preprocessed plate and the carrier no longer share a backdrop, so the
     # checks must key each with its own screen. Sharing one -- the bug class that cost the 08-07
     # session several GPU cycles -- makes the carrier's blue read as *figure* under a grey key.
@@ -1856,7 +1953,8 @@ def main():
 
     print("[preflight]", flush=True)
     report(root, "preflight", preflight(server, ssh_target, int(ssh_port), performer,
-                                        edit_model, corridorkey_root, clothes_mode, extract_mode))
+                                        edit_model, corridorkey_root, clothes_mode, extract_mode,
+                                        args.matte_upscale))
     if done("preflight"):
         return print(root)
 
@@ -1941,10 +2039,10 @@ def main():
     # compose_identity(). Checked before spending GPU on the seam smoothing below, so a geometry
     # problem fails fast rather than after an edit call that would only inherit it.
     aligned = aligned_performer(server, preprocessed, carrier, root, work, preprocess_screen, screen)
-    composite, preserved_head, toned_body = compose_identity(server, aligned, carrier, root, work, screen,
+    composite, preserved_head, toned_body, transplant_source = compose_identity(server, aligned, carrier, root, work, screen,
                                                           args.birefnet_model, args.birefnet_python)
     report(root, "identity-composite",
-           identity_composite_checks(aligned, carrier, toned_body, composite, preserved_head, screen))
+           identity_composite_checks(transplant_source, carrier, toned_body, composite, preserved_head, screen))
     # A small, local touch-up on the join; see smooth_seam(). masked_edit_checks() already proves
     # outside its (wider) seam mask is bit-exact vs the composite, and the composite's own check
     # above already proved it bit-exact vs aligned/toned_body out to the narrower raw blend boundary

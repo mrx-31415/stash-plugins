@@ -265,6 +265,108 @@ Three consequences:
 4.4 GB RSS with 1.8 GB headroom; 2048² is 4× the activations and would OOM. It would also face the
 same source-resolution ceiling. Revisit only on a GPU box, or with tiling.
 
+## Pod session 2, 2026-08-08 — the collar works
+
+**Run E (`pod-20260808b-E-masksplit`) produced a proper stand collar — the first in the project's
+history.** Plus gloves, shoes, corset seams, and **0.32% paint remnant**, the best of any run
+(B 0.46%, 08-07 3.6%). All stages through `[clothes]` green.
+
+| feature | 08-07 | run B | **run E** |
+|---|---|---|---|
+| high collar | no | no | **yes** |
+| gloves / shoes / seams | no | yes | yes |
+| paint remnant | 3.6% | 0.46% | **0.32%** |
+
+The fix was one word. `CLOTHES_STOP_SAM_PROMPT` was `"head, face, ears and neck"`, and
+`head_stop_region()` cuts the forbidden zone at the bottom of *that region's* bbox — so including
+the neck put the cutoff at the neck base and made the neck unpaintable. Its own docstring already
+said it "must stop at the neck base so the garment keeps its shoulders and collar"; the prompt
+contradicted the intent. Dropping `"and neck"` moves the cutoff to the chin. The 97 px dilation
+still guards the skull sideways and upward against the forbidden bonnet — the region is anisotropic
+by design and only its downward extent was wrong.
+
+**The aperture half needed no code.** `key_aperture()` is colour-derived, so it follows what the
+model painted: a collar over the neck is garment and therefore opaque, while anything left
+unpainted stays carrier paint and keys transparent so the skin layer shows through. Deep necklines
+and high collars are now both reachable from one mask, which is what the catalog asks for.
+
+**Not run:** E's `[extract]`/`[composite]`, the denoise-1.0 skin test, run A, run D.
+
+### The blocker: BiRefNet OOMs this VM, reproducibly
+
+`[extract]` was killed twice by the kernel OOM killer at ~5.9 GB anon-rss. Diagnosed under a 4 GB
+`ulimit -v`: it fails inside BiRefNet's decoder at
+`/decoder/decoder_block1/dec_att/aspp_deforms.2/atrous_conv/Mul_8` — a deformable-convolution ASPP
+block — with `std::bad_alloc` at 2.9 GB RSS.
+
+Environment, not pipeline: 7.4 GB RAM plus 4 GB swap, but **3.3 GB of that swap is already held** by
+long-lived desktop processes (`opencode` ~350 MB, several `node`, `gnome-shell`), leaving ~740 MB.
+The matting has been running on a vanishing margin all day. `sudo` needs a password so swap cannot
+be grown. `intra_op_num_threads=1` avoids the peak but takes **>10 min per plate**, so it is not a
+workaround.
+
+**The fix is GPU matting, and it is the next thing to build.** The pod has 32 GB of VRAM idle while
+a 7.4 GB CPU box does matting on the critical path *between* GPU stages. `pod_bootstrap.sh` step 8
+already prepares the pod environment and `birefnet_ab.available_providers()` already selects CUDA
+when present; what is missing is the runner rsyncing `models/*.onnx` to the volume and invoking
+`birefnet_extract.py` over SSH, mirroring `standalone_alpha()`. This removes the OOM class, removes
+CPU time from between GPU stages, and is pure local code — no pod needed to write it.
+
+Cheap stopgap if a composite is needed before then: closing `opencode` frees ~350 MB of swap.
+
+## Pod session results, 2026-08-08
+
+**Run B — `pod-20260808-B-garmentref`, complete, every stage green. Best result the pipeline has
+produced.** Recipe: `--clothes-mode garment-ref --garment-worn --extract-mode birefnet
+--auto-accept-envelope`.
+
+| | 08-07 run | v3 baseline | **run B** |
+|---|---|---|---|
+| paint remnant | 3.6% | 0.78% | **0.46%** |
+| gloves / shoes | missing | present | **present** |
+| hair fringe | 0.218 | 0.000 | **0.000** |
+| clothes fringe | 0.402 | 0.064 | **0.000** |
+
+Both diagnoses confirmed independently: restoring the dropped description brought back gloves, shoes
+and seam structure, while **the collar stayed missing** — the one feature predicted to be
+unreachable by prompt, because it is mask geometry. The fringe thresholds were calibrated on
+historical plates and this was the first run they judged that they were not fitted to; all three
+read exactly 0.000.
+
+**Skin harmonisation — clean negative, do not retry as-is.** Measured over the body mask:
+
+| denoise | saturation spread | gained | registration |
+|---|---|---|---|
+| 0.4 | 4.41 → 4.51 | +0.10 | 0/0/0 |
+| 0.75 | 4.41 → 4.84 | +0.43 | 0/0/0 |
+| *real skin target* | *10.93* | *needs ~+6.5* | |
+
+At low denoise the model preserves what is there rather than re-colouring it, and the trend is
+nowhere near the target. **Registration held at 0/0/0 throughout**, so the masked-edit safety
+mechanism works — the failure is the regime, not the machinery.
+
+**The untested follow-up:** a masked recolor at **denoise 1.0**. The `[skin]` stage's full diffusion
+recolor *does* produce real variation; the difference is denoise, not the model. The earlier warning
+that 1.0 reproduces the abandoned repaint was about a *mask-free* edit, and there is now direct
+evidence the mask plus `SKIN_BLEND_EDGE_GUARD` holds registration. One edit to test.
+
+**Run A (`--grey-preprocess`) never ran** — the pod stopped during its carrier stage. Still
+unanswered. All its prerequisites are verified: `rebackground()` measured correct on real pod data
+(1,035,773 px corrected, max delta 37, figure untouched), and `sample_face_tone()` excludes neutral
+grey by construction (`r>g` fails).
+
+**Three bugs cost pod time, all mine, all avoidable:**
+1. `preflight()` referenced `args` — module-level function, `NameError` on first pod call. Caught at
+   `--stop-after preflight`, the cheapest possible place.
+2. `head_region_bit_exact` compared against `performer-aligned.png` after `rebackground()` changed
+   what the transplant pastes from. `compose_identity()` now returns the actual transplant source.
+3. **`pgrep -f` / `pkill -f` on a pattern matching the watching command's own command line** — twice.
+   Once killed a launcher (exit 144, relaunch silently never happened), once deadlocked a waiter
+   against itself and left the pod idle for minutes. Never do this; `drive.sh` uses neither.
+
+**Process lesson:** batch every queued run into one detached driver from the start instead of
+launching and babysitting them one at a time. Most of the wasted pod time was idle, not compute.
+
 ## Implemented 2026-08-08 (local block — no GPU, both self-tests green)
 
 New in `layered_costume_production.py`, all self-tested:
@@ -429,10 +531,30 @@ This is not a no-op even today: the two backdrops already differ, performer `(1,
 carrier `(8, 84, 168)`, i.e. 29 levels of blue across those 6,406 pixels. So it also removes a small
 pre-existing seam nobody had noticed.
 
-**Still to do for the grey path:** `production.silhouette_box()` / `screen_foreground()` are called
-on the aligned plate with the default blue screen. That is correct while her backdrop is blue; the
-moment `GREY_PREPROCESS_PROMPT` is enabled they need `screen="grey"` threaded through, which is the
-exact bug class the 08-07 session warned about. Check it *before* spending a pod cycle.
+**Screen threading — done.** `preprocess_checks()` and `aligned_performer()` now take separate
+screens for the preprocessed plate and the carrier, because the two no longer share a backdrop under
+`--grey-preprocess`. Self-tested with a negative control: keying a grey plate as blue must *fail*
+coverage, so the threading is exercised rather than merely present. (Note `screen_foreground(screen=
+"grey")` estimates the backdrop from border bands and therefore copes with a blue frame too — the
+failure only shows in the grey-plate-keyed-as-blue direction, which is why the control runs that way
+round.)
+
+**Cost this added, measured on the first pod run:** `compose_identity()` now runs a local BiRefNet
+matte of the aligned performer, ~2 min of CPU per run on this VM. Tolerable for a single PoC run;
+for a production sweep of 4 performers x 4 poses it is ~30 min of CPU on the critical path. Two
+fixes, both cheap and neither done yet:
+
+- **Cache it.** `performer-aligned.png` is deterministic for a given performer and pose, so the
+  matte only needs computing once, not once per run. This is the easy win.
+- **Or route it to the GPU** once the runner learns to call `birefnet_extract.py` over SSH; the pod
+  environment for that is already prepared by bootstrap step 8.
+
+**Bug caught on first pod contact, 2026-08-08:** `preflight()` referenced `args.matte_upscale`, but
+it is a module-level function taking explicit parameters -- `NameError` on the very first call
+against the pod. The self-tests do not cover `preflight()` because it needs a live server, so this
+class of mistake reaches the pod. It is now a proper parameter. Worth remembering that
+`--stop-after preflight` is the cheapest possible place to discover such a thing, and worth running
+first on every new pod for exactly that reason.
 
 ## Agreed plan (Phase 1 first, all of it local and GPU-free)
 
