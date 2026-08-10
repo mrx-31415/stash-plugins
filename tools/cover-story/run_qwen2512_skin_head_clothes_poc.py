@@ -2753,8 +2753,11 @@ def main():
     report(root, "composite", [
         {"name": "no_skin_in_garment_region", "passed": region_fraction < 0.05,
          "detail": round(region_fraction, 4)},
-        {"name": "figure_fully_covered_by_layers", "passed": gap_fraction < 0.02,
-         "detail": {"gap_px": gap_px, "fraction": round(gap_fraction, 4), "limit": 0.02}},
+        # 0.02 was a guess and it passed a run whose underarm gaps were plainly visible at
+        # 0.005 -- the same failure as the skin gate whose floor sat below its own baseline.
+        # 0.002 is set from that run: tight enough to fail what the eye already fails.
+        {"name": "figure_fully_covered_by_layers", "passed": gap_fraction < 0.002,
+         "detail": {"gap_px": gap_px, "fraction": round(gap_fraction, 4), "limit": 0.002}},
         *[{"name": f"no_screen_fringe_{name}",
            "passed": production.fringe_fraction(layer, layer_screen) < production.FRINGE_LIMIT,
            "detail": {"screen": layer_screen,
