@@ -1427,7 +1427,7 @@ def harmonize_skin(server, source, preserve_path, carrier, root, work, force, sc
 SKIN_SPREAD_FLOOR = 7.0
 
 
-def skin_blend_checks(before, after, mask, carrier, screen="blue"):
+def skin_blend_checks(before, after, mask, carrier, screen="blue", preserve=None):
     """Harmonisation must add chromatic variation without moving the body.
 
     Spread is the whole point: the *mean* tone was already correct before this stage, so a check on
@@ -1436,7 +1436,22 @@ def skin_blend_checks(before, after, mask, carrier, screen="blue"):
     was = production.chroma_spread(image_from(before), region)
     now = production.chroma_spread(image_from(after), region)
     gained = now["saturation_spread"] - was["saturation_spread"]
-    return [
+    # The face is real photography and the body is recolored, so the mismatch between them is the
+    # first thing a reviewer names -- and spread alone cannot see it. A harmonised variant reached
+    # real skin's *magnitude* (59 against 55) while sitting +44 red and -1 blue from the face, i.e.
+    # the right brightness in the wrong colour. hue_spread is the part that catches that.
+    after_image = image_from(after)
+    tone = production.face_body_tone(
+        after_image, screen_foreground(after_image, screen),
+        image_from(preserve).convert("L").point(lambda v: 255 if v > 127 else 0)) if preserve else None
+    tone_checks = [] if tone is None else [
+        {"name": "face_body_tone_match",
+         "passed": (tone["magnitude"] <= production.FACE_BODY_DELTA_LIMIT
+                    and tone["hue_spread"] <= production.FACE_BODY_HUE_SPREAD_LIMIT),
+         "detail": {**tone, "limits": {"magnitude": production.FACE_BODY_DELTA_LIMIT,
+                                       "hue_spread": production.FACE_BODY_HUE_SPREAD_LIMIT},
+                    "real_skin_reference": {"delta": [18, 18, 19], "hue_spread": 1}}}]
+    return tone_checks + [
         *masked_edit_checks(before, after, mask),
         *silhouette_checks(after, carrier, screen),
         {"name": "skin_gained_chromatic_variation",
@@ -2537,7 +2552,8 @@ def main():
             tone=describe_tone(sample_face_tone(image_from(aligned))),
             control=blend_control, control_type=args.harmonize_control,
             control_strength=args.control_strength)
-        identity_checks += skin_blend_checks(identity, harmonized, blend_mask, carrier, screen)
+        identity_checks += skin_blend_checks(identity, harmonized, blend_mask, carrier, screen,
+                                            preserved_head)
         identity = harmonized
     report(root, "identity", identity_checks)
     if done("identity"):

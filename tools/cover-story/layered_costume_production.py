@@ -390,6 +390,53 @@ def head_transplant(head_source, body, head_mask, feather=HEAD_BLEND_FEATHER):
     return Image.composite(head_source, body, alpha)
 
 
+# How far the body's skin may sit from the face's, as a median RGB difference. Measured on real
+# plates: the performer's own body is (18, 18, 19) from her face -- slightly lighter, uniformly. The
+# deterministic recolor is (70, 65, 54), and a harmonised variant reached (44, 14, -1).
+FACE_BODY_DELTA_LIMIT = 70
+# The number that actually matters. Real skin's delta is the *same* in every channel, so its spread
+# is ~1: the body is a little brighter than the face and no warmer. A delta of (44, 14, -1) has the
+# same magnitude as real skin's but spread 45, and reads as a body that is the wrong *colour* rather
+# than the wrong brightness -- which is what a reviewer notices first and what a magnitude-only
+# check sails straight past.
+FACE_BODY_HUE_SPREAD_LIMIT = 12
+
+
+def skin_pixels(image):
+    """Warm skin-hued pixels: r > g > b, bright enough, and clearly warmer than it is cool.
+
+    The same heuristic sample_face_tone() uses, and it exists for the same reason: a mask of the
+    head region measures *hair*, which is dark, and a median over it returns near-black. Getting
+    that wrong turns a face/body comparison into a hair/body one that looks plausible and means
+    nothing."""
+    red, green, blue = image.convert("RGB").split()
+    return ImageChops.multiply(
+        ImageChops.multiply(ImageChops.subtract(red, green).point(lambda v: 255 if v > 0 else 0),
+                            ImageChops.subtract(green, blue).point(lambda v: 255 if v > 0 else 0)),
+        ImageChops.multiply(red.point(lambda v: 255 if v > 80 else 0),
+                            ImageChops.subtract(red, blue).point(lambda v: 255 if v > 20 else 0)))
+
+
+def face_body_tone(image, figure, head):
+    """How far the body's skin sits from the face's, in magnitude and in hue.
+
+    The face is real transplanted photography and the body is recolored, so a mismatch between them
+    is the most visible defect in the plate and the one a reviewer names first. Returns None where
+    either region has no skin to measure, rather than inventing a number from an empty mask."""
+    image = image.convert("RGB")
+    skin = skin_pixels(image)
+    face_mask = ImageChops.multiply(ImageChops.multiply(figure, head), skin)
+    body_mask = ImageChops.multiply(ImageChops.subtract(figure, head), skin)
+    if not (sum(face_mask.histogram()[1:]) and sum(body_mask.histogram()[1:])):
+        return None
+    face = [round(v) for v in ImageStat.Stat(image, face_mask).median]
+    body = [round(v) for v in ImageStat.Stat(image, body_mask).median]
+    delta = [b - f for b, f in zip(body, face)]
+    return {"face": tuple(face), "body": tuple(body), "delta": tuple(delta),
+            "magnitude": sum(abs(d) for d in delta),
+            "hue_spread": max(delta) - min(delta)}
+
+
 def chroma_spread(image, mask):
     """Saturation mean and spread (percent) over `mask` -- the quantitative stand-in for "does this
     read as real skin".
@@ -2110,6 +2157,32 @@ def self_test():
         unbounded, _ = split_head_layers(body, body_alpha, hair_hint, "blue")
         assert unbounded.getchannel("A").getpixel((30, 150)) == 255, \
             "without a bound the old whole-body behaviour is unchanged"
+        # face_body_tone(): the check a reviewer's eye applies first. Two synthetic bodies against
+        # one face -- one merely brighter, one shifted warm by the same magnitude. A magnitude-only
+        # test cannot tell them apart, and the warm one is the one that looks wrong.
+        tone_plate = Image.new("RGB", (60, 90), (0, 0, 255))
+        tone_draw = ImageDraw.Draw(tone_plate)
+        tone_draw.rectangle((20, 5, 39, 24), fill=(163, 122, 97))       # face
+        tone_draw.rectangle((20, 40, 39, 89), fill=(181, 140, 116))     # body: uniformly brighter
+        head_region = Image.new("L", (60, 90))
+        ImageDraw.Draw(head_region).rectangle((0, 0, 59, 30), fill=255)
+        even = face_body_tone(tone_plate, screen_foreground(tone_plate), head_region)
+        assert even["delta"] == (18, 18, 19), even
+        assert even["hue_spread"] <= FACE_BODY_HUE_SPREAD_LIMIT, "a uniform lift must pass"
+        tone_draw.rectangle((20, 40, 39, 89), fill=(207, 136, 96))      # same size, shifted warm
+        warm = face_body_tone(tone_plate, screen_foreground(tone_plate), head_region)
+        assert warm["magnitude"] <= FACE_BODY_DELTA_LIMIT, "magnitude alone would pass this"
+        assert warm["hue_spread"] > FACE_BODY_HUE_SPREAD_LIMIT, \
+            f"a warm-shifted body must fail on hue, not slip through on magnitude: {warm}"
+        # A head mask covers hair, which is dark; measuring it as "face" returns near-black and makes
+        # the whole comparison meaningless. skin_pixels() is what stops that.
+        ImageDraw.Draw(tone_plate).rectangle((20, 0, 39, 4), fill=(20, 18, 20))
+        assert face_body_tone(tone_plate, screen_foreground(tone_plate),
+                              head_region)["face"][0] > 100, "hair must not be measured as face"
+        assert face_body_tone(Image.new("RGB", (10, 10), (0, 0, 255)),
+                              screen_foreground(Image.new("RGB", (10, 10), (0, 0, 255))),
+                              Image.new("L", (10, 10))) is None, "no skin means no number"
+
         # chroma_spread(): must separate a one-dimensional recolor from real chromatic variation.
         # The flat case is exactly what deterministic_skin_recolor() produces -- one hue scaled by
         # brightness -- so a metric that cannot tell these two apart cannot gate skin naturalness.
