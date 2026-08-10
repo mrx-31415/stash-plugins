@@ -552,7 +552,7 @@ def identity_control(server, kind, carrier, preserve, root, work, force, outline
 
 
 def generate_carrier(server, path, work, force, prompt=CARRIER_PROMPT, negative_prompt=CARRIER_NEGATIVE,
-                     family="qwen", size=(832, 1248)):
+                     family="qwen", size=(832, 1248), clip_type=production.FLUX2_CLIP_TYPE):
     """`family` selects the generator: "qwen" is the proven carrier, "flux" the photorealism
     candidate. See production.flux_generation_graph() for why a second one is worth testing --
     the carrier's look is the one thing no downstream stage can fix.
@@ -566,7 +566,7 @@ def generate_carrier(server, path, work, force, prompt=CARRIER_PROMPT, negative_
     result = run(server, production.carrier_graph(
         family, prompt, production.seed_for("qwen2512:carrier:center"),
         "cover-story/qwen2512-skin-head-clothes/carrier", size=size, canonical=False,
-        negative_prompt=negative_prompt,
+        negative_prompt=negative_prompt, clip_type=clip_type,
     ), result_dir, 2400)
     save_png(Image.open(production.pick(result, "-raw")).convert("RGB"), path)
 
@@ -1518,7 +1518,7 @@ def remote_bootstrap(ssh, ssh_port, ssh_target):
 
 def preflight(server, ssh_target, ssh_port, performer, edit_model, corridor_root,
               clothes_mode="qwen", extract_mode="corridorkey", matte_remotely=False,
-              flux_carrier=False):
+              carrier_family="qwen"):
     """Fail on a misconfigured instance before any GPU time is spent. Without this the SSH and
     CorridorKey settings are only exercised after four Qwen generations have already run.
 
@@ -1543,6 +1543,27 @@ def preflight(server, ssh_target, ssh_port, performer, edit_model, corridor_root
                {"wanted": edit_model, "available": available})
     except Exception as error:                                      # noqa: BLE001
         record("edit_model_present", False, str(error))
+    if carrier_family == "flux2":
+        # Probe rather than assume. FLUX.2 needs a CLIPLoader type this ComfyUI may not know: its
+        # text encoder is Mistral 3 Small, not FLUX.1's T5+CLIP, and support arrived in *some*
+        # ComfyUI version -- this pod runs 0.30.2 and may predate it. Reading the enum also hands us
+        # the real type string instead of a guess. Seconds, and it happens before a ~20 GB download
+        # into an incompatible runtime.
+        try:
+            info = api(server, "/object_info/CLIPLoader", timeout=15)
+            types = list(info["CLIPLoader"]["input"]["required"]["type"][0])
+            match = next((t for t in types if "flux2" in t.lower() or "mistral" in t.lower()), None)
+            record("flux2_clip_type_supported", match is not None,
+                   {"found": match, "available": types})
+        except Exception as error:                                  # noqa: BLE001
+            record("flux2_clip_type_supported", False, str(error))
+        try:
+            info = api(server, "/object_info/UNETLoader", timeout=15)
+            available = info["UNETLoader"]["input"]["required"]["unet_name"][0]
+            record("flux2_model_present", production.FLUX2_MODEL in available,
+                   {"wanted": production.FLUX2_MODEL, "available": available})
+        except Exception as error:                                  # noqa: BLE001
+            record("flux2_model_present", False, str(error))
     if clothes_mode == "viton":
         try:
             node = api(server, f"/object_info/{CATVTON_NODE}", timeout=15)
@@ -1565,10 +1586,10 @@ def preflight(server, ssh_target, ssh_port, performer, edit_model, corridor_root
             # multi-GB download does not run for the chroma recipe's preflight.
             subprocess.run([*ssh, "mkdir -p /workspace/runpod-slim && touch /workspace/runpod-slim/install-catvton"],
                            timeout=30, check=False)
-        if flux_carrier:
+        if carrier_family in ("flux1", "flux2"):
             # ~17 GB, so it must not download for a Qwen session. Touched before remote_bootstrap()
             # so step 9 fetches it inside the same preflight that reports on it.
-            subprocess.run([*ssh, "mkdir -p /workspace/runpod-slim && touch /workspace/runpod-slim/install-flux"],
+            subprocess.run([*ssh, "mkdir -p /workspace/runpod-slim && touch /workspace/runpod-slim/install-{family}".format(family=carrier_family)],
                            timeout=30, check=False)
         if matte_remotely:
             # Bootstrap step 8 builds the GPU matting venv only when this flag exists, and step 8
@@ -2012,7 +2033,20 @@ def self_test():
     # carrier_graph(): the two generators are architecturally different, not a checkpoint swap.
     # FLUX dev is guidance-distilled, so CFG must be 1.0 and steering comes from FluxGuidance --
     # running it at Qwen's CFG 4 would produce a burnt image and look like the model was at fault.
-    flux = production.carrier_graph("flux", "a woman", 7, "pre", (832, 1248))
+    # FLUX.2: three loaders because the repack ships three files, and its text encoder is Mistral 3
+    # Small rather than T5+CLIP -- so the CLIPLoader type is whatever preflight read from the pod's
+    # own enum, never a hardcoded guess.
+    flux2 = production.carrier_graph("flux2", "a woman", 7, "pre", (832, 1248), clip_type="probed")
+    assert next(n for n in flux2.values()
+                if n["class_type"] == "CLIPLoader")["inputs"]["type"] == "probed", \
+        "the probed CLIPLoader type must reach the graph"
+    assert next(n for n in flux2.values()
+                if n["class_type"] == "UNETLoader")["inputs"]["unet_name"] == production.FLUX2_MODEL
+    assert next(n for n in flux2.values() if n["class_type"] == "KSampler")["inputs"]["cfg"] == 1.0
+    assert {"UNETLoader", "CLIPLoader", "VAELoader"} <= {n["class_type"] for n in flux2.values()}, \
+        "FLUX.2 loads model, text encoder and VAE separately"
+
+    flux = production.carrier_graph("flux1", "a woman", 7, "pre", (832, 1248))
     qwen = production.carrier_graph("qwen", "a woman", 7, "pre", (832, 1248))
     flux_sampler = next(n for n in flux.values() if n["class_type"] == "KSampler")
     qwen_sampler = next(n for n in qwen.values() if n["class_type"] == "KSampler")
@@ -2210,10 +2244,12 @@ def main():
                              "body, so the model must generate skin rather than keep the plausible "
                              "flat tone it is handed -- the regime the [skin] stage already reaches "
                              "spread 8.3 in.")
-    parser.add_argument("--carrier-model", choices=("qwen", "flux"), default="qwen",
-                        help="generator for the carrier. 'flux' is the photorealism candidate: the "
-                             "carrier's own look survives every downstream fix, so the plastic result "
-                             "may be the base model rather than anything done to it. Needs a ~17 GB "
+    parser.add_argument("--carrier-model", choices=("qwen", "flux1", "flux2"), default="qwen",
+                        help="generator for the carrier. 'flux2' is the strongest candidate -- it takes multiple "
+                             "references natively, which is the constraint every stage here is built "
+                             "around (see the reference-collapse finding in STATUS.md), and its look "
+                             "may fix the plastic result no downstream stage can. 'flux1' is the "
+                             "low-risk fallback that works on the current ComfyUI. Both need a large "
                              "one-time download, which preflight triggers.")
     parser.add_argument("--carrier-size", type=str, default="832x1248",
                         help="carrier canvas WxH (default 832x1248, Kontext-native). Larger then "
@@ -2310,17 +2346,21 @@ def main():
     os.environ["COVER_STORY_CORRIDORKEY_ROOT"] = corridorkey_root
 
     print("[preflight]", flush=True)
+    # preflight reads the real CLIPLoader enum from the pod; the constant is only a fallback for
+    # when the probe could not run, never an assertion that it is the right string.
+    flux2_clip_type = production.FLUX2_CLIP_TYPE
     report(root, "preflight", preflight(server, ssh_target, int(ssh_port), performer,
                                         edit_model, corridorkey_root, clothes_mode, extract_mode,
                                         bool(matte_remote) and extract_mode == "birefnet",
-                                        args.carrier_model == "flux"))
+                                        args.carrier_model))
     if done("preflight"):
         return print(root)
 
     print("[carrier]", flush=True)
     carrier = root / "carrier.png"
     generate_carrier(server, carrier, work, args.force,
-                     prompt=GREY_CARRIER_PROMPT if grey_carrier else CARRIER_PROMPT, family=args.carrier_model, size=carrier_size)
+                     prompt=GREY_CARRIER_PROMPT if grey_carrier else CARRIER_PROMPT, family=args.carrier_model, size=carrier_size,
+                     clip_type=flux2_clip_type)
     report(root, "carrier", grey_carrier_checks(carrier) if grey_carrier else carrier_checks(carrier))
     if done("carrier"):
         return print(root)

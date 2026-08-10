@@ -43,6 +43,14 @@ CARRIER_MODEL = "qwen_image_2512_fp8_e4m3fn.safetensors"
 # model, CLIP and VAE together and pod_bootstrap.sh fetches one file rather than four that must
 # agree. See flux_generation_graph() for why a second carrier model is worth having at all.
 FLUX_CARRIER_MODEL = "flux1-dev-fp8.safetensors"
+# FLUX.2 dev, Comfy-Org repackaged split files. Three, not one: its text encoder is Mistral 3 Small
+# rather than FLUX.1's T5+CLIP, so CLIPLoader needs a type this ComfyUI may not know. preflight
+# probes /object_info for that enum instead of hardcoding a guess -- FLUX2_CLIP_TYPE is the fallback
+# used when the probe cannot run, not an assertion that it is right.
+FLUX2_MODEL = "flux2_dev_fp8mixed.safetensors"
+FLUX2_TEXT_ENCODER = "mistral_3_small_flux2_fp8.safetensors"
+FLUX2_VAE = "flux2-vae.safetensors"
+FLUX2_CLIP_TYPE = "flux2"
 TEXT_ENCODER = "qwen_2.5_vl_7b_fp8_scaled.safetensors"
 VAE = "qwen_image_vae.safetensors"
 SAM_MODEL = "sam3.1_multiplex_fp16.safetensors"
@@ -855,10 +863,50 @@ def flux_generation_graph(prompt, seed, prefix, size=(1328, 1328), canonical=Tru
     return graph
 
 
+def flux2_generation_graph(prompt, seed, prefix, size=(1328, 1328), canonical=True,
+                           guidance=4.0, steps=28, clip_type=FLUX2_CLIP_TYPE):
+    """Carrier generation on FLUX.2 dev.
+
+    Worth trying above FLUX.1 for a reason specific to this pipeline rather than for image quality:
+    FLUX.2 supports multiple reference images natively. LAYERED_COSTUME_PRODUCTION_STATUS.md records,
+    over seven generations, that a mask-free Qwen edit "does not blend two references -- it returns
+    one, and the prompt decides which". Both the identity transfer and the garment-ref clothes edit
+    are built *around* that constraint, and it is why every stage here is a masked edit. A model that
+    genuinely accepts several references could simplify the construction rather than work around it.
+
+    Split into three loaders because the Comfy-Org repack ships three files and the text encoder is
+    Mistral 3 Small, not T5+CLIP. `clip_type` is passed in because preflight reads the real enum from
+    /object_info -- support arrived in some ComfyUI version and this pod may predate it, so the type
+    string is verified rather than assumed."""
+    graph = {
+        "1": {"class_type": "UNETLoader", "inputs": {"unet_name": FLUX2_MODEL, "weight_dtype": "default"}},
+        "2": {"class_type": "CLIPLoader", "inputs": {"clip_name": FLUX2_TEXT_ENCODER, "type": clip_type, "device": "default"}},
+        "3": {"class_type": "VAELoader", "inputs": {"vae_name": FLUX2_VAE}},
+        "4": {"class_type": "CLIPTextEncode", "inputs": {"text": prompt, "clip": ["2", 0]}},
+        "5": {"class_type": "FluxGuidance", "inputs": {"conditioning": ["4", 0], "guidance": guidance}},
+        "6": {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["2", 0]}},
+        "7": {"class_type": "EmptySD3LatentImage", "inputs": {"width": size[0], "height": size[1], "batch_size": 1}},
+        "8": {"class_type": "KSampler", "inputs": {
+            "model": ["1", 0], "seed": seed, "steps": steps, "cfg": 1.0, "sampler_name": "euler",
+            "scheduler": "simple", "positive": ["5", 0], "negative": ["6", 0],
+            "latent_image": ["7", 0], "denoise": 1.0}},
+        "9": {"class_type": "VAEDecode", "inputs": {"samples": ["8", 0], "vae": ["3", 0]}},
+        "10": {"class_type": "SaveImage", "inputs": {"images": ["9", 0], "filename_prefix": f"{prefix}-raw"}},
+    }
+    if canonical:
+        graph.update({
+            "11": {"class_type": "FluxKontextImageScale", "inputs": {"image": ["9", 0]}},
+            "12": {"class_type": "SaveImage", "inputs": {"images": ["11", 0], "filename_prefix": f"{prefix}-canonical"}},
+        })
+    return graph
+
+
 def carrier_graph(family, prompt, seed, prefix, size=(1328, 1328), canonical=True,
-                  negative_prompt=NEGATIVE):
+                  negative_prompt=NEGATIVE, clip_type=FLUX2_CLIP_TYPE):
     """Pick the carrier generator. Same call shape either way so the carrier stage does not branch."""
-    if family == "flux":
+    if family == "flux2":
+        return flux2_generation_graph(prompt, seed, prefix, size, canonical, clip_type=clip_type)
+    if family in ("flux", "flux1"):
         return flux_generation_graph(prompt, seed, prefix, size, canonical)
     return generation_graph(prompt, seed, prefix, size, canonical, negative_prompt)
 

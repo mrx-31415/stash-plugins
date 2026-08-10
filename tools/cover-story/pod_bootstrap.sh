@@ -251,7 +251,7 @@ fi
 #    all-in-one fp8 checkpoint, so ComfyUI's CheckpointLoaderSimple supplies model, CLIP and VAE
 #    together instead of four files that must agree.
 FLUX_CKPT=$COMFY_DIR/models/checkpoints/flux1-dev-fp8.safetensors
-if [ -f "$VOLUME/install-flux" ]; then
+if [ -f "$VOLUME/install-flux1" ]; then
     if [ -s "$FLUX_CKPT" ]; then
         say flux "checkpoint present"
     else
@@ -268,7 +268,35 @@ if [ -f "$VOLUME/install-flux" ]; then
         fi
     fi
 else
-    say flux "skipped (touch $VOLUME/install-flux for the FLUX carrier)"
+    say flux1 "skipped (touch $VOLUME/install-flux1 for the FLUX.1 carrier)"
+fi
+
+# 9b. FLUX.2 dev. Three split files, not one: its text encoder is Mistral 3 Small rather than
+#     FLUX.1's T5+CLIP, so ComfyUI must be new enough to know that CLIPLoader type. preflight probes
+#     /object_info for the enum before any of this downloads, so an incompatible runtime costs
+#     seconds rather than 20 GB.
+#
+#     Worth the extra weight for a reason specific to this pipeline: FLUX.2 takes several reference
+#     images natively, and STATUS.md's reference-collapse finding -- a mask-free Qwen edit returns
+#     one of two references rather than blending them -- is the constraint every stage here is built
+#     around.
+if [ -f "$VOLUME/install-flux2" ]; then
+    fetch() {  # url, destination; resumable, and never leaves a partial file under the real name
+        [ -s "$2" ] && return 0
+        mkdir -p "$(dirname "$2")"
+        curl -fL --continue-at - -o "$2.part" "$1" >/dev/null 2>&1 && mv "$2.part" "$2"
+    }
+    base=https://huggingface.co/Comfy-Org/flux2-dev/resolve/main/split_files
+    say flux2 "fetching dev checkpoint, Mistral text encoder and VAE (one-time, ~20 GB) ..."
+    ok=yes
+    fetch "$base/diffusion_models/flux2_dev_fp8mixed.safetensors" \
+          "$COMFY_DIR/models/diffusion_models/flux2_dev_fp8mixed.safetensors" || ok=no
+    fetch "$base/text_encoders/mistral_3_small_flux2_fp8.safetensors" \
+          "$COMFY_DIR/models/text_encoders/mistral_3_small_flux2_fp8.safetensors" || ok=no
+    fetch "$base/vae/flux2-vae.safetensors" "$COMFY_DIR/models/vae/flux2-vae.safetensors" || ok=no
+    [ "$ok" = yes ] && say flux2 "present" || fail flux2 "one or more downloads failed (partials kept)"
+else
+    say flux2 "skipped (touch $VOLUME/install-flux2 for the FLUX.2 carrier)"
 fi
 
 exit $status
