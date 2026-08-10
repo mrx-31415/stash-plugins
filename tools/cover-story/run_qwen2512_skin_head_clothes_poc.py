@@ -198,8 +198,24 @@ SKIN_BLEND_PROMPT = (
     "skin of her face and neck. Keep her pose, body shape, proportions, the background and everything "
     "outside the masked area exactly the same."
 )
-# Low enough to harmonise rather than regenerate. See harmonize_skin() for why 1.0 -- every other
-# edit in this file -- is the wrong regime for a body-shaped mask.
+# Alternative skin prompts. The default above asks the model to "blend and even out" -- then we
+# measure saturation *spread* and complain the result is uniform. We have been asking for the
+# defect. "variation" asks for the quantity actually being scored; "tone" names a target instead of
+# pointing at her face, to separate "the conditioning is too weak" from "denoise is too low".
+SKIN_BLEND_PROMPTS = {
+    "blend": SKIN_BLEND_PROMPT,
+    "variation": (
+        "Repaint the masked body as photographic skin that matches her face and neck: natural colour "
+        "variation, warmer at the knees, elbows and hands, visible pores and subsurface warmth. Not "
+        "airbrushed, not uniform, not plastic. Keep her pose, body shape, proportions, the background "
+        "and everything outside the masked area exactly the same."
+    ),
+    "tone": (
+        "Repaint the masked body as bare {tone} skin, photographic and naturally varied rather than "
+        "smooth or airbrushed. Keep her pose, body shape, proportions, the background and everything "
+        "outside the masked area exactly the same."
+    ),
+}
 SKIN_BLEND_DENOISE = 0.4
 SEAM_PROMPT = (
     "Smooth and blend the skin tone, texture and lighting across the masked area where her neck and "
@@ -244,6 +260,17 @@ GARMENT_REF_PROMPT = (
     "garment covers her torso, arms and legs completely, as the outfit requires; no painted skin may remain "
     "inside the masked region. The garment may extend beyond the body silhouette for natural cloth bulk."
 )
+# Coverage variants. The waist gap -- the painted bodice being narrower than the carrier's torso, so
+# the body shows at the sides -- is a generation failure, not a masking one: the clothes mask already
+# permits 48px past the silhouette and the prompt already permits cloth bulk. These say it two ways,
+# positively and as a prohibition, because it is not obvious which a diffusion model honours.
+CLOTHES_COVERAGE_CLAUSES = {
+    "default": "",
+    "sides": " The garment covers her sides and back completely, with no gap between the bodice and "
+             "her arms.",
+    "bulk": " The garment is cut generously and extends past her body outline on both sides with "
+            "natural cloth bulk, never narrower than her torso.",
+}
 GREY_GARMENT_REF_PROMPT = (
     "Keep image 1's head, pose, framing and medium grey background unchanged. Dress the masked body in the "
     "outfit from image 2 -- {description} -- matching image 2's colour, fabric, cut and silhouette. The "
@@ -280,6 +307,38 @@ CLOTHES_STOP_SAM_PROMPT = "head, face and ears"
 IDENTITY_DILATION = 97
 SUPPORT_DILATION = 97
 CLOTHES_STOP_DILATION = 97
+
+
+def apply_variant_dials(args):
+    """Override the geometry constants from the command line.
+
+    Every one of these is a number somebody chose once and nobody has varied since. Exposed as flags
+    rather than edited in place so a sweep can try several values in one pod session, and so each
+    output directory records which value produced it -- an unlabelled variant is indistinguishable
+    from a regression three runs later.
+
+    Set on the module rather than passed down because each is read at call time from module scope by
+    several functions. HEAD_BLEND_FEATHER is the exception and the reason this needs saying: it is a
+    *default argument* of head_transplant() and blend_zone(), bound at definition time, so setting
+    the module attribute alone would move the checks (which read it at call time) without moving the
+    blur they check. compose_identity() passes it explicitly for exactly that reason."""
+    dials = {
+        "IDENTITY_DILATION": (globals(), args.identity_dilation),
+        "SUPPORT_DILATION": (globals(), args.support_dilation),
+        "CLOTHES_STOP_DILATION": (globals(), args.clothes_stop_dilation),
+        "NECK_OVERLAP": (vars(production), args.neck_overlap),
+        "HEAD_BLEND_FEATHER": (vars(production), args.head_blend_feather),
+        "SKIN_BLEND_EDGE_GUARD": (vars(production), args.skin_blend_edge_guard),
+    }
+    changed = {}
+    for name, (namespace, value) in dials.items():
+        if value is not None and value != namespace[name]:
+            changed[name] = f"{namespace[name]} -> {value}"
+            namespace[name] = value
+    if changed:
+        for name, move in changed.items():
+            print(f"  dial     {name:24s} {move}", flush=True)
+    return changed
 # Generous: these catch a reframe or a redrawn background, not VAE round-trip noise.
 DRIFT_LIMIT_PX = 16
 DRIFT_LIMIT_BACKGROUND = 24.0
@@ -1183,7 +1242,11 @@ def compose_identity(server, aligned, carrier, root, work, screen="blue",
     toned_body = production.deterministic_skin_recolor(carrier_image, body_foreground, performer_tone,
                                                         paint_channel="green")
     save_png(toned_body, toned_body_path)
-    composed = production.head_transplant(aligned_image, toned_body, preserve)
+    # Feather passed explicitly: it is a *default argument* of head_transplant(), bound at
+    # definition time, so --head-blend-feather would otherwise move the checks that read it at
+    # call time without moving the blur they are checking.
+    composed = production.head_transplant(aligned_image, toned_body, preserve,
+                                          production.HEAD_BLEND_FEATHER)
     save_png(composed, composite)
     print(f"  compose: performer tone {performer_tone}", flush=True)
     return composite, preserve_path, toned_body_path, transplant_source
@@ -1249,8 +1312,55 @@ def identity_composite_checks(aligned, carrier, toned_body, candidate, preserve_
     ]
 
 
+def describe_tone(rgb):
+    """A words-not-numbers skin tone, for prompts that name a target instead of pointing at her face.
+
+    The catalog works in tone *groups* (light/medium/dark) rather than RGB because that is what a
+    text encoder can act on; this maps a sampled face tone onto the same vocabulary so a prompt
+    variant and the catalog stay describable in the same terms."""
+    value = max(rgb)
+    if value > 200:
+        return "fair"
+    if value > 150:
+        return "light warm"
+    if value > 100:
+        return "medium"
+    return "deep"
+
+
+def control_image(server, carrier, control_type, distort, root, work):
+    """A ControlNet input derived from the carrier, so an edit can be told the target geometry.
+
+    `distort` scales it vertically before use, and exists to make a null interpretable. On
+    2026-08-04 three control runs at strength 1.0 showed no effect and "the ControlNet is inert" was
+    nearly written up as fact -- but those controls described what the model would have drawn anyway,
+    so a working mechanism and a dead one produce identical output. A deliberately distorted control
+    that the output *follows* is the cheap proof the path is live; one that it ignores means the
+    control is doing nothing, whatever the strength says."""
+    if control_type == "none":
+        return None
+    path = root / "masks" / f"control-{control_type}{'' if distort == 1.0 else f'-d{distort:g}'}.png"
+    if not path.is_file():
+        graph = (production.pose_graph(upload_image(server, carrier, subfolder=SAM_PREFIX),
+                                       f"{SAM_PREFIX}/pose")
+                 if control_type == "openpose" else
+                 production.canny_graph(upload_image(server, carrier, subfolder=SAM_PREFIX),
+                                        f"{SAM_PREFIX}/canny"))
+        result_dir = Path(tempfile.mkdtemp(prefix=f"{control_type}-", dir=work))
+        image = Image.open(production.pick(run(server, graph, result_dir, 600), "")).convert("RGB")
+        if distort != 1.0:
+            squashed = image.resize((image.width, max(1, round(image.height * distort))),
+                                    Image.Resampling.LANCZOS)
+            canvas = Image.new("RGB", image.size, (0, 0, 0))
+            canvas.paste(squashed, (0, 0))
+            image = canvas
+        save_png(image, path)
+    return path
+
+
 def harmonize_skin(server, source, preserve_path, carrier, root, work, force, screen="blue",
-                   denoise=SKIN_BLEND_DENOISE):
+                   denoise=SKIN_BLEND_DENOISE, prompt=SKIN_BLEND_PROMPT, tone=None,
+                   control=None, control_type="canny", control_strength=3.0):
     """Composite first, then let a masked edit harmonise it -- the same mechanism smooth_seam()
     already uses on the neck band, applied to the whole body.
 
@@ -1278,9 +1388,11 @@ def harmonize_skin(server, source, preserve_path, carrier, root, work, force, sc
         production.erode(screen_foreground(image_from(carrier), screen), production.SKIN_BLEND_EDGE_GUARD),
         dilate(preserve, production.NECK_OVERLAP))
     save_png(body, mask_path)
-    edit(server, source, SKIN_BLEND_PROMPT, mask_path, None,
-         production.seed_for("qwen2512:identity-skin-blend"), f"{SAM_PREFIX}/identity-skin-blend",
-         output, work, force, denoise=denoise)
+    edit(server, source, prompt.format(tone=tone) if "{tone}" in prompt else prompt,
+         mask_path, None, production.seed_for("qwen2512:identity-skin-blend"),
+         f"{SAM_PREFIX}/identity-skin-blend", output, work, force,
+         control=control, control_type=control_type, control_strength=control_strength,
+         denoise=denoise)
     return output, mask_path
 
 
@@ -1841,6 +1953,48 @@ def self_test():
     assert "high collar" in rendered and "image 2" in rendered, \
         "the garment-ref prompt must carry both the image reference and the text description"
 
+    # Variant dials. apply_variant_dials() writes module attributes, so the test restores them.
+    class _Dials:
+        identity_dilation = support_dilation = clothes_stop_dilation = None
+        neck_overlap = 40
+        head_blend_feather = 12
+        skin_blend_edge_guard = None
+    before = (production.NECK_OVERLAP, production.HEAD_BLEND_FEATHER)
+    try:
+        moved = apply_variant_dials(_Dials())
+        assert production.NECK_OVERLAP == 40 and production.HEAD_BLEND_FEATHER == 12
+        assert "NECK_OVERLAP" in moved and "IDENTITY_DILATION" not in moved, \
+            "only dials actually given a value may move"
+        # The trap this exists for: head_transplant()/blend_zone() bind HEAD_BLEND_FEATHER as a
+        # *default argument* at definition time, so moving the module attribute alone changes the
+        # checks that read it at call time without changing the blur they check. compose_identity()
+        # must therefore pass it explicitly.
+        head = Image.new("L", (40, 40))
+        ImageDraw.Draw(head).rectangle((10, 10, 29, 29), fill=255)
+        wide = production.head_transplant(Image.new("RGB", (40, 40), (255, 0, 0)),
+                                          Image.new("RGB", (40, 40), (0, 0, 255)), head,
+                                          production.HEAD_BLEND_FEATHER)
+        narrow = production.head_transplant(Image.new("RGB", (40, 40), (255, 0, 0)),
+                                            Image.new("RGB", (40, 40), (0, 0, 255)), head, 1)
+        assert wide.getpixel((10, 20)) != narrow.getpixel((10, 20)), \
+            "feather must actually reach head_transplant, not just the module attribute"
+    finally:
+        production.NECK_OVERLAP, production.HEAD_BLEND_FEATHER = before
+
+    # Prompt variants must keep the placeholders their call sites format.
+    for name, template in SKIN_BLEND_PROMPTS.items():
+        rendered = template.format(tone="light warm") if "{tone}" in template else template
+        assert "{" not in rendered, f"skin prompt {name} has an unfilled placeholder"
+        assert "outside the masked area" in rendered, f"skin prompt {name} must protect the mask"
+    assert "variation" in SKIN_BLEND_PROMPTS["variation"], "the variation prompt must ask for variation"
+    assert "even out" in SKIN_BLEND_PROMPTS["blend"], "the default still asks for uniformity, on purpose"
+    for name, clause in CLOTHES_COVERAGE_CLAUSES.items():
+        rendered = GARMENT_REF_PROMPT.format(aperture="blue", screen="green",
+                                             description=GARMENT_DESCRIPTION) + clause
+        assert "{" not in rendered, f"coverage clause {name} broke the template"
+    assert CLOTHES_COVERAGE_CLAUSES["default"] == "", "the default must change nothing"
+    assert describe_tone((235, 220, 210)) == "fair" and describe_tone((80, 60, 50)) == "deep"
+
     # remote_matte_plan(): the remote path cannot be exercised without a pod, but everything except
     # the execution can be, and a malformed command found on the pod costs GPU time -- preflight()
     # shipped a NameError on 2026-08-08 that only a real pod call caught.
@@ -1981,6 +2135,51 @@ def main():
                              "same-resolution control. Off by default: proven on a head crop, not "
                              "yet on a whole plate.")
     parser.add_argument("--upscale-model", type=Path, default=DEFAULT_UPSCALE_MODEL)
+    # --- variant dials: geometry ---------------------------------------------------------
+    parser.add_argument("--neck-overlap", type=int,
+                        help="how far the head transplant reaches past the head (default 15). Larger "
+                             "brings more of her REAL neck and chest across, so less of the visible "
+                             "body is the flat deterministic recolor. Needs her body aligned to the "
+                             "carrier's to be worth much -- see --preprocess-control.")
+    parser.add_argument("--identity-dilation", type=int, help="identity edit envelope (default 97)")
+    parser.add_argument("--support-dilation", type=int,
+                        help="clothes edit envelope (default 97). How far past the body silhouette "
+                             "the garment may be painted.")
+    parser.add_argument("--clothes-stop-dilation", type=int,
+                        help="forbidden head zone (default 97). Smaller lets a collar rise closer to "
+                             "the jaw; too small and the skull halo becomes paintable.")
+    parser.add_argument("--head-blend-feather", type=int, help="neck/shoulder seam softness (default 8)")
+    parser.add_argument("--skin-blend-edge-guard", type=int,
+                        help="how far harmonize_skin()'s mask is held off the silhouette (default 6)")
+    # --- variant dials: prompts ----------------------------------------------------------
+    parser.add_argument("--skin-blend-prompt", choices=sorted(SKIN_BLEND_PROMPTS), default="blend",
+                        help="'blend' asks the model to even the skin out, which is the uniformity we "
+                             "then score against; 'variation' asks for the chromatic spread actually "
+                             "being measured; 'tone' names a target instead of pointing at her face.")
+    parser.add_argument("--clothes-coverage", choices=sorted(CLOTHES_COVERAGE_CLAUSES), default="default",
+                        help="extra clause aimed at the waist gap")
+    # --- variant dials: controls ---------------------------------------------------------
+    parser.add_argument("--preprocess-control", choices=("none", "canny", "openpose"), default="none",
+                        help="guide the preprocess on the carrier's geometry so her body tracks the "
+                             "carrier's proportions. Removed once because only her head survived the "
+                             "transplant; --neck-overlap is what makes it worth having again.")
+    parser.add_argument("--clothes-control", choices=("none", "canny", "openpose"), default="none",
+                        help="state the body outline to the clothes edit; aimed at the waist gap")
+    parser.add_argument("--harmonize-control", choices=("none", "canny", "openpose"), default="none",
+                        help="lock geometry during the skin harmonisation")
+    parser.add_argument("--control-strength", type=float, default=3.0,
+                        help="ControlNet strength for the above (default 3.0). NOT 1.0: three runs at "
+                             "1.0 on 2026-08-04 showed no effect and nearly produced the conclusion "
+                             "'the ControlNet is inert' -- the controls described what the model would "
+                             "draw anyway, so a working mechanism and a dead one give the same null.")
+    parser.add_argument("--control-distort", type=float, default=1.0,
+                        help="scale the control image vertically before use. A run at, say, 0.8 that "
+                             "the output follows is the only cheap proof the control is live at all.")
+    parser.add_argument("--harmonize-source", choices=("identity", "carrier"), default="identity",
+                        help="what the skin harmonisation starts from. 'carrier' is the green-painted "
+                             "body, so the model must generate skin rather than keep the plausible "
+                             "flat tone it is handed -- the regime the [skin] stage already reaches "
+                             "spread 8.3 in.")
     parser.add_argument("--matte-local", action="store_true",
                         help="matte on this machine instead of the pod. BiRefNet peaks near 6 GB "
                              "per plate on CPU and has OOM-killed a 7.4 GB dev box; "
@@ -2002,6 +2201,9 @@ def main():
     args = parser.parse_args()
     if not 0.0 < args.skin_blend_denoise <= 1.0:
         parser.error("--skin-blend-denoise must be in (0, 1]")
+    if args.control_strength <= 0:
+        parser.error("--control-strength must be positive")
+    apply_variant_dials(args)
     if args.self_test:
         self_test()
         return
@@ -2137,9 +2339,16 @@ def main():
     # production.rebackground() before the transplant, so the two can differ safely.
     grey_preprocess = args.grey_preprocess or grey_carrier
     preprocess_screen = "grey" if grey_preprocess else screen
+    # --preprocess-control makes her body track the carrier's proportions before alignment. Dropped
+    # once because only her head survived the transplant; --neck-overlap is what makes it pay again,
+    # since a larger transplant needs her chest to actually sit where the carrier's does.
+    preprocess_control = control_image(server, carrier, args.preprocess_control,
+                                       args.control_distort, root, work)
     edit(server, performer, GREY_PREPROCESS_PROMPT if grey_preprocess else PREPROCESS_PROMPT, None, None,
          production.seed_for("qwen2512:preprocess"),
-         "cover-story/qwen2512-skin-head-clothes/preprocess", preprocessed, work, args.force)
+         "cover-story/qwen2512-skin-head-clothes/preprocess", preprocessed, work, args.force,
+         control=preprocess_control, control_type=args.preprocess_control,
+         control_strength=args.control_strength)
     report(root, "preprocess", preprocess_checks(preprocessed, carrier, preprocess_screen, screen))
     if done("preprocess"):
         return print(root)
@@ -2167,8 +2376,20 @@ def main():
         # Composite-then-harmonise: the deterministic recolor states the target tone in pixels and
         # this supplies the chromatic variation it cannot. Runs after the seam smoothing so the
         # neck join is already resolved and the body has one continuous tone to match against.
-        harmonized, blend_mask = harmonize_skin(server, identity, preserved_head, carrier, root,
-                                                work, args.force, screen, args.skin_blend_denoise)
+        # --harmonize-source carrier hands the model the green-painted body instead of the already
+        # plausible toned one, so it has to generate skin rather than keep what it is given. That is
+        # the regime the mask-free [skin] stage reaches saturation spread 8.3 in.
+        blend_source = carrier if args.harmonize_source == "carrier" else identity
+        blend_control = None
+        if args.harmonize_control != "none":
+            blend_control = control_image(server, carrier, args.harmonize_control,
+                                          args.control_distort, root, work)
+        harmonized, blend_mask = harmonize_skin(
+            server, blend_source, preserved_head, carrier, root, work, args.force, screen,
+            args.skin_blend_denoise, SKIN_BLEND_PROMPTS[args.skin_blend_prompt],
+            tone=describe_tone(sample_face_tone(image_from(aligned))),
+            control=blend_control, control_type=args.harmonize_control,
+            control_strength=args.control_strength)
         identity_checks += skin_blend_checks(identity, harmonized, blend_mask, carrier, screen)
         identity = harmonized
     report(root, "identity", identity_checks)
@@ -2205,12 +2426,17 @@ def main():
                                                          envelope["clothes_mask"], screen="grey")])
         else:
             clothes_carrier = carrier_for_screen(carrier, CLOTHES_KEY_COLOR, root)
+            clothes_control = control_image(server, carrier, args.clothes_control,
+                                            args.control_distort, root, work)
             edit(server, clothes_carrier,
                  GARMENT_REF_PROMPT.format(aperture=APERTURE_COLOR[CLOTHES_KEY_COLOR], screen=CLOTHES_KEY_COLOR,
-                                           description=GARMENT_DESCRIPTION),
+                                           description=GARMENT_DESCRIPTION)
+                 + CLOTHES_COVERAGE_CLAUSES[args.clothes_coverage],
                  envelope["clothes_mask"], root / "garment.png",
                  production.seed_for("qwen2512:clothes-victorian"),
-                 "cover-story/qwen2512-skin-head-clothes/clothes", clothes, work, args.force)
+                 "cover-story/qwen2512-skin-head-clothes/clothes", clothes, work, args.force,
+                 control=clothes_control, control_type=args.clothes_control,
+                 control_strength=args.control_strength)
             report(root, "clothes", [
                 *masked_edit_checks(clothes_carrier, clothes, envelope["clothes_mask"], screen=CLOTHES_KEY_COLOR),
                 {"name": "clothes_plate_screen", "passed": production.screen_color(clothes) == CLOTHES_KEY_COLOR,
@@ -2225,7 +2451,8 @@ def main():
         envelope = load_accepted_envelope(root, carrier)
         edit(server, clothes_carrier,
              CLOTHES_PROMPT.format(aperture=APERTURE_COLOR[CLOTHES_KEY_COLOR], screen=CLOTHES_KEY_COLOR,
-                                   description=GARMENT_DESCRIPTION),
+                                   description=GARMENT_DESCRIPTION)
+             + CLOTHES_COVERAGE_CLAUSES[args.clothes_coverage],
              envelope["clothes_mask"], None,
              production.seed_for("qwen2512:clothes-victorian"), "cover-story/qwen2512-skin-head-clothes/clothes", clothes, work, args.force)
         # The one free that has to be explicit: [extract] runs CorridorKey as a separate process on the
@@ -2390,6 +2617,27 @@ def main():
         "version": 1, "run_id": POC_RUN_ID, "carrier_model": production.CARRIER_MODEL, "edit_model": production.EDIT_MODEL,
         "carrier_dimensions": list(image_from(carrier).size),
         "recipe": {"carrier": "grey" if grey_carrier else "chroma", "clothes": clothes_mode, "extract": extract_mode},
+        # Which dials produced this directory. An unlabelled variant is indistinguishable from
+        # a regression a few runs later, and these are exactly the knobs a sweep turns.
+        "variants": {
+            "neck_overlap": production.NECK_OVERLAP,
+            "identity_dilation": IDENTITY_DILATION,
+            "support_dilation": SUPPORT_DILATION,
+            "clothes_stop_dilation": CLOTHES_STOP_DILATION,
+            "head_blend_feather": production.HEAD_BLEND_FEATHER,
+            "skin_blend_edge_guard": production.SKIN_BLEND_EDGE_GUARD,
+            "skin_blend_prompt": args.skin_blend_prompt,
+            "skin_blend_denoise": args.skin_blend_denoise,
+            "harmonize": bool(args.harmonize_skin),
+            "harmonize_source": args.harmonize_source,
+            "clothes_coverage": args.clothes_coverage,
+            "preprocess_control": args.preprocess_control,
+            "clothes_control": args.clothes_control,
+            "harmonize_control": args.harmonize_control,
+            "control_strength": args.control_strength,
+            "control_distort": args.control_distort,
+            "grey_preprocess": bool(args.grey_preprocess),
+        },
         # Per-layer, not per-run: the garment keys against its outfit's catalog key_color while
         # skin and identity stay on the carrier's own screen.
         "screen": {"identity": screen, "clothes": clothes_screen},
