@@ -1192,11 +1192,30 @@ def segment_source(source, alpha, screen):
     return image
 
 
-def split_head_layers(source, alpha, hair_hint, screen):
-    """Keep CorridorKey's alpha; SAM only decides clothing order."""
+def split_head_layers(source, alpha, hair_hint, screen, skin_bound=None):
+    """Keep the extractor's alpha; SAM only decides clothing order.
+
+    `skin_bound` limits the *skin* layer to an anatomical region — the face/neck/upper-chest plate
+    LAYERED_COSTUME_PIPELINE_REFERENCE.md specifies, which also states plainly that "no full-body
+    performer skin plate is produced". Without it this returns the whole figure minus hair, i.e. a
+    nude body that the garment layer is then solely responsible for covering: that is what produced
+    the waist slivers and the toes showing beside the shoes, and it ships a nude torso as an asset.
+
+    The bound must be a *fixed anatomical region*, never derived from a garment's alpha. One skin
+    plate is reused across every outfit, so a garment-derived crop would have to be regenerated per
+    outfit and the layering would stop paying for itself. Exposed skin further down the body belongs
+    to the clothed-body plate instead, which the catalog already arranges by generating it once per
+    `tone_groups` entry with "Exposed natural skin stays {tone}" in the outfit prompt.
+
+    Hair is deliberately *not* bounded: it falls past the shoulders and clipping it to the same
+    region would cut it off."""
     hair = hair_hint.convert("L").point(lambda value: 255 if value > 127 else 0)
+    skin_alpha = ImageChops.multiply(alpha, ImageOps.invert(hair))
+    if skin_bound is not None:
+        skin_alpha = ImageChops.multiply(
+            skin_alpha, skin_bound.convert("L").point(lambda value: 255 if value > 127 else 0))
     return (
-        segment_source(source, ImageChops.multiply(alpha, ImageOps.invert(hair)), screen),
+        segment_source(source, skin_alpha, screen),
         segment_source(source, ImageChops.multiply(alpha, hair), screen),
     )
 
@@ -1878,6 +1897,33 @@ def self_test():
                 f"blend band channel {channel}: {half[channel]} vs {expected:.1f}"
         assert rebackground(blend, blend_alpha, grey_bg, grey_bg).getpixel((1, 0)) == (164, 139, 130), \
             "swapping a backdrop for itself must be a no-op"
+        # split_head_layers(): the skin plate is an anatomical crop, the hair plate is not. A figure
+        # running the height of the frame, hair at the top, and a bound covering only its upper part.
+        body_image = Image.new("RGB", (60, 200), (0, 0, 255))
+        ImageDraw.Draw(body_image).rectangle((20, 10, 39, 199), fill=(200, 150, 120))
+        body = root / "split-body.png"          # segment_source() reads a path, not an Image
+        save_png(body_image, body)
+        body_alpha = Image.new("L", (60, 200))
+        ImageDraw.Draw(body_alpha).rectangle((20, 10, 39, 199), fill=255)
+        hair_hint = Image.new("L", (60, 200))
+        ImageDraw.Draw(hair_hint).rectangle((20, 10, 39, 39), fill=255)
+        bound = Image.new("L", (60, 200))
+        ImageDraw.Draw(bound).rectangle((0, 0, 59, 79), fill=255)          # head/neck/upper chest
+        skin_layer, hair_layer = split_head_layers(body, body_alpha, hair_hint, "blue", bound)
+        assert skin_layer.getchannel("A").getpixel((30, 60)) == 255, "skin inside the bound is kept"
+        assert skin_layer.getchannel("A").getpixel((30, 150)) == 0, \
+            "no skin below the bound -- that is the nude torso this exists to stop shipping"
+        assert skin_layer.getchannel("A").getpixel((30, 20)) == 0, "hair is not part of the skin plate"
+        assert hair_layer.getchannel("A").getpixel((30, 20)) == 255, "hair is kept"
+        # Long hair past the shoulders must survive: bounding it would crop it at the chest.
+        long_hair = hair_hint.copy()
+        ImageDraw.Draw(long_hair).rectangle((20, 10, 39, 119), fill=255)
+        _, long_layer = split_head_layers(body, body_alpha, long_hair, "blue", bound)
+        assert long_layer.getchannel("A").getpixel((30, 110)) == 255, \
+            "hair below the bound must not be clipped"
+        unbounded, _ = split_head_layers(body, body_alpha, hair_hint, "blue")
+        assert unbounded.getchannel("A").getpixel((30, 150)) == 255, \
+            "without a bound the old whole-body behaviour is unchanged"
         # chroma_spread(): must separate a one-dimensional recolor from real chromatic variation.
         # The flat case is exactly what deterministic_skin_recolor() produces -- one hue scaled by
         # brightness -- so a metric that cannot tell these two apart cannot gate skin naturalness.

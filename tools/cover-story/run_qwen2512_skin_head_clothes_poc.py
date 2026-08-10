@@ -2196,7 +2196,15 @@ def main():
     hair_hints = sam_hints(server, identity, ["hair"], "cover-story/qwen2512-skin-head-clothes/hair", work)
     hair_hint = root / "masks" / "identity-hair-sam.png"
     save_png(hair_hints[0], hair_hint)
-    skin_rgba, hair_rgba = production.split_head_layers(identity, identity_alpha, hair_hints[0], screen)
+    # The skin plate is bounded to the identity envelope, which is IDENTITY_SAM_PROMPT ("head, hair,
+    # face, ears, neck, clavicles, shoulders and upper chest") dilated for working room -- exactly
+    # the face/neck/upper-chest plate the pipeline reference specifies, and a *fixed anatomical*
+    # region, so one skin plate still serves every outfit. Unbounded, this layer was the whole nude
+    # body with the garment as its only cover: the source of the waist slivers, the toes beside the
+    # shoes, and a nude torso shipping as an asset.
+    skin_bound = image_from(envelope["head_mask"]).convert("L")
+    skin_rgba, hair_rgba = production.split_head_layers(identity, identity_alpha, hair_hints[0],
+                                                        screen, skin_bound)
     clothes_rgba = production.segment_source(clothes, clothes_alpha, clothes_screen)
     save_png(skin_rgba, root / "identity-skin-rgba.png")
     save_png(hair_rgba, root / "identity-hair-rgba.png")
@@ -2230,11 +2238,27 @@ def main():
     # mechanical check passed on a composite with a pronounced blue hair halo and a green dress
     # fringe, because nothing measured edge *colour*. Per layer, not on the composite, since the
     # composite's own opaque background would swamp the edge band.
+    # Bounding the skin plate to the aperture creates one new failure mode: a body region that the
+    # garment does not cover now has nothing behind it and shows background. Measured against the
+    # union of the three layers' alphas rather than by comparing colours, so it is exact. Production
+    # answers this by painting exposed skin into the clothed-body plate ("Exposed natural skin stays
+    # {tone}", generated once per tone_groups entry); the PoC's clothes prompts do not yet say that,
+    # which is fine for a fully covering outfit and will not be for a sleeveless one. This gate is
+    # what will catch that the first time it matters.
+    covered = ImageChops.lighter(
+        ImageChops.lighter(skin_rgba.getchannel("A"), clothes_rgba.getchannel("A")),
+        hair_rgba.getchannel("A")).point(lambda value: 255 if value > 8 else 0)
+    figure = screen_foreground(image_from(carrier), screen)
+    gap_px = sum(ImageChops.subtract(figure, covered).histogram()[1:])
+    gap_fraction = gap_px / max(1, sum(figure.histogram()[1:]))
+
     fringes = [("identity-skin", skin_rgba, screen), ("identity-hair", hair_rgba, screen),
                ("clothes", clothes_rgba, clothes_screen)]
     report(root, "composite", [
         {"name": "no_skin_in_garment_region", "passed": region_fraction < 0.05,
          "detail": round(region_fraction, 4)},
+        {"name": "figure_fully_covered_by_layers", "passed": gap_fraction < 0.02,
+         "detail": {"gap_px": gap_px, "fraction": round(gap_fraction, 4), "limit": 0.02}},
         *[{"name": f"no_screen_fringe_{name}",
            "passed": production.fringe_fraction(layer, layer_screen) < production.FRINGE_LIMIT,
            "detail": {"screen": layer_screen,
