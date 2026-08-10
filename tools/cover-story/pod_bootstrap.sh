@@ -321,15 +321,23 @@ if [ -f "$VOLUME/install-flux2-klein" ]; then
     }
     say flux2_klein "fetching Klein 9B, Qwen3 text encoder and VAE (one-time) ..."
     ok=yes
-    if [ -n "${HF_TOKEN:-}" ]; then
-        kfetch https://huggingface.co/black-forest-labs/FLUX.2-klein-9b-fp8/resolve/main/flux-2-klein-9b-fp8.safetensors \
-               "$COMFY_DIR/models/diffusion_models/flux-2-klein-base-9b.safetensors" \
-            && say flux2_klein "official fp8 build (HF_TOKEN present)" || ok=no
-    else
-        kfetch https://huggingface.co/unsloth/FLUX.2-klein-base-9B/resolve/main/flux-2-klein-base-9b.safetensors \
-               "$COMFY_DIR/models/diffusion_models/flux-2-klein-base-9b.safetensors" \
-            && say flux2_klein "ungated base mirror (set HF_TOKEN for the official build)" || ok=no
+    # Try the gated official build first when a token exists, but *fall back* rather than fail: the
+    # repo is gated "auto", and a perfectly valid token still 403s until its owner has been granted
+    # access ("you are not in the authorized list"). Treating a token as proof of access left the
+    # transformer missing while the other two files downloaded, which fails much later and much
+    # less clearly than it should.
+    transformer=$COMFY_DIR/models/diffusion_models/flux-2-klein-base-9b.safetensors
+    got=
+    if [ -n "${HF_TOKEN:-}" ] && kfetch \
+        https://huggingface.co/black-forest-labs/FLUX.2-klein-9b-fp8/resolve/main/flux-2-klein-9b-fp8.safetensors \
+        "$transformer"; then
+        got="official fp8 build"
+    elif kfetch https://huggingface.co/unsloth/FLUX.2-klein-base-9B/resolve/main/flux-2-klein-base-9b.safetensors \
+                "$transformer"; then
+        got="ungated base mirror"
+        [ -n "${HF_TOKEN:-}" ] && got="$got (token present but not authorised for the gated repo)"
     fi
+    [ -n "$got" ] && say flux2_klein "$got" || ok=no
     base=https://huggingface.co/Comfy-Org/vae-text-encorder-for-flux-klein-9b/resolve/main/split_files
     kfetch "$base/text_encoders/qwen_3_8b_fp8mixed.safetensors" \
            "$COMFY_DIR/models/text_encoders/qwen_3_8b_fp8mixed.safetensors" || ok=no

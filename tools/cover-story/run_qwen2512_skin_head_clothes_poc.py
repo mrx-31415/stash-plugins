@@ -269,6 +269,29 @@ GARMENT_REF_PROMPT = (
 # the body shows at the sides -- is a generation failure, not a masking one: the clothes mask already
 # permits 48px past the silhouette and the prompt already permits cloth bulk. These say it two ways,
 # positively and as a prohibition, because it is not obvious which a diffusion model honours.
+# A prompt ladder, simple to complex, for comparing edit models fairly. Every prompt in this file
+# was developed against Qwen Edit 2511, so running them on FLUX.2 tests "Qwen prompts on FLUX.2"
+# rather than FLUX.2 -- the confound that made the first Klein comparison uninterpretable. Each rung
+# adds exactly one clause, so a model that needs a constraint and one that is hurt by it are
+# distinguishable instead of both scoring badly on the full prompt.
+CLOTHES_PROMPT_LADDER = {
+    # 1. The instruction alone. If a model does this well, every clause below is scaffolding.
+    "bare": "Dress the masked body in the outfit from image 2.",
+    # 2. + what the outfit is, which is the clause whose absence cost the 2026-08-07 run its collar,
+    #    gloves, skirt and shoes.
+    "described": "Dress the masked body in the outfit from image 2 -- {description}.",
+    # 3. + the locked regions. Qwen needed telling; whether FLUX.2 does is the open question.
+    "locked": ("Keep image 1's {aperture} head, pose, framing and {screen} background unchanged. "
+               "Dress the masked body in the outfit from image 2 -- {description}."),
+    # 4. + coverage, which is what the mask permits but the model does not always take.
+    "full": ("Keep image 1's {aperture} head, pose, framing and {screen} background unchanged. "
+             "Dress the masked body in the outfit from image 2 -- {description} -- matching image 2's "
+             "colour, fabric, cut and silhouette. The garment covers her torso, arms and legs "
+             "completely; no painted skin may remain inside the masked region. The garment may "
+             "extend beyond the body silhouette for natural cloth bulk."),
+}
+
+
 CLOTHES_COVERAGE_CLAUSES = {
     "default": "",
     "sides": " The garment covers her sides and back completely, with no gap between the bodice and "
@@ -2124,6 +2147,23 @@ def self_test():
     for graph in (flux, qwen):
         assert sum(n["class_type"] == "SaveImage" for n in graph.values()) >= 1, "output must be saved"
 
+    # The prompt ladder must be monotonic: each rung adds a clause and keeps the ones below it, or a
+    # comparison between rungs measures two changes at once and says nothing about either.
+    rendered = {name: template.format(aperture="blue", screen="green",
+                                      description=GARMENT_DESCRIPTION)
+                for name, template in CLOTHES_PROMPT_LADDER.items()}
+    for name, text in rendered.items():
+        assert "{" not in text, f"ladder rung {name} has an unfilled placeholder"
+        assert "image 2" in text, f"ladder rung {name} must still reference the garment"
+    order = ["bare", "described", "locked", "full"]
+    for lower, higher in zip(order, order[1:]):
+        assert len(rendered[higher]) > len(rendered[lower]), \
+            f"{higher} must add to {lower}, not replace it"
+    assert GARMENT_DESCRIPTION not in rendered["bare"], "the bare rung is the instruction alone"
+    assert GARMENT_DESCRIPTION in rendered["described"], "the second rung adds the description"
+    assert "unchanged" not in rendered["described"] and "unchanged" in rendered["locked"], \
+        "locking the aperture is what separates rung 2 from rung 3"
+
     # remote_matte_plan(): the remote path cannot be exercised without a pod, but everything except
     # the execution can be, and a malformed command found on the pod costs GPU time -- preflight()
     # shipped a NameError on 2026-08-08 that only a real pod call caught.
@@ -2285,6 +2325,16 @@ def main():
                         help="'blend' asks the model to even the skin out, which is the uniformity we "
                              "then score against; 'variation' asks for the chromatic spread actually "
                              "being measured; 'tone' names a target instead of pointing at her face.")
+    parser.add_argument("--clothes-prompt-rung", choices=sorted(CLOTHES_PROMPT_LADDER),
+                        help="use a rung of the simple-to-complex prompt ladder instead of the "
+                             "full tuned prompt. Each rung adds one clause, so a model that "
+                             "needs a constraint is distinguishable from one hurt by it -- the "
+                             "Qwen-tuned prompts made the first FLUX.2 comparison unreadable.")
+    parser.add_argument("--clothes-denoise", type=float, default=1.0,
+                        help="denoise for the clothes edit (default 1.0). The mask extends ~48px "
+                             "past the body for cloth bulk, so at 1.0 the model regenerates 80k "
+                             "background pixels too -- Qwen reproduces them faithfully and FLUX.2 "
+                             "returns them 16 levels darker, which is the halo.")
     parser.add_argument("--clothes-coverage", choices=sorted(CLOTHES_COVERAGE_CLAUSES), default="default",
                         help="extra clause aimed at the waist gap")
     # --- variant dials: controls ---------------------------------------------------------
@@ -2591,15 +2641,18 @@ def main():
             clothes_carrier = carrier_for_screen(carrier, CLOTHES_KEY_COLOR, root)
             clothes_control = control_image(server, carrier, args.clothes_control,
                                             args.control_distort, root, work)
+            # A ladder rung replaces the tuned prompt outright; the coverage clause only applies to
+            # the tuned one, since a rung's whole purpose is to carry exactly the clauses it names.
+            clothes_prompt = (CLOTHES_PROMPT_LADDER[args.clothes_prompt_rung] if args.clothes_prompt_rung
+                              else GARMENT_REF_PROMPT + CLOTHES_COVERAGE_CLAUSES[args.clothes_coverage])
             edit(server, clothes_carrier,
-                 GARMENT_REF_PROMPT.format(aperture=APERTURE_COLOR[CLOTHES_KEY_COLOR], screen=CLOTHES_KEY_COLOR,
-                                           description=GARMENT_DESCRIPTION)
-                 + CLOTHES_COVERAGE_CLAUSES[args.clothes_coverage],
+                 clothes_prompt.format(aperture=APERTURE_COLOR[CLOTHES_KEY_COLOR],
+                                       screen=CLOTHES_KEY_COLOR, description=GARMENT_DESCRIPTION),
                  envelope["clothes_mask"], root / "garment.png",
                  production.seed_for("qwen2512:clothes-victorian"),
                  "cover-story/qwen2512-skin-head-clothes/clothes", clothes, work, args.force,
                  control=clothes_control, control_type=args.clothes_control,
-                 control_strength=args.control_strength,
+                 control_strength=args.control_strength, denoise=args.clothes_denoise,
                  family=args.clothes_edit_model, clip_type=flux2_clip_type)
             report(root, "clothes", [
                 *masked_edit_checks(clothes_carrier, clothes, envelope["clothes_mask"], screen=CLOTHES_KEY_COLOR),
