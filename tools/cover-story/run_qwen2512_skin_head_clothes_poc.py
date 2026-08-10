@@ -3,6 +3,7 @@
 
 import argparse
 import hashlib
+import shlex
 import json
 import os
 import re
@@ -49,8 +50,12 @@ CONFIG_TEMPLATE = {
     # rather than a second dotfile holding a second credential.
     "runpod_endpoint": "ENDPOINTID",
     "runpod_api_key": "RUNPODAPIKEY",
+    # Optional. Only pod_bootstrap.sh reads it, to fetch gated weights: every black-forest-labs
+    # FLUX.2 Klein repo is "gated: auto". Without it the ungated base mirror is used instead,
+    # which works but is the *base* variant rather than the instruction-tuned one.
+    "hf_token": "HFTOKEN",
 }
-PLACEHOLDERS = ("HOST", "PORT", "TOKEN", "ENDPOINTID", "RUNPODAPIKEY")
+PLACEHOLDERS = ("HOST", "PORT", "TOKEN", "ENDPOINTID", "RUNPODAPIKEY", "HFTOKEN")
 # The RunPod proxy 404s for a window after ComfyUI restarts; long enough to cover it, short enough
 # that a genuinely dead server still fails the run rather than hanging it.
 SERVER_RETRIES = 5
@@ -345,8 +350,10 @@ DRIFT_LIMIT_BACKGROUND = 24.0
 
 
 def redact(value):
-    """Never print a Comfy token, even into a terminal scrollback."""
-    return re.sub(r"(token=)[^&\s]+", r"\1REDACTED", str(value))
+    """Never print a credential, even into a terminal scrollback. Covers the Comfy token in a URL
+    query and any bare token-shaped value (hf_*, runpod keys) printed as a setting."""
+    value = re.sub(r"(token=)[^&\s]+", r"\1REDACTED", str(value))
+    return re.sub(r"\b(hf_[A-Za-z0-9]{4})[A-Za-z0-9]+", r"\1REDACTED", value)
 
 
 def load_config(path):
@@ -1493,7 +1500,7 @@ def report(root, stage, checks):
     print(f"  {stage}: all {len(checks)} checks passed", flush=True)
 
 
-def remote_bootstrap(ssh, ssh_port, ssh_target):
+def remote_bootstrap(ssh, ssh_port, ssh_target, hf_token=None):
     """Copy pod_bootstrap.sh up and run it, so a migrated pod repairs itself before the checks
     below judge it. Shipping the repo's copy every time rather than trusting the one on the volume
     keeps a single source of truth and heals a pod whose /workspace copy is stale.
@@ -1511,7 +1518,13 @@ def remote_bootstrap(ssh, ssh_port, ssh_target):
         if copy.returncode != 0:
             return "pod_bootstrap", False, copy.stderr.strip() or "scp failed"
         # Generous: a fresh pod installs uv and rsync and imports torch off a network volume.
-        result = subprocess.run([*ssh, f"sh {REMOTE_BOOTSTRAP}"], timeout=900,
+        # HF_TOKEN is passed inline rather than exported into the pod's environment or written to
+        # a file there: it exists for one curl inside the script and should not outlive it. It is
+        # never echoed -- the bootstrap only reports which build it fetched.
+        command = f"sh {REMOTE_BOOTSTRAP}"
+        if hf_token:
+            command = f"HF_TOKEN={shlex.quote(hf_token)} {command}"
+        result = subprocess.run([*ssh, command], timeout=900,
                                 capture_output=True, text=True)
     except (OSError, subprocess.SubprocessError) as error:                 # noqa: BLE001
         return "pod_bootstrap", False, str(error)
@@ -1521,7 +1534,7 @@ def remote_bootstrap(ssh, ssh_port, ssh_target):
 
 def preflight(server, ssh_target, ssh_port, performer, edit_model, corridor_root,
               clothes_mode="qwen", extract_mode="corridorkey", matte_remotely=False,
-              carrier_family="qwen"):
+              carrier_family="qwen", hf_token=None):
     """Fail on a misconfigured instance before any GPU time is spent. Without this the SSH and
     CorridorKey settings are only exercised after four Qwen generations have already run.
 
@@ -1601,7 +1614,7 @@ def preflight(server, ssh_target, ssh_port, performer, edit_model, corridor_root
             # remote_bootstrap() below so the venv is built in the same preflight that checks it.
             subprocess.run([*ssh, "mkdir -p /workspace/runpod-slim && touch /workspace/runpod-slim/install-matting"],
                            timeout=30, check=False)
-        record(*remote_bootstrap(ssh, ssh_port, ssh_target))
+        record(*remote_bootstrap(ssh, ssh_port, ssh_target, hf_token))
         if extract_mode == "corridorkey":
             probe = f"test -x {corridor_root}/.venv/bin/python && test -d {corridor_root}/CorridorKeyModule/checkpoints"
             record("corridorkey_installed", subprocess.run([*ssh, probe], timeout=60).returncode == 0, corridor_root)
@@ -2049,6 +2062,19 @@ def self_test():
     assert {"UNETLoader", "CLIPLoader", "VAELoader"} <= {n["class_type"] for n in flux2.values()}, \
         "FLUX.2 loads model, text encoder and VAE separately"
 
+    # Credentials must never reach a terminal or a log. redact() covers the Comfy token in a URL
+    # query and a bare HF token printed as a setting; hf_token is optional, so an untouched template
+    # placeholder must resolve to unset rather than being sent to the pod as the literal "HFTOKEN".
+    assert "REDACTED" in redact("http://h:1/?token=abc123&x=1") and "abc123" not in redact("http://h:1/?token=abc123")
+    assert redact("hf_abcd1234567890") == "hf_abcdREDACTED"
+    assert "HFTOKEN" in PLACEHOLDERS, "an unfilled hf_token must count as unset"
+    config_probe = root / "hf-config.json"
+    save_text = json.dumps({**CONFIG_TEMPLATE, "server": "http://h:1/?token=t",
+                            "ssh_target": "root@h", "ssh_port": 22}, indent=2)
+    config_probe.write_text(save_text, encoding="utf-8")
+    assert "hf_token" not in load_config(config_probe), \
+        "the template's placeholder token must not be treated as a real credential"
+
     # flux2_edit_graph(): a per-stage swap is only safe because the two nodes this pipeline's
     # guarantees rest on are model-agnostic. Assert they are present and wired, not merely defined.
     fe = production.flux2_edit_graph("a.png", "x", 1, "pre", image2="b.png", mask="m.png",
@@ -2331,6 +2357,10 @@ def main():
     edit_model = resolve("edit_model", args.edit_model, "COVER_STORY_EDIT_MODEL", production.EDIT_MODEL)
     corridorkey_root = resolve("corridorkey_root", args.corridorkey_root,
                                "COVER_STORY_CORRIDORKEY_ROOT", DEFAULT_CORRIDORKEY_ROOT)
+    # Optional, and only used to fetch gated weights during pod bootstrap. Placeholders count as
+    # unset (see PLACEHOLDERS), so a template that was never filled in resolves to None and the
+    # ungated mirror is used instead of failing.
+    hf_token = resolve("hf_token", None, "HF_TOKEN", None)
     performer = Path(resolve("performer", args.performer, None, DEFAULT_PERFORMER))
     root = Path(resolve("output_dir", args.output_dir, "COVER_STORY_POC_ROOT", DEFAULT_ROOT))
 
@@ -2383,7 +2413,7 @@ def main():
     report(root, "preflight", preflight(server, ssh_target, int(ssh_port), performer,
                                         edit_model, corridorkey_root, clothes_mode, extract_mode,
                                         bool(matte_remote) and extract_mode == "birefnet",
-                                        args.carrier_model))
+                                        args.carrier_model, hf_token))
     if done("preflight"):
         return print(root)
 
