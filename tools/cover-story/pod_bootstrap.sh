@@ -299,4 +299,44 @@ else
     say flux2 "skipped (touch $VOLUME/install-flux2 for the FLUX.2 carrier)"
 fi
 
+# 9c. FLUX.2 Klein 9B -- the distilled variant, and the one the community's masked-editing workflows
+#     use, which is our case exactly since every stage edits an existing plate. Far smaller than dev
+#     (35.5 GB for dev's transformer alone).
+#
+#     Every black-forest-labs Klein repo is gated ("gated: auto", token required). The mirror and
+#     Comfy-Org companions below are not, so this needs no credentials. Set HF_TOKEN to prefer the
+#     official fp8 build instead -- it is the non-base variant and likely the better editor.
+#
+#     Text encoder is Qwen 3 8B here, against Mistral 3 Small for dev: the CLIPLoader type differs
+#     between FLUX.2 variants, which is why preflight probes the enum rather than trusting a constant.
+if [ -f "$VOLUME/install-flux2-klein" ]; then
+    kfetch() {
+        [ -s "$2" ] && return 0
+        mkdir -p "$(dirname "$2")"
+        if [ -n "${HF_TOKEN:-}" ]; then
+            curl -fL -H "Authorization: Bearer $HF_TOKEN" --continue-at - -o "$2.part" "$1" >/dev/null 2>&1
+        else
+            curl -fL --continue-at - -o "$2.part" "$1" >/dev/null 2>&1
+        fi && mv "$2.part" "$2"
+    }
+    say flux2_klein "fetching Klein 9B, Qwen3 text encoder and VAE (one-time) ..."
+    ok=yes
+    if [ -n "${HF_TOKEN:-}" ]; then
+        kfetch https://huggingface.co/black-forest-labs/FLUX.2-klein-9b-fp8/resolve/main/flux-2-klein-9b-fp8.safetensors \
+               "$COMFY_DIR/models/diffusion_models/flux-2-klein-base-9b.safetensors" \
+            && say flux2_klein "official fp8 build (HF_TOKEN present)" || ok=no
+    else
+        kfetch https://huggingface.co/unsloth/FLUX.2-klein-base-9B/resolve/main/flux-2-klein-base-9b.safetensors \
+               "$COMFY_DIR/models/diffusion_models/flux-2-klein-base-9b.safetensors" \
+            && say flux2_klein "ungated base mirror (set HF_TOKEN for the official build)" || ok=no
+    fi
+    base=https://huggingface.co/Comfy-Org/vae-text-encorder-for-flux-klein-9b/resolve/main/split_files
+    kfetch "$base/text_encoders/qwen_3_8b_fp8mixed.safetensors" \
+           "$COMFY_DIR/models/text_encoders/qwen_3_8b_fp8mixed.safetensors" || ok=no
+    kfetch "$base/vae/flux2-vae.safetensors" "$COMFY_DIR/models/vae/flux2-vae.safetensors" || ok=no
+    [ "$ok" = yes ] && say flux2_klein "present" || fail flux2_klein "one or more downloads failed (partials kept)"
+else
+    say flux2_klein "skipped (touch $VOLUME/install-flux2-klein for the FLUX.2 Klein editor)"
+fi
+
 exit $status

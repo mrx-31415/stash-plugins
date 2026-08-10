@@ -584,7 +584,8 @@ def control_image(server, source, kind, prefix, output, work, force):
 
 
 def edit(server, source, prompt, mask, reference, seed, prefix, output, work, force,
-         control=None, control_type="canny", control_strength=1.0, denoise=1.0):
+         control=None, control_type="canny", control_strength=1.0, denoise=1.0,
+         family="qwen", clip_type=production.FLUX2_CLIP_TYPE):
     """mask=None runs a full-image, prompt-only edit (no ImageCompositeMasked paste boundary);
     output is then just the decoded result. A mask still produces a debug '-raw' sibling.
 
@@ -597,9 +598,11 @@ def edit(server, source, prompt, mask, reference, seed, prefix, output, work, fo
     remote_reference = upload_image(server, reference, subfolder="cover-story/qwen2512-skin-head-clothes/input") if reference else None
     remote_control = upload_image(server, control, subfolder="cover-story/qwen2512-skin-head-clothes/input") if control else None
     result_dir = Path(tempfile.mkdtemp(prefix="edit-", dir=work))
-    result = run(server, production.edit_graph(remote_source, prompt, seed, prefix, remote_reference,
-                                               remote_mask, remote_control, control_type,
-                                               control_strength, denoise), result_dir, 2400)
+    graph = (production.flux2_edit_graph if family == "flux2" else production.edit_graph)
+    kwargs = {"clip_type": clip_type} if family == "flux2" else {}
+    result = run(server, graph(remote_source, prompt, seed, prefix, remote_reference,
+                               remote_mask, remote_control, control_type,
+                               control_strength, denoise, **kwargs), result_dir, 2400)
     raw = Image.open(production.pick(result, "-raw")).convert("RGB")
     if mask:
         save_png(raw, output.with_name(f"{output.stem}-raw.png"))
@@ -2046,6 +2049,27 @@ def self_test():
     assert {"UNETLoader", "CLIPLoader", "VAELoader"} <= {n["class_type"] for n in flux2.values()}, \
         "FLUX.2 loads model, text encoder and VAE separately"
 
+    # flux2_edit_graph(): a per-stage swap is only safe because the two nodes this pipeline's
+    # guarantees rest on are model-agnostic. Assert they are present and wired, not merely defined.
+    fe = production.flux2_edit_graph("a.png", "x", 1, "pre", image2="b.png", mask="m.png",
+                                     clip_type="probed")
+    sampler = next(n for n in fe.values() if n["class_type"] == "KSampler")
+    noise_mask = next(k for k, n in fe.items() if n["class_type"] == "SetLatentNoiseMask")
+    assert sampler["inputs"]["latent_image"] == [noise_mask, 0], \
+        "the sampler must read the MASKED latent, or nothing outside the mask is preserved"
+    composite_node = next(n for n in fe.values() if n["class_type"] == "ImageCompositeMasked")
+    assert composite_node["inputs"]["destination"] != composite_node["inputs"]["source"], \
+        "the decode must be pasted back over the original, which is what makes outside bit-exact"
+    assert sum(n["class_type"] == "ReferenceLatent" for n in fe.values()) == 2, \
+        "two references must chain -- this is what Qwen could not do (see reference-collapse)"
+    assert sampler["inputs"]["cfg"] == 1.0, "FLUX.2 is guidance-distilled"
+    assert next(n for n in fe.values() if n["class_type"] == "CLIPLoader")["inputs"]["type"] == "probed"
+    single = production.flux2_edit_graph("a.png", "x", 1, "pre")
+    assert sum(n["class_type"] == "ReferenceLatent" for n in single.values()) == 1, \
+        "one image means one reference"
+    assert not any(n["class_type"] == "SetLatentNoiseMask" for n in single.values()), \
+        "no mask means no latent mask, matching edit_graph()"
+
     flux = production.carrier_graph("flux1", "a woman", 7, "pre", (832, 1248))
     qwen = production.carrier_graph("qwen", "a woman", 7, "pre", (832, 1248))
     flux_sampler = next(n for n in flux.values() if n["class_type"] == "KSampler")
@@ -2244,6 +2268,13 @@ def main():
                              "body, so the model must generate skin rather than keep the plausible "
                              "flat tone it is handed -- the regime the [skin] stage already reaches "
                              "spread 8.3 in.")
+    parser.add_argument("--clothes-edit-model", choices=("qwen", "flux2"), default="qwen",
+                        help="model for the CLOTHES edit only. flux2 takes several references "
+                             "natively -- the constraint every stage here is built around -- and "
+                             "keeps SetLatentNoiseMask/ImageCompositeMasked, so the bit-exact "
+                             "outside-mask guarantee survives. Deliberately one stage: the prompts "
+                             "are Qwen-tuned, so swapping everything at once would make any "
+                             "regression unattributable.")
     parser.add_argument("--carrier-model", choices=("qwen", "flux1", "flux2"), default="qwen",
                         help="generator for the carrier. 'flux2' is the strongest candidate -- it takes multiple "
                              "references natively, which is the constraint every stage here is built "
@@ -2522,7 +2553,8 @@ def main():
                  production.seed_for("qwen2512:clothes-victorian"),
                  "cover-story/qwen2512-skin-head-clothes/clothes", clothes, work, args.force,
                  control=clothes_control, control_type=args.clothes_control,
-                 control_strength=args.control_strength)
+                 control_strength=args.control_strength,
+                 family=args.clothes_edit_model, clip_type=flux2_clip_type)
             report(root, "clothes", [
                 *masked_edit_checks(clothes_carrier, clothes, envelope["clothes_mask"], screen=CLOTHES_KEY_COLOR),
                 {"name": "clothes_plate_screen", "passed": production.screen_color(clothes) == CLOTHES_KEY_COLOR,
@@ -2540,7 +2572,8 @@ def main():
                                    description=GARMENT_DESCRIPTION)
              + CLOTHES_COVERAGE_CLAUSES[args.clothes_coverage],
              envelope["clothes_mask"], None,
-             production.seed_for("qwen2512:clothes-victorian"), "cover-story/qwen2512-skin-head-clothes/clothes", clothes, work, args.force)
+             production.seed_for("qwen2512:clothes-victorian"), "cover-story/qwen2512-skin-head-clothes/clothes",
+             clothes, work, args.force, family=args.clothes_edit_model, clip_type=flux2_clip_type)
         # The one free that has to be explicit: [extract] runs CorridorKey as a separate process on the
         # same GPU, and ComfyUI has no way to know it needs to give the VRAM back.
         soft_free(server)

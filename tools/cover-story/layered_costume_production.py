@@ -51,6 +51,16 @@ FLUX2_MODEL = "flux2_dev_fp8mixed.safetensors"
 FLUX2_TEXT_ENCODER = "mistral_3_small_flux2_fp8.safetensors"
 FLUX2_VAE = "flux2-vae.safetensors"
 FLUX2_CLIP_TYPE = "flux2"
+# FLUX.2 Klein 9B: the distilled variant, and the one the community's masked-editing workflows use
+# -- which is our case exactly, since every stage edits an existing plate rather than generating from
+# scratch. Smaller and faster than dev (35.5 GB for dev's transformer alone).
+#
+# Its text encoder is Qwen 3 8B, not dev's Mistral 3 Small, so the CLIPLoader type differs *between
+# FLUX.2 variants* -- which is why preflight probes the pod's own enum rather than trusting either
+# constant. Every black-forest-labs Klein repo is gated ("gated: auto", needs a token); the mirror
+# below and Comfy-Org's companions are not, so the default path needs no credentials.
+FLUX2_KLEIN_MODEL = "flux-2-klein-base-9b.safetensors"
+FLUX2_KLEIN_TEXT_ENCODER = "qwen_3_8b_fp8mixed.safetensors"
 TEXT_ENCODER = "qwen_2.5_vl_7b_fp8_scaled.safetensors"
 VAE = "qwen_image_vae.safetensors"
 SAM_MODEL = "sam3.1_multiplex_fp16.safetensors"
@@ -987,6 +997,82 @@ def edit_graph(image1, prompt, seed, prefix, image2=None, mask=None,
         })
         nodes["13"]["inputs"]["positive"] = ["25", 0]
         nodes["13"]["inputs"]["negative"] = ["25", 1]
+    return nodes
+
+
+def flux2_edit_graph(image1, prompt, seed, prefix, image2=None, mask=None,
+                     control=None, control_type="canny", control_strength=1.0, denoise=1.0,
+                     clip_type=FLUX2_CLIP_TYPE, guidance=4.0, steps=28):
+    """edit_graph()'s shape, on FLUX.2 Klein, so a single stage can be swapped without touching the
+    rest of the pipeline.
+
+    The reason to try it is not image quality. LAYERED_COSTUME_PRODUCTION_STATUS.md establishes over
+    seven generations that a Qwen edit "does not blend two references -- it returns one, and the
+    prompt decides which"; every stage here is a masked edit *because* of that. FLUX.2 takes several
+    references natively through chained ReferenceLatent nodes, so the construction could be
+    simplified rather than worked around.
+
+    What matters for safety is that the two nodes this pipeline's guarantees rest on are
+    model-agnostic and used identically here: SetLatentNoiseMask keeps the latent outside the mask,
+    and ImageCompositeMasked pastes the decode back over the original so everything outside the mask
+    is bit-exact. That is where outside_mask_unchanged: 0 and the 0/0/0 registration come from, and
+    it survives the model swap -- which is the whole reason a per-stage swap is safe to attempt.
+
+    Differences forced by the architecture, not chosen: CFG is 1.0 because FLUX.2 is
+    guidance-distilled and steering comes from FluxGuidance, so the negative conditioning is inert
+    (this pipeline's NEGATIVE is empty anyway); references arrive as encoded latents rather than as
+    image1/image2 arguments to a text encoder; and the text encoder is Qwen 3 8B for Klein against
+    Mistral 3 Small for dev, which is why `clip_type` is passed in from preflight's probe of the
+    pod's own CLIPLoader enum instead of being hardcoded."""
+    nodes = {
+        "1": {"class_type": "UNETLoader", "inputs": {"unet_name": FLUX2_KLEIN_MODEL, "weight_dtype": "default"}},
+        "2": {"class_type": "CLIPLoader", "inputs": {"clip_name": FLUX2_KLEIN_TEXT_ENCODER, "type": clip_type, "device": "default"}},
+        "3": {"class_type": "VAELoader", "inputs": {"vae_name": FLUX2_VAE}},
+        "4": {"class_type": "LoadImage", "inputs": {"image": image1}},
+        "5": {"class_type": "FluxKontextImageScale", "inputs": {"image": ["4", 0]}},
+        "6": {"class_type": "CLIPTextEncode", "inputs": {"text": prompt, "clip": ["2", 0]}},
+        "7": {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["2", 0]}},
+        "8": {"class_type": "VAEEncode", "inputs": {"pixels": ["5", 0], "vae": ["3", 0]}},
+        # Reference chain: image 1 always, image 2 appended below. This is the node FLUX.2 provides
+        # in place of Qwen's image1/image2 text-encoder arguments.
+        "9": {"class_type": "ReferenceLatent", "inputs": {"conditioning": ["6", 0], "latent": ["8", 0]}},
+        "10": {"class_type": "FluxGuidance", "inputs": {"conditioning": ["9", 0], "guidance": guidance}},
+        "11": {"class_type": "KSampler", "inputs": {
+            "model": ["1", 0], "seed": seed, "steps": steps, "cfg": 1.0, "sampler_name": "euler",
+            "scheduler": "simple", "positive": ["10", 0], "negative": ["7", 0],
+            "latent_image": ["8", 0], "denoise": denoise}},
+        "12": {"class_type": "VAEDecode", "inputs": {"samples": ["11", 0], "vae": ["3", 0]}},
+        "13": {"class_type": "SaveImage", "inputs": {"images": ["12", 0], "filename_prefix": f"{prefix}-raw"}},
+    }
+    if image2:
+        nodes.update({
+            "14": {"class_type": "LoadImage", "inputs": {"image": image2}},
+            "15": {"class_type": "VAEEncode", "inputs": {"pixels": ["14", 0], "vae": ["3", 0]}},
+            "16": {"class_type": "ReferenceLatent", "inputs": {"conditioning": ["9", 0], "latent": ["15", 0]}},
+        })
+        nodes["10"]["inputs"]["conditioning"] = ["16", 0]
+    if mask:
+        nodes.update({
+            "17": {"class_type": "LoadImage", "inputs": {"image": mask}},
+            "18": {"class_type": "ImageToMask", "inputs": {"image": ["17", 0], "channel": "red"}},
+            "19": {"class_type": "SetLatentNoiseMask", "inputs": {"samples": ["8", 0], "mask": ["18", 0]}},
+            "20": {"class_type": "ImageCompositeMasked", "inputs": {"destination": ["5", 0], "source": ["12", 0], "x": 0, "y": 0, "resize_source": False, "mask": ["18", 0]}},
+            "21": {"class_type": "SaveImage", "inputs": {"images": ["20", 0], "filename_prefix": f"{prefix}-masked"}},
+        })
+        nodes["11"]["inputs"]["latent_image"] = ["19", 0]
+    if control:
+        nodes.update({
+            "22": {"class_type": "ControlNetLoader", "inputs": {"control_net_name": CONTROL_NET}},
+            "23": {"class_type": "SetUnionControlNetType",
+                   "inputs": {"control_net": ["22", 0], "type": CONTROL_TYPES[control_type]}},
+            "24": {"class_type": "LoadImage", "inputs": {"image": control}},
+            "25": {"class_type": "ControlNetApplyAdvanced",
+                   "inputs": {"positive": ["10", 0], "negative": ["7", 0], "control_net": ["23", 0],
+                              "image": ["24", 0], "strength": control_strength,
+                              "start_percent": 0.0, "end_percent": 1.0, "vae": ["3", 0]}},
+        })
+        nodes["11"]["inputs"]["positive"] = ["25", 0]
+        nodes["11"]["inputs"]["negative"] = ["25", 1]
     return nodes
 
 
