@@ -551,13 +551,21 @@ def identity_control(server, kind, carrier, preserve, root, work, force, outline
     return path
 
 
-def generate_carrier(server, path, work, force, prompt=CARRIER_PROMPT, negative_prompt=CARRIER_NEGATIVE):
+def generate_carrier(server, path, work, force, prompt=CARRIER_PROMPT, negative_prompt=CARRIER_NEGATIVE,
+                     family="qwen", size=(832, 1248)):
+    """`family` selects the generator: "qwen" is the proven carrier, "flux" the photorealism
+    candidate. See production.flux_generation_graph() for why a second one is worth testing --
+    the carrier's look is the one thing no downstream stage can fix.
+
+    `size` is exposed for the hair experiment: strand detail cannot be recovered by any matte
+    because the source has none (measured 19.6% intermediate pixels at the hair edge), so generating
+    larger and downsampling is the only route to real strands and honest antialiasing."""
     if path.is_file() and not force:
         return
     result_dir = Path(tempfile.mkdtemp(prefix="carrier-", dir=work))
-    result = run(server, production.generation_graph(
-        prompt, production.seed_for("qwen2512:carrier:center"),
-        "cover-story/qwen2512-skin-head-clothes/carrier", size=(832, 1248), canonical=False,
+    result = run(server, production.carrier_graph(
+        family, prompt, production.seed_for("qwen2512:carrier:center"),
+        "cover-story/qwen2512-skin-head-clothes/carrier", size=size, canonical=False,
         negative_prompt=negative_prompt,
     ), result_dir, 2400)
     save_png(Image.open(production.pick(result, "-raw")).convert("RGB"), path)
@@ -1509,7 +1517,8 @@ def remote_bootstrap(ssh, ssh_port, ssh_target):
 
 
 def preflight(server, ssh_target, ssh_port, performer, edit_model, corridor_root,
-              clothes_mode="qwen", extract_mode="corridorkey", matte_remotely=False):
+              clothes_mode="qwen", extract_mode="corridorkey", matte_remotely=False,
+              flux_carrier=False):
     """Fail on a misconfigured instance before any GPU time is spent. Without this the SSH and
     CorridorKey settings are only exercised after four Qwen generations have already run.
 
@@ -1555,6 +1564,11 @@ def preflight(server, ssh_target, ssh_port, performer, edit_model, corridor_root
             # The bootstrap installs CatVTON only when asked: touch the flag so a one-time
             # multi-GB download does not run for the chroma recipe's preflight.
             subprocess.run([*ssh, "mkdir -p /workspace/runpod-slim && touch /workspace/runpod-slim/install-catvton"],
+                           timeout=30, check=False)
+        if flux_carrier:
+            # ~17 GB, so it must not download for a Qwen session. Touched before remote_bootstrap()
+            # so step 9 fetches it inside the same preflight that reports on it.
+            subprocess.run([*ssh, "mkdir -p /workspace/runpod-slim && touch /workspace/runpod-slim/install-flux"],
                            timeout=30, check=False)
         if matte_remotely:
             # Bootstrap step 8 builds the GPU matting venv only when this flag exists, and step 8
@@ -1995,6 +2009,22 @@ def self_test():
     assert CLOTHES_COVERAGE_CLAUSES["default"] == "", "the default must change nothing"
     assert describe_tone((235, 220, 210)) == "fair" and describe_tone((80, 60, 50)) == "deep"
 
+    # carrier_graph(): the two generators are architecturally different, not a checkpoint swap.
+    # FLUX dev is guidance-distilled, so CFG must be 1.0 and steering comes from FluxGuidance --
+    # running it at Qwen's CFG 4 would produce a burnt image and look like the model was at fault.
+    flux = production.carrier_graph("flux", "a woman", 7, "pre", (832, 1248))
+    qwen = production.carrier_graph("qwen", "a woman", 7, "pre", (832, 1248))
+    flux_sampler = next(n for n in flux.values() if n["class_type"] == "KSampler")
+    qwen_sampler = next(n for n in qwen.values() if n["class_type"] == "KSampler")
+    assert flux_sampler["inputs"]["cfg"] == 1.0, "FLUX dev is guidance-distilled; CFG must be 1.0"
+    assert qwen_sampler["inputs"]["cfg"] == 4.0, "the Qwen path must be untouched"
+    assert any(n["class_type"] == "FluxGuidance" for n in flux.values()), "FLUX needs FluxGuidance"
+    assert any(n["class_type"] == "CheckpointLoaderSimple" for n in flux.values()), \
+        "the all-in-one checkpoint supplies model, CLIP and VAE from one file"
+    assert next(n for n in flux.values() if n["class_type"] == "EmptySD3LatentImage")["inputs"]["width"] == 832
+    for graph in (flux, qwen):
+        assert sum(n["class_type"] == "SaveImage" for n in graph.values()) >= 1, "output must be saved"
+
     # remote_matte_plan(): the remote path cannot be exercised without a pod, but everything except
     # the execution can be, and a malformed command found on the pod costs GPU time -- preflight()
     # shipped a NameError on 2026-08-08 that only a real pod call caught.
@@ -2180,6 +2210,15 @@ def main():
                              "body, so the model must generate skin rather than keep the plausible "
                              "flat tone it is handed -- the regime the [skin] stage already reaches "
                              "spread 8.3 in.")
+    parser.add_argument("--carrier-model", choices=("qwen", "flux"), default="qwen",
+                        help="generator for the carrier. 'flux' is the photorealism candidate: the "
+                             "carrier's own look survives every downstream fix, so the plastic result "
+                             "may be the base model rather than anything done to it. Needs a ~17 GB "
+                             "one-time download, which preflight triggers.")
+    parser.add_argument("--carrier-size", type=str, default="832x1248",
+                        help="carrier canvas WxH (default 832x1248, Kontext-native). Larger then "
+                             "downsampled is the only way to get real hair strands, since no matte "
+                             "can recover detail the source never had.")
     parser.add_argument("--matte-local", action="store_true",
                         help="matte on this machine instead of the pod. BiRefNet peaks near 6 GB "
                              "per plate on CPU and has OOM-killed a 7.4 GB dev box; "
@@ -2203,6 +2242,12 @@ def main():
         parser.error("--skin-blend-denoise must be in (0, 1]")
     if args.control_strength <= 0:
         parser.error("--control-strength must be positive")
+    try:
+        carrier_size = tuple(int(part) for part in args.carrier_size.lower().split("x"))
+        if len(carrier_size) != 2 or min(carrier_size) < 256:
+            raise ValueError
+    except ValueError:
+        parser.error("--carrier-size must look like 832x1248")
     apply_variant_dials(args)
     if args.self_test:
         self_test()
@@ -2267,14 +2312,15 @@ def main():
     print("[preflight]", flush=True)
     report(root, "preflight", preflight(server, ssh_target, int(ssh_port), performer,
                                         edit_model, corridorkey_root, clothes_mode, extract_mode,
-                                        bool(matte_remote) and extract_mode == "birefnet"))
+                                        bool(matte_remote) and extract_mode == "birefnet",
+                                        args.carrier_model == "flux"))
     if done("preflight"):
         return print(root)
 
     print("[carrier]", flush=True)
     carrier = root / "carrier.png"
     generate_carrier(server, carrier, work, args.force,
-                     prompt=GREY_CARRIER_PROMPT if grey_carrier else CARRIER_PROMPT)
+                     prompt=GREY_CARRIER_PROMPT if grey_carrier else CARRIER_PROMPT, family=args.carrier_model, size=carrier_size)
     report(root, "carrier", grey_carrier_checks(carrier) if grey_carrier else carrier_checks(carrier))
     if done("carrier"):
         return print(root)

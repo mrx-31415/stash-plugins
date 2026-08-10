@@ -39,6 +39,10 @@ BASE_SEED = 2026080100
 # header declaring float8_e4m3fn only. The sibling comfy-bootstrap repo still needs the same edit.
 EDIT_MODEL = "qwen_image_edit_2511_fp8mixed.safetensors"
 CARRIER_MODEL = "qwen_image_2512_fp8_e4m3fn.safetensors"
+# Alternative carrier generator. All-in-one fp8 checkpoint, so CheckpointLoaderSimple supplies
+# model, CLIP and VAE together and pod_bootstrap.sh fetches one file rather than four that must
+# agree. See flux_generation_graph() for why a second carrier model is worth having at all.
+FLUX_CARRIER_MODEL = "flux1-dev-fp8.safetensors"
 TEXT_ENCODER = "qwen_2.5_vl_7b_fp8_scaled.safetensors"
 VAE = "qwen_image_vae.safetensors"
 SAM_MODEL = "sam3.1_multiplex_fp16.safetensors"
@@ -809,6 +813,54 @@ def generation_graph(prompt, seed, prefix, size=(1328, 1328), canonical=True, ne
             "12": {"class_type": "SaveImage", "inputs": {"images": ["11", 0], "filename_prefix": f"{prefix}-canonical"}},
         })
     return graph
+
+
+def flux_generation_graph(prompt, seed, prefix, size=(1328, 1328), canonical=True,
+                          guidance=3.5, steps=28):
+    """Carrier generation on FLUX.1 dev instead of Qwen Image 2512.
+
+    Why this exists: the carrier's own look survives everything downstream. Its luminance is why the
+    Lab chroma transfer failed, and the odd knee creases persist through every variant including the
+    diffused skin stage -- they are generated, not introduced later. Qwen-Image-Edit is characterised
+    as leaning "illustration-adjacent" in photorealism where FLUX preserves photographic fidelity, so
+    the plastic look this pipeline keeps fighting downstream may simply be the base model. One
+    carrier from each, side by side, settles it.
+
+    Three deliberate differences from generation_graph(), all forced by the architecture rather than
+    chosen: FLUX dev is guidance-distilled, so CFG is 1.0 and steering comes from FluxGuidance;
+    negative conditioning does nothing at CFG 1.0 (this pipeline's NEGATIVE is empty anyway); and it
+    converges in far fewer steps than Qwen's 50.
+
+    The all-in-one fp8 checkpoint is used so CheckpointLoaderSimple supplies model, CLIP and VAE
+    together -- one file for pod_bootstrap.sh to fetch instead of a UNet, two text encoders and a VAE
+    that must all agree."""
+    graph = {
+        "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": FLUX_CARRIER_MODEL}},
+        "2": {"class_type": "CLIPTextEncode", "inputs": {"text": prompt, "clip": ["1", 1]}},
+        "3": {"class_type": "FluxGuidance", "inputs": {"conditioning": ["2", 0], "guidance": guidance}},
+        "4": {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["1", 1]}},
+        "5": {"class_type": "EmptySD3LatentImage", "inputs": {"width": size[0], "height": size[1], "batch_size": 1}},
+        "6": {"class_type": "KSampler", "inputs": {
+            "model": ["1", 0], "seed": seed, "steps": steps, "cfg": 1.0, "sampler_name": "euler",
+            "scheduler": "simple", "positive": ["3", 0], "negative": ["4", 0],
+            "latent_image": ["5", 0], "denoise": 1.0}},
+        "7": {"class_type": "VAEDecode", "inputs": {"samples": ["6", 0], "vae": ["1", 2]}},
+        "8": {"class_type": "SaveImage", "inputs": {"images": ["7", 0], "filename_prefix": f"{prefix}-raw"}},
+    }
+    if canonical:
+        graph.update({
+            "9": {"class_type": "FluxKontextImageScale", "inputs": {"image": ["7", 0]}},
+            "10": {"class_type": "SaveImage", "inputs": {"images": ["9", 0], "filename_prefix": f"{prefix}-canonical"}},
+        })
+    return graph
+
+
+def carrier_graph(family, prompt, seed, prefix, size=(1328, 1328), canonical=True,
+                  negative_prompt=NEGATIVE):
+    """Pick the carrier generator. Same call shape either way so the carrier stage does not branch."""
+    if family == "flux":
+        return flux_generation_graph(prompt, seed, prefix, size, canonical)
+    return generation_graph(prompt, seed, prefix, size, canonical, negative_prompt)
 
 
 def edit_graph(image1, prompt, seed, prefix, image2=None, mask=None,

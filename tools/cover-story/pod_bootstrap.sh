@@ -241,4 +241,34 @@ else
     say matting "skipped (touch $VOLUME/install-matting for GPU matting)"
 fi
 
+# 9. FLUX.1 dev, the alternative carrier generator. Flag-gated like CatVTON and the matting venv:
+#    preflight touches $VOLUME/install-flux when --carrier-model flux is asked for, so a ~17 GB
+#    download never runs for a Qwen-only session.
+#
+#    Why a second generator: the carrier's look survives every downstream fix. Its luminance is why
+#    the Lab chroma transfer failed and its knee creases persist through every skin variant tried, so
+#    the plastic result may be the base model rather than anything the pipeline does to it. One
+#    all-in-one fp8 checkpoint, so ComfyUI's CheckpointLoaderSimple supplies model, CLIP and VAE
+#    together instead of four files that must agree.
+FLUX_CKPT=$COMFY_DIR/models/checkpoints/flux1-dev-fp8.safetensors
+if [ -f "$VOLUME/install-flux" ]; then
+    if [ -s "$FLUX_CKPT" ]; then
+        say flux "checkpoint present"
+    else
+        say flux "downloading flux1-dev-fp8 (one-time, ~17 GB) ..."
+        mkdir -p "$(dirname "$FLUX_CKPT")"
+        # --continue so a dropped connection resumes rather than restarting 17 GB, and a temp name
+        # so an interrupted download is never mistaken for a complete checkpoint on the next run.
+        if curl -fL --continue-at - -o "$FLUX_CKPT.part" \
+            https://huggingface.co/Comfy-Org/flux1-dev/resolve/main/flux1-dev-fp8.safetensors \
+            >/dev/null 2>&1; then
+            mv "$FLUX_CKPT.part" "$FLUX_CKPT" && say flux "downloaded"
+        else
+            fail flux "download failed (partial kept at $FLUX_CKPT.part for resume)"
+        fi
+    fi
+else
+    say flux "skipped (touch $VOLUME/install-flux for the FLUX carrier)"
+fi
+
 exit $status
