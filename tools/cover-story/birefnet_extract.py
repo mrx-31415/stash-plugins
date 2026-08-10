@@ -29,7 +29,7 @@ import numpy as np
 from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from birefnet_ab import birefnet_alpha, make_session  # noqa: E402
+from birefnet_ab import available_providers, birefnet_alpha, make_session  # noqa: E402
 
 
 def upscale(image, model_path, tile=512, overlap=32):
@@ -63,6 +63,47 @@ def upscale(image, model_path, tile=512, overlap=32):
     return Image.fromarray((canvas / np.maximum(weight, 1.0)).astype(np.uint8), mode="RGB")
 
 
+# Peak anon-rss measured for a single 832x1248 plate through BiRefNet-general-tiny on CPU. The
+# allocation lives in the decoder's deformable-convolution ASPP block
+# (/decoder/decoder_block1/dec_att/aspp_deforms.2/atrous_conv/Mul_8) and is not reduced by disabling
+# the arena, by mem-pattern, or by tiling the input -- only by running somewhere with more memory.
+PEAK_MEMORY_MB = 6000
+# Headroom over the peak. Small, because the point is only to refuse a run that is going to fail.
+MEMORY_MARGIN_MB = 500
+
+
+def available_memory_mb():
+    """MemAvailable, i.e. what can be had without swapping -- not MemFree, which ignores reclaimable
+    page cache and would refuse runs that would actually succeed. Returns None off Linux."""
+    try:
+        for line in open("/proc/meminfo"):
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) // 1024
+    except OSError:
+        pass
+    return None
+
+
+def refuse_if_memory_short(providers):
+    """Refuse a CPU run that cannot fit, instead of letting the kernel choose a victim.
+
+    On 2026-08-08/09 this OOM-killed a 7.4 GB dev box three times: it destroyed in-flight pipeline
+    runs and endangered unrelated processes belonging to the user. The peak is not tunable (see
+    PEAK_MEMORY_MB), so the only correct behaviour on a small machine is to decline and say where to
+    run instead. GPU runs are exempt -- the allocation lands in VRAM."""
+    if any("CUDA" in provider for provider in providers):
+        return
+    available = available_memory_mb()
+    if available is not None and available < PEAK_MEMORY_MB + MEMORY_MARGIN_MB:
+        sys.exit(
+            f"refusing to matte locally: {available} MB available, need about "
+            f"{PEAK_MEMORY_MB + MEMORY_MARGIN_MB} MB.\n"
+            "BiRefNet peaks near 6 GB per plate on CPU and has OOM-killed this machine before.\n"
+            "Run this on a pod (pod_bootstrap.sh step 8 provisions the GPU matting venv), or set "
+            "COVER_STORY_ALLOW_LOW_MEMORY_MATTE=1 to override at your own risk."
+        )
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", required=True)
@@ -74,6 +115,8 @@ def main():
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
 
+    if not os.environ.get("COVER_STORY_ALLOW_LOW_MEMORY_MATTE"):
+        refuse_if_memory_short(available_providers())
     session = make_session(args.model)
     image = Image.open(args.source).convert("RGB")
     matte_input = upscale(image, args.upscale) if args.upscale else image

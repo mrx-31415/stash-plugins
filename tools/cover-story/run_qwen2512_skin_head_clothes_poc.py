@@ -606,7 +606,7 @@ def run_viton(server, carrier, garment, envelope, root, work, force, tone="light
 MATTE_CACHE = Path.home() / ".cache" / "cover-story" / "mattes"
 
 
-def cached_matte(source, output, model=None, python=None, upscale=None):
+def cached_matte(source, output, model=None, python=None, upscale=None, remote=None):
     """birefnet_extract(), but reused across runs when the source bytes are identical.
 
     Content-addressed rather than path-addressed: two runs write performer-aligned.png to different
@@ -621,12 +621,90 @@ def cached_matte(source, output, model=None, python=None, upscale=None):
     cached = MATTE_CACHE / f"{key.hexdigest()[:16]}.png"
     if not cached.is_file():
         MATTE_CACHE.mkdir(parents=True, exist_ok=True)
-        birefnet_extract(source, None, cached, model or DEFAULT_BIREFNET_MODEL,
-                         python or DEFAULT_BIREFNET_PYTHON, False, upscale)
+        if remote:
+            remote_matte(source, None, cached, remote[0], remote[1],
+                         model or DEFAULT_BIREFNET_MODEL, upscale)
+        else:
+            birefnet_extract(source, None, cached, model or DEFAULT_BIREFNET_MODEL,
+                             python or DEFAULT_BIREFNET_PYTHON, False, upscale)
     else:
         print(f"  matte: cache hit {cached.name}", flush=True)
     output.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(cached, output)
+    return output
+
+
+# Where the matting venv and models live on the pod's persistent volume. The venv is built by
+# pod_bootstrap.sh step 8, which gates on CUDAExecutionProvider actually being listed rather than on
+# the wheel installing -- stock onnxruntime installs cleanly and then silently runs on CPU.
+POD_VOLUME = "/workspace/runpod-slim"
+POD_MATTE_PYTHON = f"{POD_VOLUME}/matting-venv/bin/python"
+POD_MATTE_DIR = f"{POD_VOLUME}/matting"
+
+
+def ssh_options(ssh_port):
+    """Multiplexed SSH, mirroring production.standalone_alpha(): one connection is reused across the
+    several calls a single matte needs instead of paying a handshake for each."""
+    return ["-q", "-o", "BatchMode=yes", "-o", "ConnectTimeout=20",
+            "-o", "ControlMaster=auto", "-o", "ControlPersist=120",
+            "-o", "ControlPath=/tmp/cover-story-ssh-%C", "-p", str(ssh_port)]
+
+
+def remote_matte_plan(source, aperture, output, ssh_target, ssh_port, model, upscale=None):
+    """The commands remote_matte() will run, as data, so they can be asserted without a pod.
+
+    Split out because the remote path cannot be exercised by the self-tests -- everything except the
+    execution itself can be, and a malformed command discovered on the pod costs GPU time. That is
+    not hypothetical: preflight() shipped with a NameError on 2026-08-08 and was only caught by an
+    actual pod call."""
+    options = ssh_options(ssh_port)
+    remote_shell = "ssh " + " ".join(options)
+    stem = Path(output).stem.replace(":", "-")
+    remote = f"{POD_MATTE_DIR}/{stem}"
+    push = [str(source), str(TOOL_ROOT / "birefnet_extract.py"), str(TOOL_ROOT / "birefnet_ab.py"),
+            str(model)]
+    if aperture:
+        push.append(str(aperture))
+    if upscale:
+        push.append(str(upscale))
+    run = [POD_MATTE_PYTHON, f"{remote}/birefnet_extract.py",
+           "--source", f"{remote}/{Path(source).name}",
+           "--model", f"{remote}/{Path(model).name}",
+           "--output", f"{remote}/alpha.png"]
+    if aperture:
+        run += ["--aperture", f"{remote}/{Path(aperture).name}"]
+    if upscale:
+        run += ["--upscale", f"{remote}/{Path(upscale).name}"]
+    return {
+        "remote": remote,
+        "mkdir": ["ssh", *options, ssh_target, f"mkdir -p {remote}"],
+        # --ignore-existing on the model only: it is 224 MB and never changes, so re-sending it on
+        # every plate would dominate the transfer.
+        "push": ["rsync", "-az", "--no-owner", "--no-group", "-e", remote_shell,
+                 *push, f"{ssh_target}:{remote}/"],
+        "run": ["ssh", *options, ssh_target, " ".join(run)],
+        "fetch": ["rsync", "-az", "--no-owner", "--no-group", "-e", remote_shell,
+                  f"{ssh_target}:{remote}/alpha.png", str(output)],
+    }
+
+
+def remote_matte(source, aperture, output, ssh_target, ssh_port, model=DEFAULT_BIREFNET_MODEL,
+                 upscale=None, force=False):
+    """Matte on the pod's GPU. This is the only supported path on a small machine.
+
+    BiRefNet peaks near 6 GB per plate on CPU; that OOM-killed the dev box three times on
+    2026-08-08/09, taking in-flight runs and unrelated user processes with it. On the pod the
+    allocation lands in 32 GB of VRAM and the pass takes well under a second instead of ~2 min, so
+    this also takes local CPU work off the critical path *between* GPU stages."""
+    if output.is_file() and not force:
+        return output
+    plan = remote_matte_plan(source, aperture, output, ssh_target, ssh_port, model, upscale)
+    for step in ("mkdir", "push", "run"):
+        result = subprocess.run(plan[step], capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"remote matte {step} failed: {result.stderr.strip()[:400]}")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(plan["fetch"], check=True)
     return output
 
 
@@ -1046,7 +1124,8 @@ def sample_face_tone(image):
 
 
 def compose_identity(server, aligned, carrier, root, work, screen="blue",
-                     birefnet_model=DEFAULT_BIREFNET_MODEL, birefnet_python=DEFAULT_BIREFNET_PYTHON):
+                     birefnet_model=DEFAULT_BIREFNET_MODEL, birefnet_python=DEFAULT_BIREFNET_PYTHON,
+                     matte_remote=None):
     """Build the identity plate by pasting the performer's own head onto the carrier's own body,
     instead of asking diffusion to regenerate a body that only approximates the carrier's
     proportions.
@@ -1088,7 +1167,7 @@ def compose_identity(server, aligned, carrier, root, work, screen="blue",
     # unnoticed; required the moment the preprocess stage renders her on grey to keep blue spill
     # out of her hair edge. Local matting, no pod. See production.rebackground().
     aligned_alpha_path = root / "masks" / "performer-aligned-alpha.png"
-    cached_matte(aligned, aligned_alpha_path, birefnet_model, birefnet_python)
+    cached_matte(aligned, aligned_alpha_path, birefnet_model, birefnet_python, remote=matte_remote)
     aligned_image = production.rebackground(image_from(aligned),
                                             image_from(aligned_alpha_path).convert("L"),
                                             image_from(aligned).getpixel((8, 8)),
@@ -1762,6 +1841,29 @@ def self_test():
     assert "high collar" in rendered and "image 2" in rendered, \
         "the garment-ref prompt must carry both the image reference and the text description"
 
+    # remote_matte_plan(): the remote path cannot be exercised without a pod, but everything except
+    # the execution can be, and a malformed command found on the pod costs GPU time -- preflight()
+    # shipped a NameError on 2026-08-08 that only a real pod call caught.
+    plan = remote_matte_plan(root / "plate.png", root / "ap.png", root / "out:alpha.png",
+                             "root@example", 2222, root / "model.onnx")
+    assert plan["mkdir"][:2] == ["ssh", "-q"] and plan["mkdir"][-1].startswith("mkdir -p ")
+    assert "-p" in plan["mkdir"] and "2222" in plan["mkdir"], "the port must reach ssh"
+    assert "ControlMaster=auto" in plan["mkdir"], "one connection must be reused across the steps"
+    pushed = [Path(a).name for a in plan["push"] if a.endswith((".png", ".onnx", ".py"))]
+    for required in ("plate.png", "ap.png", "model.onnx", "birefnet_extract.py", "birefnet_ab.py"):
+        assert required in pushed, f"{required} must be sent to the pod"
+    remote_cmd = plan["run"][-1]
+    assert remote_cmd.startswith(POD_MATTE_PYTHON), "must use the pod's matting venv, not system python"
+    assert "--aperture" in remote_cmd, "an aperture must be passed through"
+    assert plan["remote"] in remote_cmd and "/alpha.png" in remote_cmd
+    # The colon in a "poc:qwen2512-..." output name would split an scp-style path; it must not
+    # survive into the remote directory.
+    assert ":" not in plan["remote"].split("/")[-1], "remote directory names must not contain a colon"
+    assert plan["fetch"][-1].endswith("out:alpha.png"), "the alpha comes back to the requested path"
+    no_ap = remote_matte_plan(root / "p.png", None, root / "o.png", "root@example", 22,
+                              root / "m.onnx")
+    assert "--aperture" not in no_ap["run"][-1], "no aperture means no flag"
+
     # cached_matte(): content-addressed, so an identical plate written to a different output
     # directory hits the cache, and a different model does not.
     matte_src = root / "matte-src.png"
@@ -1879,6 +1981,10 @@ def main():
                              "same-resolution control. Off by default: proven on a head crop, not "
                              "yet on a whole plate.")
     parser.add_argument("--upscale-model", type=Path, default=DEFAULT_UPSCALE_MODEL)
+    parser.add_argument("--matte-local", action="store_true",
+                        help="matte on this machine instead of the pod. BiRefNet peaks near 6 GB "
+                             "per plate on CPU and has OOM-killed a 7.4 GB dev box; "
+                             "birefnet_extract.py refuses unless the memory is there.")
     parser.add_argument("--grey-preprocess", action="store_true",
                         help="render the performer preprocess on a flat grey backdrop instead of "
                              "chroma blue. The transplanted head carries its own backdrop into the "
@@ -1927,6 +2033,11 @@ def main():
         parser.error("--grey-carrier requires --clothes-mode garment-ref or viton (the grey carrier "
                      "exists for the matting paths; the chroma recipe is unchanged)")
     extract_mode = args.extract_mode or ("birefnet" if (grey_carrier or clothes_mode == "viton") else "corridorkey")
+    # Matting runs on the pod by default. BiRefNet peaks near 6 GB per plate on CPU, which
+    # OOM-killed the dev box three times on 2026-08-08/09, destroying in-flight runs and
+    # endangering unrelated user processes. --matte-local forces the old behaviour, and
+    # birefnet_extract.py still refuses if the memory is not actually there.
+    matte_remote = None if args.matte_local else (ssh_target, int(ssh_port))
     if clothes_mode == "viton" and extract_mode != "birefnet":
         parser.error("--clothes-mode viton requires --extract-mode birefnet (no key colour to key)")
     screen = "grey" if grey_carrier else "blue"
@@ -2040,7 +2151,8 @@ def main():
     # problem fails fast rather than after an edit call that would only inherit it.
     aligned = aligned_performer(server, preprocessed, carrier, root, work, preprocess_screen, screen)
     composite, preserved_head, toned_body, transplant_source = compose_identity(server, aligned, carrier, root, work, screen,
-                                                          args.birefnet_model, args.birefnet_python)
+                                                          args.birefnet_model, args.birefnet_python,
+                                                          matte_remote)
     report(root, "identity-composite",
            identity_composite_checks(transplant_source, carrier, toned_body, composite, preserved_head, screen))
     # A small, local touch-up on the join; see smooth_seam(). masked_edit_checks() already proves
@@ -2148,8 +2260,12 @@ def main():
         # derive the aperture from, so it uses the SAM head-stop mask saved by bootstrap_envelope.
         matte_upscale = args.upscale_model if args.matte_upscale else None
         identity_alpha_path = root / "poc:qwen2512-identity-alpha.png"
-        birefnet_extract(identity, None, identity_alpha_path, args.birefnet_model, args.birefnet_python,
-                         args.force, matte_upscale)
+        if matte_remote:
+            remote_matte(identity, None, identity_alpha_path, *matte_remote,
+                         args.birefnet_model, matte_upscale, args.force)
+        else:
+            birefnet_extract(identity, None, identity_alpha_path, args.birefnet_model,
+                             args.birefnet_python, args.force, matte_upscale)
         if grey_carrier:
             envelope = load_accepted_envelope(root, carrier)
             clothes_aperture_path = envelope["head_stop"]
@@ -2158,8 +2274,12 @@ def main():
             key_aperture(image_from(clothes), CLOTHES_KEY_COLOR).save(clothes_aperture_path)
         clothes_aperture = image_from(clothes_aperture_path).convert("L")
         clothes_alpha_path = root / "poc:qwen2512-clothes-alpha.png"
-        birefnet_extract(clothes, clothes_aperture_path, clothes_alpha_path, args.birefnet_model,
-                         args.birefnet_python, args.force, matte_upscale)
+        if matte_remote:
+            remote_matte(clothes, clothes_aperture_path, clothes_alpha_path, *matte_remote,
+                         args.birefnet_model, matte_upscale, args.force)
+        else:
+            birefnet_extract(clothes, clothes_aperture_path, clothes_alpha_path,
+                             args.birefnet_model, args.birefnet_python, args.force, matte_upscale)
         # Hybrid matte: BiRefNet decides shape, chroma decides whether a boundary pixel is subject
         # at all. BiRefNet has no colour semantics, so on a chroma plate its matte swallows the
         # spill band whole -- see production.chroma_gate(). Idempotent, so a resumed run that reads
