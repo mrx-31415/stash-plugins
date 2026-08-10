@@ -1397,7 +1397,7 @@ def remote_bootstrap(ssh, ssh_port, ssh_target):
 
 
 def preflight(server, ssh_target, ssh_port, performer, edit_model, corridor_root,
-              clothes_mode="qwen", extract_mode="corridorkey", matte_upscale=False):
+              clothes_mode="qwen", extract_mode="corridorkey", matte_remotely=False):
     """Fail on a misconfigured instance before any GPU time is spent. Without this the SSH and
     CorridorKey settings are only exercised after four Qwen generations have already run.
 
@@ -1444,11 +1444,11 @@ def preflight(server, ssh_target, ssh_port, performer, edit_model, corridor_root
             # multi-GB download does not run for the chroma recipe's preflight.
             subprocess.run([*ssh, "mkdir -p /workspace/runpod-slim && touch /workspace/runpod-slim/install-catvton"],
                            timeout=30, check=False)
-        if matte_upscale:
-            # Same flag-gating for the GPU matting venv (bootstrap step 8). Matting still runs
-            # locally -- this only prepares and *verifies* the pod-side environment, so the
-            # 25m30s-per-plate CPU cost has somewhere faster to go once the runner learns to
-            # matte over SSH the way standalone_alpha() already does for CorridorKey.
+        if matte_remotely:
+            # Bootstrap step 8 builds the GPU matting venv only when this flag exists, and step 8
+            # is what makes remote_matte() possible at all -- so the flag must be touched whenever
+            # matting will run on the pod, not merely when --matte-upscale is set. Touched before
+            # remote_bootstrap() below so the venv is built in the same preflight that checks it.
             subprocess.run([*ssh, "mkdir -p /workspace/runpod-slim && touch /workspace/runpod-slim/install-matting"],
                            timeout=30, check=False)
         record(*remote_bootstrap(ssh, ssh_port, ssh_target))
@@ -2065,7 +2065,7 @@ def main():
     print("[preflight]", flush=True)
     report(root, "preflight", preflight(server, ssh_target, int(ssh_port), performer,
                                         edit_model, corridorkey_root, clothes_mode, extract_mode,
-                                        args.matte_upscale))
+                                        bool(matte_remote) and extract_mode == "birefnet"))
     if done("preflight"):
         return print(root)
 
