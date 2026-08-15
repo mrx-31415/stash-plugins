@@ -3106,6 +3106,36 @@ def run_operation(args, configuration, local_url, local_headers, server):
             raise ValueError("tag names must be a list of strings")
         return {"local_tag_names": sorted(find_local_tags(local_url, local_headers, names))}
 
+    if mode == "infer_scan":
+        return infer_scan_all(
+            local_url,
+            local_headers,
+            server,
+            _infer_require_token(server, args),
+            configured_providers(configuration),
+        )
+    if mode == "infer_status":
+        token = _infer_resolve_token(server, args)
+        if token is None:
+            return infer_status(server, None, None)
+        return infer_status(server, read_infer_state(server, token), token)
+    if mode == "infer_review":
+        token = _infer_require_token(server, args)
+        return infer_review(_infer_state_for(server, token, "review"), args)
+    if mode == "infer_apply":
+        token = _infer_require_token(server, args)
+        return infer_apply(local_url, local_headers, server, _infer_state_for(server, token, "apply"), args)
+    if mode == "infer_apply_all":
+        token = _infer_require_token(server, args)
+        return infer_apply_all(
+            local_url, local_headers, server, _infer_state_for(server, token, "apply_all")
+        )
+    if mode == "infer_skip":
+        token = _infer_require_token(server, args)
+        return infer_skip(server, _infer_state_for(server, token, "skip"), args)
+    if mode == "infer_unskip":
+        token = _infer_require_token(server, args)
+        return infer_unskip(server, _infer_state_for(server, token, "unskip"), args)
     provider = providers.get(args.get("provider"))
     if not provider:
         raise ValueError("select a configured metadata provider")
@@ -4334,8 +4364,814 @@ def self_test():
     finally:
         graphql = real_cleanup_graphql
     assert any(call[0] == TAG_DESTROY_MUTATION for call in cleanup_calls)
+
+    # ── scene tag inference ──────────────────────────────────────────────────
+    import tempfile as _tempfile
+    infer_tags = [
+        {"id": "60", "name": "Threesome", "aliases": []},
+        {"id": "1309", "name": "Threesome (BGG)", "aliases": []},
+        {"id": "1320", "name": "Threesome (BBG)", "aliases": []},
+        {"id": "1324", "name": "Threesome (Lesbian)", "aliases": []},
+        {"id": "1098", "name": "Solo", "aliases": []},
+        {"id": "55", "name": "Orgy", "aliases": []},
+        {"id": "54", "name": "Group Sex", "aliases": []},
+        {"id": "143", "name": "Foursome", "aliases": []},
+        {"id": "1132", "name": "Gangbang", "aliases": []},
+        {"id": "1110", "name": "Bukkake", "aliases": []},
+        {"id": "comp", "name": "Compilation", "aliases": []},
+        {"id": "vint", "name": "Vintage", "aliases": []},
+    ]
+    infer_scenes = [
+        # 3 performers (2F 1M), no group tag -> Threesome (BGG)
+        {"id": "a", "title": "Alpha", "date": "2020-01-01", "details": "", "performers": [{"id": "1", "gender": "FEMALE"}, {"id": "2", "gender": "FEMALE"}, {"id": "3", "gender": "MALE"}], "tags": [{"id": "les"}], "paths": {"screenshot": "/s/a.jpg"}},
+        # 3 performers (1F 2M) -> Threesome (BBG)
+        {"id": "h", "title": "Eta Prime", "date": "2021-06-01", "details": "", "performers": [{"id": "1", "gender": "FEMALE"}, {"id": "2", "gender": "MALE"}, {"id": "3", "gender": "MALE"}], "tags": [], "paths": {"screenshot": None}},
+        # 3 performers with unknown genders locally; stash-box knows 2F 1M -> Threesome (BGG)
+        {"id": "i", "title": "Iota", "date": "2021-06-01", "details": "", "performers": [{"id": "1"}, {"id": "2"}, {"id": "3"}], "tags": [], "stash_ids": [{"endpoint": "https://stashdb.example.org/graphql", "stash_id": "si"}], "paths": {"screenshot": None}},
+        # 2 performers locally, described as a threesome; stash-box lists 3 (1F 2M) -> BBG
+        {"id": "b", "title": "Beta Three-way", "date": "2021-01-01", "details": "a spicy trio", "performers": [{"id": "1"}, {"id": "2"}], "tags": [], "stash_ids": [{"endpoint": "https://stashdb.example.org/graphql", "stash_id": "sb"}], "paths": {"screenshot": None}},
+        # 5 performers -> Group Sex
+        {"id": "c", "title": "Gamma", "date": "2022-01-01", "details": "", "performers": [{"id": str(i)} for i in range(5)], "tags": [], "paths": {"screenshot": None}},
+        # 3 performers, all female (GGG) -> Threesome (Lesbian)
+        {"id": "k", "title": "Kappa Girls", "date": "2020-05-01", "details": "", "performers": [{"id": "1", "gender": "FEMALE"}, {"id": "2", "gender": "FEMALE"}, {"id": "3", "gender": "FEMALE"}], "tags": [], "paths": {"screenshot": None}},
+        # compilation in title -> Compilation
+        {"id": "d", "title": "Best of Delta Compilation", "date": "2023-01-01", "details": "", "performers": [], "tags": [], "paths": {"screenshot": None}},
+        # pre-2000 -> Vintage
+        {"id": "e", "title": "Epsilon", "date": "1998-06-01", "details": "", "performers": [], "tags": [], "paths": {"screenshot": None}},
+        # already tagged Threesome -> no suggestion
+        {"id": "f", "title": "Zeta", "date": "2020-01-01", "details": "", "performers": [{"id": "1"}, {"id": "2"}, {"id": "3"}], "tags": [{"id": "60"}], "paths": {"screenshot": None}},
+        # 2 performers, no keywords -> no suggestion
+        {"id": "g", "title": "Eta", "date": "2020-01-01", "details": "", "performers": [{"id": "1"}, {"id": "2"}], "tags": [], "paths": {"screenshot": None}},
+        # 1 performer, described as a threesome, but stash-box confirms a
+        # twosome -> the mention is setup flavor, no suggestion
+        {"id": "j", "title": "Jade's Sneaky Steam", "date": "2018-06-04", "details": "a hot threesome setup with a potential partner", "performers": [{"id": "1"}], "tags": [], "stash_ids": [{"endpoint": "https://stashdb.example.org/graphql", "stash_id": "sj"}], "paths": {"screenshot": None}},
+        # Complete-looking local 3F cast, but stash-box lists 4 (3F 1M): the
+        # local cast undercounts -> Group Sex from the remote count
+        {"id": "m", "title": "Missing Fourth", "date": "2020-01-01", "details": "", "performers": [{"id": "1", "gender": "FEMALE"}, {"id": "2", "gender": "FEMALE"}, {"id": "3", "gender": "FEMALE"}], "tags": [], "stash_ids": [{"endpoint": "https://stashdb.example.org/graphql", "stash_id": "sm"}], "paths": {"screenshot": None}},
+        # Solo: 1 local performer, remote confirms 1 -> Solo suggestion
+        {"id": "n", "title": "Alone Time", "date": "2020-01-01", "details": "", "performers": [{"id": "1", "gender": "FEMALE"}], "tags": [], "stash_ids": [{"endpoint": "https://stashdb.example.org/graphql", "stash_id": "sn"}], "paths": {"screenshot": None}},
+        # Not solo: 1 local performer, remote shows 2 -> no Solo suggestion
+        {"id": "o", "title": "Duo Missing", "date": "2020-01-01", "details": "", "performers": [{"id": "1", "gender": "FEMALE"}], "tags": [], "stash_ids": [{"endpoint": "https://stashdb.example.org/graphql", "stash_id": "so"}], "paths": {"screenshot": None}},
+        # Not solo: 1 local performer, already Solo-tagged -> no suggestion
+        {"id": "p", "title": "Tagged Solo", "date": "2020-01-01", "details": "", "performers": [{"id": "1", "gender": "FEMALE"}], "tags": [{"id": "1098"}], "stash_ids": [{"endpoint": "https://stashdb.example.org/graphql", "stash_id": "sp"}], "paths": {"screenshot": None}},
+        # Not solo: 1 remote performer but stash-box tags it Twosome -> rejected
+        {"id": "q", "title": "Tagged Twosome", "date": "2020-01-01", "details": "", "performers": [{"id": "1", "gender": "FEMALE"}], "tags": [], "stash_ids": [{"endpoint": "https://stashdb.example.org/graphql", "stash_id": "sq"}], "paths": {"screenshot": None}},
+        # Not solo: 1 performer everywhere but described with her boyfriend -> rejected
+        {"id": "r", "title": "Date Night", "date": "2020-01-01", "details": "she spends the evening with her boyfriend", "performers": [{"id": "1", "gender": "FEMALE"}], "tags": [], "stash_ids": [{"endpoint": "https://stashdb.example.org/graphql", "stash_id": "sr"}], "paths": {"screenshot": None}},
+        # Not solo: 1 performer everywhere but described with a blowjob -> rejected
+        {"id": "s", "title": "Facial Fan", "date": "2020-01-01", "details": "she takes a messy facial from his cock", "performers": [{"id": "1", "gender": "FEMALE"}], "tags": [], "stash_ids": [{"endpoint": "https://stashdb.example.org/graphql", "stash_id": "ss"}], "paths": {"screenshot": None}},
+        # Not solo: 1 performer everywhere but tagged Cowgirl -> rejected by tags
+        {"id": "t", "title": "Ride Along", "date": "2020-01-01", "details": "", "performers": [{"id": "1", "gender": "FEMALE"}], "tags": [{"id": "x1", "name": "Cowgirl"}], "stash_ids": [{"endpoint": "https://stashdb.example.org/graphql", "stash_id": "st"}], "paths": {"screenshot": None}},
+    ]
+    real_graphql = graphql
+    infer_calls = []
+
+    remote_performers = {
+        "si": [{"performer": {"gender": "FEMALE"}}, {"performer": {"gender": "FEMALE"}}, {"performer": {"gender": "MALE"}}],
+        "sb": [{"performer": {"gender": "FEMALE"}}, {"performer": {"gender": "MALE"}}, {"performer": {"gender": "MALE"}}],
+        "sj": [{"performer": {"gender": "FEMALE"}}, {"performer": {"gender": "MALE"}}],
+        "sm": [{"performer": {"gender": "FEMALE"}}, {"performer": {"gender": "FEMALE"}}, {"performer": {"gender": "FEMALE"}}, {"performer": {"gender": "MALE"}}],
+        "sn": [{"performer": {"gender": "FEMALE"}}],
+        "so": [{"performer": {"gender": "FEMALE"}}, {"performer": {"gender": "MALE"}}],
+        "sp": [{"performer": {"gender": "FEMALE"}}],
+        "sq": [{"performer": {"gender": "FEMALE"}}],
+        "sr": [{"performer": {"gender": "FEMALE"}}],
+        "ss": [{"performer": {"gender": "FEMALE"}}],
+        "st": [{"performer": {"gender": "FEMALE"}}],
+    }
+    solo_remote_tags = {
+        "sn": ["Solo"],
+        "sq": ["Twosome"],
+    }
+    infer_providers = {
+        "https://stashdb.example.org/graphql": {
+            "endpoint": "https://stashdb.example.org/graphql",
+            "api_key": "key",
+        }
+    }
+
+    def fake_infer_graphql(url, query, variables=None, headers=None):
+        infer_calls.append(query)
+        if query == TAGS_QUERY:
+            return {"findTags": {"tags": infer_tags}}
+        if query == TAG_SEARCH_QUERY:
+            wanted = (variables or {}).get("filter", {}).get("q", "")
+            return {"findTags": {"tags": [t for t in infer_tags if t["name"].casefold() == wanted.casefold()]}}
+        if query == INFER_SCENES_QUERY:
+            page = (variables or {}).get("filter", {}).get("page", 1)
+            if page == 1:
+                return {"findScenes": {"count": len(infer_scenes), "scenes": infer_scenes}}
+            return {"findScenes": {"count": len(infer_scenes), "scenes": []}}
+        if query == REMOTE_PERFORMERS_QUERY:
+            return {
+                "findScene": {
+                    "performers": remote_performers.get(variables.get("id"), []),
+                    "tags": [{"name": name} for name in solo_remote_tags.get(variables.get("id"), [])],
+                }
+            }
+        if query.startswith("query RemotePerformers("):
+            out = {}
+            for name, value in (variables or {}).items():
+                if name.startswith("id_"):
+                    out["scene_" + name[3:]] = {
+                        "performers": remote_performers.get(value, []),
+                        "tags": [{"name": tag} for tag in solo_remote_tags.get(value, [])],
+                    }
+            return out
+        if query == BULK_UPDATE_SCENES_MUTATION:
+            return {"bulkSceneUpdate": [{"id": sid} for sid in variables["input"]["ids"]]}
+        raise AssertionError("unexpected inference query: " + (query or "")[:60])
+
+    graphql = fake_infer_graphql
+    with _tempfile.TemporaryDirectory() as tmp:
+        infer_server = {"Dir": tmp}
+        result = infer_scan_all(
+            "http://local", {}, infer_server, "infer-self-test-token", infer_providers
+        )
+        got = {(item["scene_id"], item["suggested"]) for item in result["suggestions"]}
+        assert got == {
+            ("a", "Threesome (BGG)"), ("h", "Threesome (BBG)"), ("i", "Threesome (BGG)"),
+            ("k", "Threesome (Lesbian)"), ("m", "Group Sex"), ("n", "Solo"),
+            ("b", "Threesome (BBG)"), ("c", "Group Sex"), ("d", "Compilation"), ("e", "Vintage"),
+        }, got
+        assert ("o", "Solo") not in got and ("p", "Solo") not in got and ("q", "Solo") not in got and ("r", "Solo") not in got and ("s", "Solo") not in got and ("t", "Solo") not in got
+        reasons = {item["scene_id"]: item["reason"] for item in result["suggestions"]}
+        assert "3 performers (2F 1M)" in reasons["a"]
+        assert "3 performers (1F 2M)" in reasons["h"]
+        assert "3 performers (3F)" in reasons["k"]
+        # remote augmentation: local genders were unknown, stash-box supplied them
+        assert "3 performers (2F 1M) · StashDB" in reasons["i"]
+        assert "3 performers (1F 2M) · StashDB" in reasons["b"]
+        state = read_infer_state(infer_server, "infer-self-test-token")
+        assert state["status"] == "done"
+        review = infer_review(state, {"page": 1, "per_page": 50})
+        assert review["suggestion_count"] == 10
+        applied = infer_apply("http://local", {}, infer_server, state, {
+            "actions": [{"scene_id": "a", "tag_name": "Threesome (BGG)"}],
+        })
+        assert applied["applied"] == 1
+        assert state["suggestions"][0]["applied"] is True
+        all_result = infer_apply_all("http://local", {}, infer_server, state)
+        assert all_result["applied"] == 9, all_result
+        assert sum(item["applied"] for item in state["suggestions"]) == 10
+        assert infer_apply_all("http://local", {}, infer_server, state)["processed"] == 0
+        unskip = infer_unskip(infer_server, state, {
+            "scene_id": "e", "tag_name": "Vintage",
+        })
+        assert unskip["skipped"] is False
+        item = next(i for i in state["suggestions"] if i["scene_id"] == "e")
+        assert item["skipped"] is False
+    graphql = real_graphql
     print("self-check passed")
 
+
+# ── Scene tag inference ───────────────────────────────────────────────────────
+# Suggest missing tags from scene properties: group tags from performer count
+# or description, Compilation from the title, Vintage from the release date.
+# Suggestions are a review queue — applying is explicit and reversible.
+
+INFER_STATE_NAME = "infer-review.json"
+INFER_PAGE_SIZE = 100
+INFER_REVIEW_PAGE_SIZE = 50
+# bulkSceneUpdate costs ~0.45s per scene on the live library: 100-scene
+# batches blow past the 30s GraphQL timeout, so applies use small batches.
+INFER_APPLY_BATCH = 10
+# Remote prefetch concurrency per provider: bounded so rate limits degrade
+# gracefully (retry once, skip the batch) instead of hammering the endpoint.
+REMOTE_PREFETCH_WORKERS = 4
+INFER_GROUP_TAG_NAMES = (
+    "Threesome", "Threesome (BGG)", "Threesome (BBG)", "Threesome (Lesbian)",
+    "Orgy", "Group Sex", "Foursome", "Gangbang", "Bukkake",
+)
+# Threesome-family suggestions: a scene needs at most one of these.
+INFER_THREESOME_SUGGESTIONS = (
+    "Threesome", "Threesome (BGG)", "Threesome (BBG)", "Threesome (Lesbian)",
+)
+THREESOME_WORDS = re.compile(r"\b(threesome|three-way|3-way|3way|trio)\b", re.I)
+COMPILATION_WORDS = re.compile(r"\b(compilation|best of)\b", re.I)
+
+INFER_SCENES_QUERY = """
+query InferScenes($filter: FindFilterType) {
+  findScenes(filter: $filter) {
+    count
+    scenes {
+      id title date details
+      performers { id gender }
+      tags { id name }
+      stash_ids { endpoint stash_id }
+      paths { screenshot }
+    }
+  }
+}
+"""
+
+REMOTE_PERFORMERS_QUERY = """
+query RemotePerformers($id: ID!) {
+  findScene(id: $id) { performers { performer { gender } } tags { name } }
+}
+"""
+
+
+def remote_performers_batch_query(scene_ids):
+    variables = {}
+    fields = []
+    aliases = {}
+    for index, (cache_key, scene_id) in enumerate(scene_ids):
+        variable = f"id_{index}"
+        alias = f"scene_{index}"
+        variables[variable] = scene_id
+        aliases[alias] = cache_key
+        fields.append(f"{alias}: findScene(id: ${variable}) {{ performers {{ performer {{ gender }} }} tags {{ name }} }}")
+    declarations = ", ".join(f"${name}: ID!" for name in variables)
+    return f"query RemotePerformers({declarations}) {{ {' '.join(fields)} }}", variables, aliases
+
+
+# ── Non-solo vocabulary ────────────────────────────────────────────────────────
+# One canonical list of words/phrases that imply a partner is involved in a
+# scene. Any of them in the scene's own text (title/details), its local tags,
+# or its stash-box tags disqualifies a Solo suggestion — a scene tagged
+# "Cowgirl" or described with a "facial" is not solo even when both cast
+# records undercount the performers. The description check additionally
+# matches pronouns and partner phrases, which only occur in free text.
+INFER_NON_SOLO_TERMS = (
+    # relationships and group makeup
+    "couple", "twosome", "duo", "threesome", "orgy", "group sex", "foursome",
+    "gangbang", "bukkake", "partner", "boyfriend", "girlfriend", "husband",
+    "wife", "lover", "cheating", "cuckold", "affair",
+    # male participants
+    "man", "men", "male", "guy", "guys", "stud", "dude", "bloke",
+    # male-act terms
+    "blowjob", "handjob", "facial", "creampie", "cumshot", "cum in", "cum on",
+    "deepthroat", "rimjob", "rimming", "cock", "dick", "big dick", "pov",
+    # partner positions
+    "cowgirl", "reverse cowgirl", "missionary", "doggy", "riding", "side fuck",
+    "spoon", "piledriver", "anal sex", "double penetration", "tit.?fuck", "foot.?job",
+)
+INFER_NON_SOLO_PATTERN = r"\b(" + "|".join(
+    re.escape(term) if term.isalpha() else term for term in INFER_NON_SOLO_TERMS
+) + r")\b"
+
+INFER_NON_SOLO_TEXT = re.compile(
+    INFER_NON_SOLO_PATTERN
+    + r"|\b(with (a|her|his) (man|guy|male|stud|dude|bloke))\b"
+    + r"|\b(her (man|guy|stud|dude))\b"
+    + r"|\b(his (woman|girl))\b"
+    + r"|\b(he|him|his)\b"
+    + r"|\b(sucks?|fucks?|rides?|services|pleases|pounded|pounding)\b",
+    re.I,
+)
+
+INFER_NON_SOLO_TAG_TEXT = re.compile(INFER_NON_SOLO_PATTERN, re.I)
+
+
+def prefetch_remote_performers(scenes, providers, cache, tags_cache=None):
+    """Fetch performer genders (and optionally scene tags) from stash-box for
+    scenes whose local cast is incomplete. cache: {(endpoint, stash_id):
+    [gender, ...]}; tags_cache (optional): {(endpoint, stash_id): [tag, ...]}."""
+    pending = {}
+    for scene in scenes:
+        for stash_id in scene.get("stash_ids") or []:
+            endpoint = stash_id.get("endpoint")
+            if endpoint not in providers:
+                continue
+            cache_key = (endpoint, stash_id["stash_id"])
+            if cache_key not in cache:
+                pending.setdefault(endpoint, {})[cache_key] = stash_id["stash_id"]
+
+    def fetch_endpoint(endpoint, scene_ids):
+        provider = providers[endpoint]
+        items = list(scene_ids.items())
+        chunks = [
+            items[offset : offset + REMOTE_BATCH_SIZE]
+            for offset in range(0, len(items), REMOTE_BATCH_SIZE)
+        ]
+        lock = threading.Lock()
+        index = [0]
+        failed = [False]
+
+        def fetch(chunk):
+            if len(chunk) == 1:
+                # A single item skips the batch: fetch it directly.
+                cache_key, stash_id = chunk[0]
+                data = graphql(
+                    endpoint,
+                    REMOTE_PERFORMERS_QUERY,
+                    {"id": stash_id},
+                    {"ApiKey": provider["api_key"]},
+                )
+                scene = data.get("findScene") or {}
+                return {
+                    cache_key: {
+                        "genders": [
+                            (p.get("performer") or {}).get("gender")
+                            for p in (scene.get("performers") or [])
+                        ],
+                        "tags": [t.get("name") for t in (scene.get("tags") or [])],
+                    }
+                }
+            query, variables, aliases = remote_performers_batch_query(chunk)
+            data = graphql(endpoint, query, variables, {"ApiKey": provider["api_key"]})
+            result = {}
+            for alias, cache_key in aliases.items():
+                scene = data.get(alias) or {}
+                result[cache_key] = {
+                    "genders": [
+                        (p.get("performer") or {}).get("gender")
+                        for p in (scene.get("performers") or [])
+                    ],
+                    "tags": [t.get("name") for t in (scene.get("tags") or [])],
+                }
+            return result
+
+        def work():
+            while True:
+                with lock:
+                    if failed[0]:
+                        return
+                    i = index[0]
+                    index[0] += 1
+                if i >= len(chunks):
+                    return
+                chunk = chunks[i]
+                try:
+                    result = fetch(chunk)
+                    with lock:
+                        for key, value in result.items():
+                            cache[key] = value["genders"]
+                            if tags_cache is not None:
+                                tags_cache[key] = value["tags"]
+                except RuntimeError as error:
+                    message = str(error)
+                    if "403" in message or "401" in message:
+                        # Auth failure: the endpoint will never succeed —
+                        # stop scheduling its remaining batches.
+                        with lock:
+                            failed[0] = True
+                        return
+                    # Transient failure (429/5xx/timeout): retry once, then
+                    # skip this batch and keep the endpoint alive.
+                    try:
+                        time.sleep(1.0)
+                        result = fetch(chunk)
+                        with lock:
+                            for key, value in result.items():
+                                cache[key] = value["genders"]
+                                if tags_cache is not None:
+                                    tags_cache[key] = value["tags"]
+                    except RuntimeError:
+                        pass
+
+        # A genuinely bounded pool per endpoint: parallel within a provider
+        # so a slow endpoint cannot stretch the scan to hours, but never more
+        # than REMOTE_PREFETCH_WORKERS concurrent requests, so rate limits
+        # degrade gracefully (skip + retry) instead of killing the endpoint.
+        workers = [
+            threading.Thread(target=work)
+            for _ in range(min(REMOTE_PREFETCH_WORKERS, len(chunks)))
+        ]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join()
+
+    for endpoint, scene_ids in pending.items():
+        fetch_endpoint(endpoint, scene_ids)
+
+
+def infer_review_state_path(server):
+    config_dir = server.get("Dir")
+    if not config_dir:
+        raise RuntimeError("Stash config directory is unavailable")
+    return Path(config_dir) / "tag-organizer" / INFER_STATE_NAME
+
+
+def read_infer_state(server, token):
+    path = infer_review_state_path(server)
+    try:
+        with path.open(encoding="utf-8") as source:
+            state = json.load(source)
+            return state if state.get("infer_token") == token else None
+    except FileNotFoundError:
+        return None
+
+
+def write_infer_state(server, state):
+    write_scan_state(infer_review_state_path(server), state)
+
+
+def infer_latest_path(server):
+    config_dir = server.get("Dir")
+    if not config_dir:
+        raise RuntimeError("Stash config directory is unavailable")
+    return Path(config_dir) / "tag-organizer" / "infer-latest.json"
+
+
+def write_infer_latest(server, token):
+    write_scan_state(infer_latest_path(server), {"infer_token": token})
+
+
+def read_infer_latest(server):
+    path = infer_latest_path(server)
+    try:
+        with path.open(encoding="utf-8") as source:
+            value = json.load(source)
+            token = value.get("infer_token")
+            return token if valid_scan_token(token) else None
+    except (FileNotFoundError, ValueError):
+        return None
+
+
+def _infer_resolve_token(server, args):
+    """The explicit token, or the latest scan's token when none is given."""
+    token = args.get("infer_token")
+    if token:
+        if not valid_scan_token(token):
+            raise ValueError("infer token must be 8-64 letters, numbers, underscores, or hyphens")
+        return token
+    return read_infer_latest(server)
+
+
+def _infer_suggestion(scene, suggested, reason):
+    return {
+        "scene_id": scene["id"],
+        "title": scene.get("title") or "",
+        "screenshot": (scene.get("paths") or {}).get("screenshot") or "",
+        "performers": len(scene.get("performers") or []),
+        "suggested": suggested,
+        "reason": reason,
+        "applied": False,
+        "skipped": False,
+    }
+
+
+def infer_scan_all(local_url, local_headers, server, token, providers):
+    """Walk every scene and collect missing-tag suggestions (review queue).
+
+    Local performer data is often incomplete (missing performers or genders),
+    so scenes whose local cast cannot be classified are augmented from
+    stash-box via their stash_ids before suggesting group tags.
+    """
+    state = {
+        "infer_token": token,
+        "status": "running",
+        "phase": "walking",
+        "scanned": 0,
+        "total": 0,
+        "suggestions": [],
+        "error": None,
+    }
+    write_infer_state(server, state)
+    write_infer_latest(server, token)
+    try:
+        local_tags = tag_index(
+            graphql(local_url, TAGS_QUERY, headers=local_headers)["findTags"]["tags"]
+        )
+        group_ids = set()
+        for name in INFER_GROUP_TAG_NAMES:
+            group_ids |= local_tags.get(name.casefold(), set())
+        compilation_ids = local_tags.get("compilation", set())
+        vintage_ids = local_tags.get("vintage", set())
+        solo_ids = local_tags.get("solo", set())
+        masturbation_ids = local_tags.get("masturbation", set())
+
+        all_scenes = []
+        total = None
+        page = 1
+        while True:
+            result = graphql(
+                local_url,
+                INFER_SCENES_QUERY,
+                {"filter": {"page": page, "per_page": INFER_PAGE_SIZE}},
+                local_headers,
+            )["findScenes"]
+            if total is None:
+                total = result["count"]
+            scenes = result["scenes"]
+            if not scenes:
+                break
+            all_scenes.extend(scenes)
+            state["scanned"] += len(scenes)
+            state["total"] = total
+            if state["scanned"] % 1000 == 0 or state["scanned"] == total:
+                write_infer_state(server, state)
+            stash_progress(state["scanned"], total)
+            page += 1
+
+        def threesome_described(scene):
+            return THREESOME_WORDS.search(
+                f"{scene.get('title') or ''}\n{scene.get('details') or ''}"
+            )
+
+        remote_gender_cache = {}
+        remote_tag_cache = {}
+        remote_needed = []
+        for scene in all_scenes:
+            performers = scene.get("performers") or []
+            genders = [p.get("gender") for p in performers]
+            described = threesome_described(scene)
+            # Cross-check any group-candidate scene that has a stash-box link:
+            # a complete-looking local cast can still undercount (a missing
+            # performer changes the group verdict), so the remote cast is the
+            # tiebreaker for count and unknown genders.
+            if len(performers) >= 3 or len(performers) == 1 or (described and len(performers) < 3):
+                if any(
+                    stash_id.get("endpoint") in providers
+                    for stash_id in (scene.get("stash_ids") or [])
+                ):
+                    remote_needed.append(scene)
+        state["phase"] = "remote"
+        write_infer_state(server, state)
+        prefetch_remote_performers(
+            remote_needed, providers, remote_gender_cache, remote_tag_cache
+        )
+        state["phase"] = "classifying"
+        write_infer_state(server, state)
+
+        suggestions = []
+        for scene in all_scenes:
+            scene_id = scene["id"]
+            scene_tags = {tag["id"] for tag in (scene.get("tags") or [])}
+            has_group = bool(scene_tags & group_ids)
+            has_suggestion = {(item["scene_id"], item["suggested"]) for item in suggestions}
+            performers = scene.get("performers") or []
+            genders = [p.get("gender") for p in performers]
+            remote_genders = None
+            for stash_id in (scene.get("stash_ids") or []):
+                key = (stash_id.get("endpoint"), stash_id.get("stash_id"))
+                if key in remote_gender_cache:
+                    remote_genders = remote_gender_cache[key]
+                    break
+            # The remote cast is authoritative when it lists at least as many
+            # performers: a local cast that looks complete can still miss a
+            # performer, which changes the group verdict entirely.
+            if remote_genders is not None and len(remote_genders) >= len(performers):
+                performer_count = len(remote_genders)
+                genders = remote_genders
+                source = " · StashDB"
+            else:
+                performer_count = len(performers)
+                genders = [p.get("gender") for p in performers]
+                source = ""
+            if not has_group and performer_count >= 3:
+                if performer_count == 3:
+                    males = genders.count("MALE")
+                    females = genders.count("FEMALE")
+                    if males == 1 and females == 2:
+                        suggested = "Threesome (BGG)"
+                        composition = " (2F 1M)"
+                    elif males == 2 and females == 1:
+                        suggested = "Threesome (BBG)"
+                        composition = " (1F 2M)"
+                    elif females == 3:
+                        # All-girl (GGG) trio: use the library's own
+                        # lesbian-threesome tag when it exists, else plain.
+                        suggested = (
+                            "Threesome (Lesbian)"
+                            if "threesome (lesbian)" in local_tags
+                            else "Threesome"
+                        )
+                        composition = " (3F)"
+                    else:
+                        suggested = "Threesome"
+                        composition = ""
+                else:
+                    suggested = "Group Sex"
+                    composition = ""
+                if (scene_id, suggested) not in has_suggestion:
+                    suggestions.append(
+                        _infer_suggestion(
+                            scene, suggested,
+                            f"{performer_count} performers{composition}{source}",
+                        )
+                    )
+            # A description mentioning a threesome is only evidence when the
+            # cast is unconfirmed: if stash-box resolved the cast and it is
+            # not a group, the mention is setup flavor, not content.
+            if not has_group and threesome_described(scene) and remote_genders is None:
+                already = {item["suggested"] for item in suggestions if item["scene_id"] == scene_id}
+                if not (already & set(INFER_THREESOME_SUGGESTIONS)):
+                    suggestions.append(
+                        _infer_suggestion(scene, "Threesome", "described as a threesome")
+                    )
+            if not (scene_tags & compilation_ids) and COMPILATION_WORDS.search(scene.get("title") or ""):
+                if (scene_id, "Compilation") not in has_suggestion:
+                    suggestions.append(
+                        _infer_suggestion(scene, "Compilation", "compilation in the title")
+                    )
+            date = scene.get("date") or ""
+            if not (scene_tags & vintage_ids) and date and date < "2000-01-01":
+                if (scene_id, "Vintage") not in has_suggestion:
+                    suggestions.append(
+                        _infer_suggestion(scene, "Vintage", "released before 2000")
+                    )
+            # Solo: exactly one local performer, not already solo/masturbation
+            # tagged, a stash-box cast confirming a single performer, and no
+            # stash-box tag contradicting it (a 1-credit scene can still be a
+            # couple/group scene on both sides).
+            remote_tags = []
+            if remote_genders is not None:
+                for stash_id in (scene.get("stash_ids") or []):
+                    key = (stash_id.get("endpoint"), stash_id.get("stash_id"))
+                    if key in remote_tag_cache:
+                        remote_tags = remote_tag_cache[key]
+                        break
+            remote_non_solo = any(
+                INFER_NON_SOLO_TAG_TEXT.search(tag or "") for tag in remote_tags
+            )
+            local_tag_names = " ".join(
+                (tag.get("name") or "") for tag in (scene.get("tags") or [])
+            )
+            if (
+                len(performers) == 1
+                and not (scene_tags & (solo_ids | masturbation_ids))
+                and remote_genders is not None
+                and len(remote_genders) == 1
+                and not remote_non_solo
+                and not INFER_NON_SOLO_TEXT.search(
+                    f"{scene.get('title') or ''}\n{scene.get('details') or ''}"
+                )
+                and not INFER_NON_SOLO_TAG_TEXT.search(local_tag_names)
+                and (scene_id, "Solo") not in has_suggestion
+            ):
+                suggestions.append(
+                    _infer_suggestion(
+                        scene, "Solo", f"single performer{source}"
+                    )
+                )
+            if len(suggestions) % 500 == 0:
+                state["suggestions"] = suggestions
+                write_infer_state(server, state)
+        state["status"] = "done"
+        state["phase"] = "done"
+        state["total"] = total
+        state["suggestions"] = suggestions
+        write_infer_state(server, state)
+        stash_log(
+            "i",
+            f"Inference scan finished: {len(suggestions)} suggestions across {total} scenes"
+            f" ({len(remote_gender_cache)} scenes augmented from stash-box)",
+        )
+        return state
+    except Exception as error:
+        state["status"] = "failed"
+        state["error"] = str(error)
+        write_infer_state(server, state)
+        stash_log("e", f"Inference scan failed: {error}")
+        raise
+
+
+def _infer_require_token(server, args):
+    token = _infer_resolve_token(server, args)
+    if token is None:
+        raise ValueError(
+            "No inference scan has run yet — start one with “Scan for missing tags”."
+        )
+    return token
+
+
+def _infer_state_for(server, token, action):
+    state = read_infer_state(server, token)
+    if state is None:
+        raise ValueError(
+            "That scan's review is no longer available — a newer scan replaced it "
+            "or the state was cleaned. Run a new scan to see the latest suggestions."
+        )
+    return state
+
+
+def infer_status(server, state, token):
+    return {
+        "status": state.get("status") if state is not None else "missing",
+        "phase": state.get("phase") if state is not None else None,
+        "infer_token": token if state is not None else None,
+        "scanned": state.get("scanned", 0) if state is not None else 0,
+        "total": state.get("total", 0) if state is not None else 0,
+        "suggestion_count": len(state.get("suggestions", [])) if state is not None else 0,
+        "error": state.get("error") if state is not None else None,
+    }
+
+
+def infer_review(state, args):
+    suggestions = state.get("suggestions", [])
+    page = max(1, int(args.get("page") or 1))
+    per_page = max(1, min(200, int(args.get("per_page") or INFER_REVIEW_PAGE_SIZE)))
+    start = (page - 1) * per_page
+    return {
+        "status": state.get("status"),
+        "suggestion_count": len(suggestions),
+        "pending_count": sum(
+            1 for item in suggestions if not item.get("applied") and not item.get("skipped")
+        ),
+        "page": page,
+        "per_page": per_page,
+        "pages": (len(suggestions) + per_page - 1) // per_page,
+        "items": suggestions[start : start + per_page],
+    }
+
+
+def infer_apply(local_url, local_headers, server, state, args):
+    actions = args.get("actions")
+    if not isinstance(actions, list) or not actions:
+        raise ValueError("actions must be a non-empty list")
+    local_tags = tag_index(
+        graphql(local_url, TAGS_QUERY, headers=local_headers)["findTags"]["tags"]
+    )
+    by_tag = {}
+    for action in actions:
+        scene_id = str(action.get("scene_id") or "")
+        tag_name = str(action.get("tag_name") or "")
+        if not scene_id or not tag_name:
+            raise ValueError("each action needs scene_id and tag_name")
+        by_tag.setdefault(tag_name, []).append(scene_id)
+    results = []
+    for tag_name, scene_ids in by_tag.items():
+        matched = local_tags.get(tag_name.casefold(), set())
+        if len(matched) != 1:
+            results.append({
+                "tag_name": tag_name,
+                "resolved": False,
+                "applied": 0,
+                "failed": len(scene_ids),
+                "error": "tag not found locally" if not matched else "tag name is ambiguous",
+            })
+            continue
+        tag_id = next(iter(matched))
+        applied = 0
+        failure = None
+        for offset in range(0, len(scene_ids), INFER_APPLY_BATCH):
+            chunk = scene_ids[offset : offset + INFER_APPLY_BATCH]
+            try:
+                updated = graphql(
+                    local_url,
+                    BULK_UPDATE_SCENES_MUTATION,
+                    {"input": {"ids": chunk, "tag_ids": {"ids": [tag_id], "mode": "ADD"}}},
+                    local_headers,
+                )["bulkSceneUpdate"]
+                applied += len(updated or [])
+            except RuntimeError as update_error:
+                failure = failure or str(update_error)
+        for scene_id in scene_ids:
+            for item in state.get("suggestions", []):
+                if item["scene_id"] == scene_id and item["suggested"] == tag_name:
+                    item["applied"] = True
+                    item["skipped"] = False
+        results.append({
+            "tag_name": tag_name,
+            "resolved": True,
+            "applied": applied,
+            "failed": len(scene_ids) - applied,
+            "error": failure,
+        })
+    write_infer_state(server, state)
+    return {
+        "processed": len(actions),
+        "applied": sum(result["applied"] for result in results),
+        "failed": sum(result["failed"] for result in results),
+        "results": results,
+    }
+
+
+def infer_apply_all(local_url, local_headers, server, state):
+    pending = [
+        {"scene_id": item["scene_id"], "tag_name": item["suggested"]}
+        for item in state.get("suggestions", [])
+        if not item.get("applied") and not item.get("skipped")
+    ]
+    if not pending:
+        return {
+            "processed": 0,
+            "applied": 0,
+            "failed": 0,
+            "results": [],
+            "error": "no pending suggestions to apply",
+        }
+    return infer_apply(local_url, local_headers, server, state, {"actions": pending})
+
+
+def infer_skip(server, state, args):
+    scene_id = str(args.get("scene_id") or "")
+    tag_name = str(args.get("tag_name") or "")
+    if not scene_id or not tag_name:
+        raise ValueError("scene_id and tag_name are required")
+    for item in state.get("suggestions", []):
+        if item["scene_id"] == scene_id and item["suggested"] == tag_name:
+            item["skipped"] = True
+            item["applied"] = False
+    write_infer_state(server, state)
+    return {"scene_id": scene_id, "tag_name": tag_name, "skipped": True}
+
+
+def infer_unskip(server, state, args):
+    scene_id = str(args.get("scene_id") or "")
+    tag_name = str(args.get("tag_name") or "")
+    if not scene_id or not tag_name:
+        raise ValueError("scene_id and tag_name are required")
+    for item in state.get("suggestions", []):
+        if item["scene_id"] == scene_id and item["suggested"] == tag_name:
+            item["skipped"] = False
+            item["applied"] = False
+    write_infer_state(server, state)
+    return {"scene_id": scene_id, "tag_name": tag_name, "skipped": False}
 
 if __name__ == "__main__":
     if "--self-test" in sys.argv:

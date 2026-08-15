@@ -109,3 +109,28 @@ a new scan only when you want a fully fresh snapshot of the library.
 Tag Organizer uses the new plugin ID `tag-organizer`. Disable or uninstall
 **Pull Remote Tags** before installing it; otherwise both plugins' automatic
 hooks may run. Existing Pull Remote Tags settings do not migrate.
+
+Use the **Infer Tags** tab to suggest tags scenes are missing from their own
+properties — no metadata provider needed:
+
+- **Group tags**: 3+ performers and no group tag (Threesome family, Orgy,
+  Group Sex, Foursome, Gangbang, Bukkake) suggests **Threesome** (3
+  performers) or **Group Sex** (4+). For 3 performers the suggestion is
+  sex-aware: **Threesome (BGG)** for two women + one man, **Threesome (BBG)**
+  for one woman + two men, **Threesome (Lesbian)** for three women, plain
+  **Threesome** when sexes are unknown or the trio is all male. A title or
+  description mentioning threesome/three-way/trio
+  suggests **Threesome** even with fewer performers (the missing third is
+  often not yet in the local performer list). When the local cast is
+  incomplete — missing performers or genders — the scan augments it from
+  stash-box via the scene's stash IDs before classifying, so scenes whose
+  local data hides the real composition still get the correct variant.
+- **Compilation**: "compilation"/"best of" in the title.
+- **Vintage**: release date before 2000.
+- **Solo**: one local performer with a stash-box cast confirming a single
+  performer. Unlinked scenes and multi-performer casts are excluded.
+
+Suggestions are a review queue: each shows the scene, the suggested tag, and
+the reason, with explicit **Apply** (adds the tag, reversible) and **Skip**
+actions. Decisions persist in the plugin's review state, so a re-scan does
+not re-suggest what you already handled.

@@ -826,6 +826,14 @@
 
   function TagOrganizerPage() {
     const [active, setActive] = React.useState("find");
+    const [inferState, setInferState] = React.useState(null);
+    const [inferToken, setInferToken] = React.useState("");
+    const [inferBusy, setInferBusy] = React.useState(false);
+    const [inferError, setInferError] = React.useState("");
+    const [inferReview, setInferReview] = React.useState(null);
+    const [inferPage, setInferPage] = React.useState(1);
+    const [inferRefreshNonce, setInferRefreshNonce] = React.useState(0);
+    const [inferLoading, setInferLoading] = React.useState(false);
     const [providers, setProviders] = React.useState([]);
     const [provider, setProvider] = React.useState("");
     const [rows, setRows] = React.useState([]);
@@ -1292,6 +1300,73 @@
     }, [cleanupToken, cleanupState && cleanupState.status, cleanupJob && cleanupJob.id, cleanupBusy]);
 
     React.useEffect(function () {
+      if (inferToken) return undefined;
+      let stopped = false;
+      runOperation({ mode: "infer_status" })
+        .then(function (status) {
+          if (stopped) return;
+          if (status && status.infer_token) {
+            setInferToken(status.infer_token);
+            setInferState(status);
+          }
+        })
+        .catch(function () {
+          // No scan has run yet — the tab stays in its empty state.
+        });
+      return function () { stopped = true; };
+    }, [inferToken]);
+
+    React.useEffect(function () {
+      if (!inferToken || !inferState || inferState.status !== "running" || inferBusy) return undefined;
+      let stopped = false;
+      let timer = null;
+      let errorStreak = 0;
+      async function pollInfer() {
+        try {
+          const next = await runOperation({ mode: "infer_status", infer_token: inferToken });
+          if (stopped) return;
+          errorStreak = 0;
+          setInferState(next);
+          setInferError("");
+          if (next.status === "running") {
+            timer = setTimeout(pollInfer, 3000);
+          } else if (next.status === "failed") {
+            setInferError(next.error || "The inference scan failed.");
+          }
+        } catch (pollError) {
+          if (stopped) return;
+          errorStreak += 1;
+          if (errorStreak > 10) {
+            setInferError("The inference status check kept failing: " + errorMessage(pollError));
+            return;
+          }
+          timer = setTimeout(pollInfer, 5000);
+        }
+      }
+      pollInfer();
+      return function () { stopped = true; if (timer) clearTimeout(timer); };
+    }, [inferToken, inferState && inferState.status, inferBusy]);
+
+    React.useEffect(function () {
+      if (!inferToken || !inferState || inferState.status === "running") return undefined;
+      let stopped = false;
+      setInferLoading(true);
+      runOperation({ mode: "infer_review", infer_token: inferToken, page: inferPage, per_page: 50 })
+        .then(function (review) {
+          if (stopped) return;
+          setInferReview(review);
+          setInferError("");
+          setInferLoading(false);
+        })
+        .catch(function (loadError) {
+          if (stopped) return;
+          setInferError(errorMessage(loadError));
+          setInferLoading(false);
+        });
+      return function () { stopped = true; };
+    }, [inferToken, inferState && inferState.status, inferPage, inferRefreshNonce]);
+
+    React.useEffect(function () {
       if (!cleanupToken || !cleanupState || !["completed", "applied"].includes(cleanupState.status)) return undefined;
       let stopped = false;
       const selectedIds = cleanupSection === "tags"
@@ -1375,6 +1450,122 @@
       } finally {
         setBusy("");
       }
+    }
+
+    async function startInferScan() {
+      setActive("infer");
+      setInferBusy(true);
+      setInferError("");
+      setInferReview(null);
+      setInferPage(1);
+      const token = newScanToken();
+      setInferToken(token);
+      setInferState({ status: "running", scanned: 0, total: 0, suggestion_count: 0, error: null });
+      try {
+        const id = await runScanTask({ mode: "infer_scan", infer_token: token });
+        if (!id) throw new Error("Stash did not return an inference scan job ID");
+      } catch (scanError) {
+        setInferError(errorMessage(scanError));
+        setInferState({ status: "failed", scanned: 0, total: 0, suggestion_count: 0, error: errorMessage(scanError) });
+      } finally {
+        setInferBusy(false);
+      }
+    }
+
+    async function applyInfer(item) {
+      setInferBusy(true);
+      setInferError("");
+      try {
+        const result = await runOperation({
+          mode: "infer_apply",
+          infer_token: inferToken,
+          actions: [{ scene_id: item.scene_id, tag_name: item.suggested }],
+        });
+        if (!result || result.applied < 1) {
+          const failure = (result && result.results && result.results[0]) || {};
+          throw new Error(failure.error || "The tag could not be applied");
+        }
+        setInferRefreshNonce(function (n) { return n + 1; });
+      } catch (applyError) {
+        setInferError(errorMessage(applyError));
+      } finally {
+        setInferBusy(false);
+      }
+    }
+
+    async function applyPageInfer() {
+      if (!inferReview || !inferReview.items) return;
+      const pending = inferReview.items.filter(function (item) { return !item.applied && !item.skipped; });
+      if (!pending.length) return;
+      if (!window.confirm("Apply " + pending.length + " tag suggestions on this page? Each adds a tag to a scene and is reversible.")) return;
+      setInferBusy(true);
+      setInferError("");
+      try {
+        const result = await runOperation({
+          mode: "infer_apply",
+          infer_token: inferToken,
+          actions: pending.map(function (item) { return { scene_id: item.scene_id, tag_name: item.suggested }; }),
+        });
+        if (result && result.applied > 0) {
+          setInferRefreshNonce(function (n) { return n + 1; });
+        } else {
+          throw new Error((result && result.results && result.results[0] && result.results[0].error) || "Nothing could be applied");
+        }
+      } catch (applyError) {
+        setInferError(errorMessage(applyError));
+      } finally {
+        setInferBusy(false);
+      }
+    }
+
+    async function applyAllInfer() {
+      if (!inferReview || inferReview.pending_count < 1) return;
+      const count = inferReview.pending_count;
+      if (!window.confirm("Apply all " + count + " pending tag suggestions? Each adds a tag to a scene and is reversible.")) return;
+      setInferBusy(true);
+      setInferError("");
+      try {
+        const result = await runOperation({ mode: "infer_apply_all", infer_token: inferToken });
+        if (result && result.applied > 0) {
+          setInferRefreshNonce(function (n) { return n + 1; });
+        } else {
+          throw new Error((result && result.error) || "Nothing could be applied");
+        }
+      } catch (applyError) {
+        setInferError(errorMessage(applyError));
+      } finally {
+        setInferBusy(false);
+      }
+    }
+
+    async function unskipInfer(item) {
+      setInferBusy(true);
+      setInferError("");
+      try {
+        await runOperation({ mode: "infer_unskip", infer_token: inferToken, scene_id: item.scene_id, tag_name: item.suggested });
+        setInferRefreshNonce(function (n) { return n + 1; });
+      } catch (unskipError) {
+        setInferError(errorMessage(unskipError));
+      } finally {
+        setInferBusy(false);
+      }
+    }
+
+    async function skipInfer(item) {
+      setInferBusy(true);
+      setInferError("");
+      try {
+        await runOperation({ mode: "infer_skip", infer_token: inferToken, scene_id: item.scene_id, tag_name: item.suggested });
+        setInferRefreshNonce(function (n) { return n + 1; });
+      } catch (skipError) {
+        setInferError(errorMessage(skipError));
+      } finally {
+        setInferBusy(false);
+      }
+    }
+
+    function refreshInferReview() {
+      setInferRefreshNonce(function (n) { return n + 1; });
     }
 
     async function scanCleanup() {
@@ -1945,6 +2136,24 @@
               onClick: function () { setActive("link"); },
             },
             "Link Tags"
+          )
+        ),
+        React.createElement(
+          Nav.Item,
+          null,
+          React.createElement(
+            Nav.Link,
+            {
+              as: "button",
+              type: "button",
+              id: "tag-organizer-infer-tab",
+              active: activeTab(active, "infer"),
+              role: "tab",
+              "aria-controls": "tag-organizer-infer-panel",
+              "aria-selected": activeTab(active, "infer"),
+              onClick: function () { setActive("infer"); },
+            },
+            "Infer Tags"
           )
         )
       ),
@@ -3248,7 +3457,143 @@
                 : React.createElement(Alert, { variant: "info" }, "No suggestions in this view. Try another filter or run a new scan.")
             )
           : null
-      )
+      ),
+    React.createElement(InferPanel, {
+      active: activeTab(active, "infer"),
+      state: inferState,
+      review: inferReview,
+      busy: inferBusy,
+      error: inferError,
+      loading: inferLoading,
+      onScan: startInferScan,
+      onApply: applyInfer,
+      onApplyPage: applyPageInfer,
+      onApplyAll: applyAllInfer,
+      onSkip: skipInfer,
+      onUnskip: unskipInfer,
+      onRefresh: refreshInferReview,
+      onPage: setInferPage,
+    })
+    );
+  }
+
+  function inferPhaseLabel(phase) {
+    if (phase === "walking") return "scanning scenes";
+    if (phase === "remote") return "checking stash-box for incomplete casts";
+    if (phase === "classifying") return "classifying suggestions";
+    return "";
+  }
+
+  function InferPanel(props) {
+    const running = props.state && props.state.status === "running";
+    const phaseLabel = inferPhaseLabel(props.state && props.state.phase);
+    const pagePending = ((props.review && props.review.items) || []).filter(function (item) { return !item.applied && !item.skipped; }).length;
+    return React.createElement(
+      "div",
+      {
+        id: "tag-organizer-infer-panel",
+        role: "tabpanel",
+        "aria-labelledby": "tag-organizer-infer-tab",
+        hidden: !props.active,
+      },
+      React.createElement(
+        "div",
+        { className: "d-flex align-items-end flex-nowrap mb-3" },
+        React.createElement(
+          "div",
+          { className: "flex-grow-1 mb-0" },
+          React.createElement("h5", null, "Infer missing tags"),
+          React.createElement(
+            "p",
+            { className: "text-muted small mb-0" },
+            "Suggests tags scenes are missing from their own properties: group tags from performer count or description, Compilation from the title, Vintage from the release date. Review and apply explicitly."
+          )
+        ),
+        React.createElement(Button, { variant: "primary", disabled: props.busy || running, onClick: props.onScan }, running ? "Scanning…" : "Scan for missing tags"),
+        React.createElement(Button, { variant: "secondary", className: "ms-2", disabled: props.busy || running, onClick: props.onRefresh }, "Refresh"),
+        props.review && props.review.pending_count > 0
+          ? React.createElement(
+              Button,
+              { variant: "success", className: "ms-2", disabled: props.busy || running, onClick: props.onApplyAll },
+              "Apply all (" + props.review.pending_count + ")"
+            )
+          : null,
+        pagePending > 0
+          ? React.createElement(
+              Button,
+              { variant: "success", className: "ms-2", disabled: props.busy || running, onClick: props.onApplyPage },
+              "Apply page (" + pagePending + ")"
+            )
+          : null
+      ),
+      props.error ? React.createElement(Alert, { variant: "danger" }, props.error) : null,
+      running
+        ? React.createElement(
+            Alert,
+            { variant: "info" },
+            "Scanning " + props.state.scanned + " / " + (props.state.total || "?") + " scenes" +
+            (phaseLabel ? " — " + phaseLabel + "…" : "…")
+          )
+        : null,
+      props.state && !running && props.state.status !== "missing"
+        ? React.createElement("p", { className: "text-muted" }, props.state.suggestion_count + " suggestions from " + props.state.scanned + " scenes.")
+        : null,
+      props.loading && !props.review ? React.createElement(Spinner, { animation: "border", size: "sm" }) : null,
+      React.createElement(
+        "div",
+        null,
+        ((props.review && props.review.items) || []).map(function (item) {
+          return React.createElement(
+            "div",
+            { key: item.scene_id + ":" + item.suggested, className: "d-flex align-items-center border rounded p-3 mb-2" },
+            React.createElement(
+              "a",
+              { href: "/scenes/" + item.scene_id, target: "_blank", rel: "noopener noreferrer", className: "mr-2", "aria-label": "Open " + (item.title || "scene") },
+              React.createElement("img", {
+                src: "/scene/" + item.scene_id + "/screenshot",
+                alt: "",
+                loading: "lazy",
+                onError: function (event) { event.currentTarget.style.display = "none"; },
+                style: { width: 132, height: 74, objectFit: "cover", borderRadius: 4 },
+              })
+            ),
+            React.createElement(
+              "div",
+              { className: "flex-grow-1" },
+              React.createElement(
+                "a",
+                { href: "/scenes/" + item.scene_id, target: "_blank", rel: "noopener noreferrer", className: "text-truncate d-block" },
+                item.title || "Untitled scene"
+              ),
+              React.createElement("div", { className: "small text-muted" }, "Add “" + item.suggested + "” — " + item.reason)
+            ),
+            item.applied
+              ? React.createElement(Badge, { pill: true, variant: "success", className: "me-2" }, "Applied")
+              : item.skipped
+                ? React.createElement(
+                    React.Fragment,
+                    null,
+                    React.createElement(Badge, { pill: true, variant: "secondary", className: "me-2" }, "Skipped"),
+                    React.createElement(Button, { size: "sm", variant: "outline-secondary", disabled: props.busy, onClick: function () { props.onUnskip(item); } }, "Undo")
+                  )
+                : React.createElement(
+                    React.Fragment,
+                    null,
+                    React.createElement(Button, { size: "sm", variant: "primary", className: "me-2", disabled: props.busy, onClick: function () { props.onApply(item); } }, "Apply"),
+                    React.createElement(Button, { size: "sm", variant: "secondary", disabled: props.busy, onClick: function () { props.onSkip(item); } }, "Skip")
+                  )
+          );
+        })
+      ),
+      props.review && props.review.pages > 1
+        ? React.createElement(
+            "div",
+            { className: "d-flex align-items-center gap-2 mt-3" },
+            React.createElement(Button, { size: "sm", variant: "secondary", disabled: props.review.page <= 1 || props.busy, onClick: function () { props.onPage(Math.max(1, props.review.page - 1)); } }, "Previous"),
+            React.createElement("span", { className: "small text-muted" }, "Page " + props.review.page + " of " + props.review.pages),
+            React.createElement(Button, { size: "sm", variant: "secondary", disabled: props.review.page >= props.review.pages || props.busy, onClick: function () { props.onPage(props.review.page + 1); } }, "Next")
+          )
+        : null
     );
   }
 
