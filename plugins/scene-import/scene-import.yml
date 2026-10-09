@@ -1,0 +1,8 @@
+name: Scene Import
+description: Match new scenes during generation and retry only incomplete imports with StashDB and ThePornDB.
+version: 0.5.1
+ui:
+  javascript:
+    - scene-import.js
+  css:
+    - scene-import.css
