@@ -1,0 +1,22 @@
+.scene-import-table .scene-import-thumbnail {
+  width: 96px;
+  height: 54px;
+  object-fit: cover;
+  float: left;
+  margin-right: 0.5rem;
+}
+
+.scene-import-table .badge {
+  white-space: normal;
+  text-align: left;
+}
+
+.scene-import-table td {
+  vertical-align: middle;
+}
+.scene-import-table tr.scene-card {
+  display: table-row;
+  width: auto;
+  max-width: none;
+  margin: 0;
+}
