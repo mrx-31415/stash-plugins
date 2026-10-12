@@ -8,8 +8,8 @@ imports** to check only that tagged queue and retry
 scenes still missing a pHash, StashDB ID or ThePornDB ID. It does not scan files or include
 untagged older library scenes. Fully linked scenes are skipped, and providers
 already linked are not scraped again. Deleted scenes are ignored.
-The browser queues scenes as it discovers them. Resume a pending scan after a
-tab closes to recover scenes discovered since the last progress poll.
+The server queues discovered scenes after the scan finishes. The import continues
+when you close the browser.
 
 The queue is stored in Stash, so it survives changing browsers or clearing local
 browser data. The currently saved import from an older version is adopted when
@@ -24,16 +24,17 @@ If StashDB later matches a scene first identified by ThePornDB, the normal
 StashDB metadata pass runs. Its scalar fields and cover may replace earlier
 values. Stash's native Identify task continues to skip scenes marked organized.
 
-As soon as a discovered scene has a stored pHash, both providers are queried
-while generation continues. Successful early lookups are saved with browser
-progress and are not repeated on every poll. `Match found` is a candidate, while
-`Matched` confirms a saved metadata/provider ID. Native metadata tasks still run
-after the scan completes. Final ID saves use a fresh provider lookup.
+Provider matching starts after scan and generation finish. `Match found` is a
+candidate, while `Matched` confirms a saved metadata/provider ID. Final ID saves
+use a fresh provider lookup.
 
 The scan uses your configured folders and generation preferences, with video
 perceptual hashes enabled. Only scene IDs absent before the scan are processed.
 StashDB supplies metadata through Stash's Identify task. Missing studios,
-performers and tags are created; ambiguous matches and ambiguous single-name
+performers and tags are created; male and transgender male performers are skipped
+in both provider passes and direct selected-match saves. Performers whose gender
+is unknown may still be imported. Existing database entries are left intact.
+Ambiguous matches and ambiguous single-name
 performers are skipped. Scenes are not marked organized. Ambiguous matches are
 reported in progress rows without creating extra source-specific tags. Skipped
 StashDB matches receive a read-only lookup to distinguish ambiguity from misses.
@@ -63,32 +64,45 @@ IDs and all scene metadata. No-match, multiple-match and conflicting-ID results
 are shown as scene links for manual review. Metadata results from both providers
 are in Stash's task log.
 
-The progress table updates while jobs run: each discovered file gets a thumbnail,
+The progress table reads current scenes and native job percentages while jobs run:
+each discovered file gets a thumbnail,
 filename, pHash state, StashDB state, ThePornDB state and final result. A pHash is
 shown as ready only once Stash has stored it. Provider matches are shown once
 their IDs are saved; ambiguous matches are shown from provider lookup results.
-During scans, progress reads only IDs newer than the initial snapshot instead of
-reloading the entire library. The final snapshot comparison determines exactly
-which scenes are imported. If a progress fetch fails, the last good rows remain;
-task polling retries updates, and **Retry progress** is available when idle.
+The final snapshot comparison determines exactly which scenes are imported.
+The browser combines saved checkpoints with live progress reads; it does not drive
+the import or write checkpoints. A scene shows Done once its pHash and both IDs
+are saved, without waiting for the final linking pass. If a
+progress fetch fails, the last good rows remain and the next poll retries.
 Legacy source-specific ambiguity tags are removed from the scenes processed by
 this version after completion. Their tag definitions and other scenes are left
 alone; only **[Scene Import Incomplete]** remains on unfinished imported scenes.
 
-You can navigate to other Stash pages and return without losing updates; the
-worker and progress live outside the page component. Keep this browser tab open
-and run imports in only one tab. After a refresh or closing the tab, return and
-click **Resume import**. Progress rows, the latest message and pending work are
-saved in this browser. Server jobs already submitted continue while the browser
-is closed, but later stages wait for you to resume. Discarding pending work does
-not cancel Stash tasks or undo metadata changes. Scenes added concurrently by
-another scan are included; avoid overlapping scans. Existing unmatched scenes
-are excluded unless they carry the tracking tag. Failed per-scene links can be
-retried through **Retry incomplete imports** after the current run finishes.
+Imports run on Stash's server using its embedded JavaScript runtime, with no
+additional runtime or service to install. You can navigate elsewhere, refresh,
+close the browser, or return from another browser to see saved progress. The
+server saves the scene boundary, each phase and per-scene results in plugin
+configuration. Loaded checkpoints are converted to native JavaScript objects so
+appended results survive saving in Stash's embedded runtime. Each
+native scan/generation/Identify job runs before the next queued import
+continuation, so the plugin does not block Stash's task queue while waiting.
+
+If Stash restarts or a job fails, return and click **Resume import**. Cancelling
+an import continuation in Tasks also leaves resumable progress. Discarding
+pending work does not cancel Stash tasks or undo metadata changes. Scenes added
+concurrently by another scan are included; avoid overlapping scans. Existing
+unmatched scenes are excluded unless they carry the tracking tag. Failed
+per-scene links can be retried through **Retry incomplete imports** after the
+current run finishes. Older browser progress is transferred to the server when
+you click Resume import; keep that browser's saved data until the transfer succeeds.
 
 No filename guessing, fingerprint submission, scheduled scans, media deletion,
 or additional dependencies. Matching uses the providers' scene-fragment search;
 a unique returned candidate can still be wrong. Normal database backups apply
 before bulk metadata changes.
 
-Run checks with `node test.js`.
+After changing the shared workflow or `server.js`, run `node build-server.js`
+to rebuild the embedded worker. Run checks with `node test.js`,
+`node evidence-test.js`, `node server-test.js`, and `node build-server.js --check`.
+The server test executes a complete import through queued native jobs without
+any browser polling and checks resume failures, duplicate starts, and stale tasks.

@@ -23,6 +23,9 @@ module.exports = async function () {
     { name: "New Performer", remote_site_id: "remote-performer", gender: "female", height: "170", weight: "60", aliases: "Alias A,Alias B", images: ["https://example.test/portrait"] },
     { name: "New Performer", remote_site_id: "remote-performer" },
     { name: "Generic" },
+    { name: "Male Performer", gender: " male " },
+    { name: "Trans Male Performer", gender: "transgender-male" },
+    { stored_id: "known-male", name: "Known Male", gender: "MALE" },
   ], tags: [{ name: "New tag", remote_site_id: "remote-tag", description: "Description", alias_list: ["Tag alias"] }] };
   let reads = 0;
   const created = [];
@@ -40,7 +43,7 @@ module.exports = async function () {
   };
   const saved = await saveSelectedMetadata(gql, "chosen", metadata, db);
   assert.equal(saved.title, "Correct title");
-  assert.equal(created.filter((entity) => entity.kind === "performer").length, 1);
+  assert.equal(created.filter((entity) => entity.kind === "performer").length, 1, "Male performers are never created by selected-match metadata saves");
   assert.deepEqual(created[0].input, { name: "New Performer", stash_ids: [{ endpoint: db, stash_id: "remote-performer" }], alias_list: ["Alias A", "Alias B"], gender: "FEMALE", height_cm: 170, weight: 60, image: "https://example.test/portrait" });
   assert.deepEqual(created[1].input, { name: "New tag", description: "Description", stash_ids: [{ endpoint: db, stash_id: "remote-tag" }], aliases: ["Tag alias"] });
   assert.deepEqual(input.performer_ids, ["existing-performer", "known-performer", "new-performer"]);
