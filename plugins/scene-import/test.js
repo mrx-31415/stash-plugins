@@ -97,6 +97,7 @@ async function main() {
       assert.equal(vars.input.options.skipMultipleMatches, true);
       assert.equal(vars.input.options.setOrganized, false);
       assert.equal(vars.input.options.setCoverImage, true);
+      assert.deepEqual(vars.input.options.performerGenders, ["FEMALE", "TRANSGENDER_FEMALE", "INTERSEX", "NON_BINARY"]);
       assert.equal(vars.input.options.skipMultipleMatchTag, undefined, "Only the incomplete queue tag should be created");
       assert.deepEqual(vars.input.options.fieldOptions.find((f) => f.field === "performers"), { field: "performers", strategy: "MERGE", createMissing: true });
       return { metadataIdentify: source === db ? "identify" : "fallback" };
@@ -150,6 +151,10 @@ async function main() {
   const unready = detail("7");
   unready.files[0].fingerprints = [];
   const scanState = { phase: "scan", stashdb: db, tpdb: tp, results: [] };
+  const finished = sceneRow({ ...detail("3"), stash_ids: existing }, { ...scanState, phase: "done" });
+  assert.equal(finished.completion, "Incomplete", "A completed run with missing results must still count unsaved IDs");
+  assert.equal(finished.tpdb, "No saved match");
+  assert.equal(sceneRow({ ...detail("3"), stash_ids: [...existing, { endpoint: tp, stash_id: "tp-id" }] }, scanState).completion, "Done", "Saved IDs and pHash report completion before the final linking pass");
   assert.equal(sceneRow(unready, scanState).phash, "Generating");
   assert.equal(sceneRow(unready, { ...scanState, phase: "link", results: [{ id: "7", result: "no match" }] }).completion, "Needs review");
   assert.equal(sceneRow({ ...detail("3"), stash_ids: existing }, { ...scanState, phase: "link", results: [{ id: "3", result: "no match" }] }).completion, "Incomplete", "A missing provider ID keeps a scene incomplete");
@@ -164,68 +169,31 @@ async function main() {
   const pending = { phase: "link", ids: ["7"], results: [], stashdb: db, tpdb: tp, message: "Previous progress" };
   const data = new Map([["scene-import.pending", JSON.stringify(pending)]]);
   const storage = { getItem: (key) => data.get(key), setItem: (key, value) => data.set(key, value), removeItem: (key) => data.delete(key) };
-  let resolveMatch;
-  let signalLookup;
-  const atLookup = new Promise((resolve) => { signalLookup = resolve; });
-  let lookupCount = 0;
+  const calls = [];
+  let serverView = { state: null, running: false, message: "", error: "" };
   const controller = createController(storage, async (query, vars) => {
-    const tagged = tagReply(query, vars);
-    if (tagged) return tagged;
-    if (query.includes("findScenes(")) return { findScenes: { scenes: [detail("7")] } };
-    if (query.includes("scrapeSingleScene(")) {
-      lookupCount++;
-      signalLookup();
-      return new Promise((resolve) => { resolveMatch = resolve; });
-    }
-    if (query.includes("findScene(")) return { findScene: detail("7") };
-    if (query.includes("sceneUpdate(")) { updatedLinks.set("7", vars.input.stash_ids); return { sceneUpdate: { id: "7" } }; }
-    throw new Error(`Unexpected controller query: ${query}`);
-  }, async () => {});
-  assert.equal(controller.snapshot().message, "Previous progress");
-  let firstPageUpdates = 0;
-  const leavePage = controller.subscribe(() => { firstPageUpdates++; });
-  const backgroundRefresh = controller.refresh();
+    assert.match(query, /runPluginOperation/);
+    calls.push(vars.args);
+    if (vars.args.mode === "scan") serverView = { state: { ...pending, token: "server" }, running: true, message: "Queued", error: "" };
+    return { runPluginOperation: serverView };
+  });
+  await controller.refresh();
+  assert.equal(controller.snapshot().state.phase, "link", "Legacy progress remains available until transferred");
   const task = controller.start();
-  await backgroundRefresh;
-  await atLookup;
-  assert.equal(controller.start(), task, "Returning to the page cannot start a duplicate worker");
-  assert.equal(controller.snapshot().running, true);
-  leavePage();
-  const beforeLeave = firstPageUpdates;
-  let returnedView = controller.snapshot();
-  const leaveAgain = controller.subscribe((next) => { returnedView = next; });
-  assert.equal(returnedView.state.rows[0].file, "file-7.mp4");
-  resolveMatch({ scrapeSingleScene: [{ remote_site_id: "tp-7" }] });
+  assert.equal(controller.start(), task, "Double clicks cannot submit duplicate requests");
   await task;
-  assert.equal(firstPageUpdates, beforeLeave, "Unmounted pages do not receive worker updates");
-  assert.equal(returnedView.running, false);
-  assert.equal(returnedView.state.rows[0].completion, "Incomplete");
-  assert.match(returnedView.message, /All done/);
-  assert.equal(lookupCount, 1);
-  leaveAgain();
-  const restored = createController(storage, async () => { throw new Error("Restoring must not issue requests"); });
-  assert.equal(restored.snapshot().state.rows[0].completion, "Incomplete");
-  assert.match(restored.snapshot().message, /All done/);
-  const legacy = { ...pending, phase: "done", results: [{ id: "7", result: "multiple matches" }] };
-  storage.setItem("scene-import.pending", JSON.stringify(legacy));
-  const upgraded = createController(storage, async (query) => {
-    assert.ok(query.startsWith("query"), "Displaying an older completed run must remain read-only");
-    return { findScenes: { scenes: [detail("7")] } };
-  });
-  await upgraded.refresh();
-  assert.equal(upgraded.snapshot().state.rows[0].completion, "Needs review");
-  assert.deepEqual(upgraded.snapshot().state.results, legacy.results);
-  let refreshCount = 0;
-  const retryController = createController(storage, async (query) => {
-    assert.ok(query.startsWith("query"), "Retry progress must not submit or repeat jobs");
-    if (++refreshCount === 1) throw new Error("NetworkError when attempting to fetch resource.");
-    return { findScenes: { scenes: [detail("7")] } };
-  });
-  await retryController.refresh();
-  assert.match(retryController.snapshot().state.progressError, /NetworkError/);
-  await retryController.refresh();
-  assert.equal(retryController.snapshot().state.progressError, undefined);
-  assert.equal(retryController.snapshot().state.rows[0].completion, "Needs review");
+  assert.deepEqual(calls[1].legacy, pending);
+  assert.equal(storage.getItem("scene-import.pending"), undefined, "Browser state is removed only after server acceptance");
+  assert.equal(controller.snapshot().running, true);
+  serverView = { state: { ...pending, phase: "done" }, running: false, message: "All done", error: "" };
+  const reopened = createController(storage, async () => ({ runPluginOperation: serverView }));
+  await reopened.refresh();
+  assert.equal(reopened.snapshot().state.phase, "done", "A fresh browser gets server progress");
+  const brokenStorage = new Map([["scene-import.pending", JSON.stringify(pending)]]);
+  const broken = createController({ getItem: (key) => brokenStorage.get(key), removeItem: (key) => brokenStorage.delete(key) }, async () => { throw new Error("offline"); });
+  await broken.start();
+  assert.ok(brokenStorage.has("scene-import.pending"), "Failed transfer preserves legacy progress");
+  assert.match(broken.snapshot().error, /offline/);
 
   const retryLinks = new Map([
     ["10", [{ endpoint: db, stash_id: "db-10" }, { endpoint: tp, stash_id: "tp-10" }]],

@@ -3,6 +3,7 @@
 
   const key = "scene-import.pending";
   const trackingTag = "[Scene Import Incomplete]";
+  const performerGenders = ["FEMALE", "TRANSGENDER_FEMALE", "INTERSEX", "NON_BINARY"];
   const route = "/plugins/scene-import";
   const scenesQuery = "query { findScenes(filter:{per_page:-1}) { scenes { id } } }";
   const rowFields = "id title paths{screenshot} files{basename duration fingerprints{type value}} stash_ids{endpoint stash_id} tags{name}";
@@ -20,16 +21,33 @@
     return scene.files?.some((file) => file.fingerprints?.some((fp) => fp.type.toUpperCase() === "PHASH" && fp.value));
   }
 
+  // Same thresholds as Stash's tagger: pHash within 8 bits, duration within 5 seconds.
+  function phashDistance(a, b) {
+    const hex = /^[0-9a-f]{1,16}$/i;
+    if (!hex.test(a) || !hex.test(b)) return a.toLowerCase() === b.toLowerCase() ? 0 : Infinity;
+    a = a.padStart(16, "0");
+    b = b.padStart(16, "0");
+    let bits = 0;
+    for (let i = 0; i < 16; i++) for (let x = parseInt(a[i], 16) ^ parseInt(b[i], 16); x; x >>= 1) bits += x & 1;
+    return bits;
+  }
+
   function matchStrength(files, candidate) {
     let strength = 0;
     for (const file of files || []) {
       for (const local of file.fingerprints || []) {
         const algorithm = local.type.toLowerCase();
-        if (!["md5", "oshash"].includes(algorithm) || !local.value) continue;
+        if (!["md5", "oshash", "phash"].includes(algorithm) || !local.value) continue;
         for (const remote of candidate.fingerprints || []) {
-          if (remote.algorithm.toLowerCase() !== algorithm || !remote.hash || remote.hash.toLowerCase() !== local.value.toLowerCase()) continue;
-          if (algorithm === "md5") strength = 2;
-          else if (file.duration > 0 && remote.duration > 0 && Math.abs(file.duration - remote.duration) <= 1) strength = Math.max(strength, 1);
+          if (remote.algorithm.toLowerCase() !== algorithm || !remote.hash) continue;
+          const durationDiff = file.duration > 0 && remote.duration > 0 ? Math.abs(file.duration - remote.duration) : Infinity;
+          if (algorithm === "phash") {
+            if (durationDiff <= 5 && phashDistance(local.value, remote.hash) <= 8) strength = Math.max(strength, 1);
+            continue;
+          }
+          if (remote.hash.toLowerCase() !== local.value.toLowerCase()) continue;
+          if (algorithm === "md5") strength = 3;
+          else if (durationDiff <= 1) strength = Math.max(strength, 2);
         }
       }
     }
@@ -45,7 +63,7 @@
     }
     const matches = [...distinct.values()];
     const strongest = Math.max(0, ...matches.map((match) => matchStrength(files, match)));
-    return { matches: strongest ? matches.filter((match) => matchStrength(files, match) === strongest) : matches, reason: strongest === 2 ? "Exact MD5" : strongest === 1 ? "Exact OShash + duration" : "Fingerprint lookup" };
+    return { matches: strongest ? matches.filter((match) => matchStrength(files, match) === strongest) : matches, reason: strongest === 3 ? "Exact MD5" : strongest === 2 ? "Exact OShash + duration" : strongest === 1 ? "pHash + duration" : "Fingerprint lookup" };
   }
 
   async function saveSelectedMetadata(gql, id, selected, endpoint) {
@@ -58,6 +76,8 @@
     const entityIDs = new Map();
     async function resolve(kind, entity) {
       if (!entity) return null;
+      const gender = entity.gender?.trim().toUpperCase().replace(/[\s-]+/g, "_");
+      if (kind === "performer" && ["MALE", "TRANSGENDER_MALE"].includes(gender)) return null;
       if (entity.stored_id) return entity.stored_id;
       if (!entity.name) throw new Error(`Selected match has a ${kind} without a name`);
       if (kind === "performer" && !entity.disambiguation && entity.name.trim().split(/\s+/).length === 1) return null;
@@ -70,8 +90,7 @@
       if (aliases?.length) input[kind === "performer" ? "alias_list" : "aliases"] = aliases;
       if (kind === "studio" && entity.parent) input.parent_id = await resolve("studio", entity.parent);
       if (kind === "performer") {
-        const gender = entity.gender?.trim().toUpperCase().replace(/[\s-]+/g, "_");
-        if (["MALE", "FEMALE", "TRANSGENDER_MALE", "TRANSGENDER_FEMALE", "INTERSEX", "NON_BINARY"].includes(gender)) input.gender = gender;
+        if (performerGenders.includes(gender)) input.gender = gender;
         const circumcised = entity.circumcised?.trim().toUpperCase();
         if (["CUT", "UNCUT"].includes(circumcised)) input.circumcised = circumcised;
         for (const [source, target] of [["height", "height_cm"], ["weight", "weight"], ["penis_length", "penis_length"]]) {
@@ -126,7 +145,7 @@
     };
     const result = state.results.find((r) => r.id === scene.id)?.result;
     const stashdb = hasID(state.stashdb) ? "Matched" : ambiguous("StashDB") ? "Ambiguous" : ["scan", "generate", "identify"].includes(state.phase) && early?.stashdb?.length === 1 ? "Match found" : ["scan", "generate"].includes(state.phase) ? "Waiting" : state.phase === "identify" ? "Searching" : "No saved match";
-    let tpdb = hasID(state.tpdb) ? "Matched" : ambiguous("ThePornDB") ? "Ambiguous" : early?.tpdb?.length === 1 ? "Match found" : ["scan", "generate", "identify"].includes(state.phase) ? "Waiting" : state.phase === "fallback" && state.fallbackIDs?.includes(scene.id) ? "Searching" : "Waiting for ID lookup";
+    let tpdb = hasID(state.tpdb) ? "Matched" : ambiguous("ThePornDB") ? "Ambiguous" : early?.tpdb?.length === 1 ? "Match found" : ["scan", "generate", "identify"].includes(state.phase) ? "Waiting" : state.phase === "fallback" && state.fallbackIDs?.includes(scene.id) ? "Searching" : ["cleanup", "done"].includes(state.phase) ? "No saved match" : "Waiting for ID lookup";
     if (result === "linked" || result === "already linked") tpdb = "Matched";
     else if (result === "multiple matches") tpdb = "Ambiguous";
     else if (result === "no match") tpdb = "No match";
@@ -140,7 +159,7 @@
       stashdbEvidence: state.matchReasons?.[scene.id]?.stashdb || "",
       tpdbEvidence: state.matchReasons?.[scene.id]?.tpdb || "",
       phash: hasPhash(scene) ? "Ready" : ["scan", "generate"].includes(state.phase) ? "Generating" : "Not available",
-      stashdb, tpdb, completion: result ? review ? "Needs review" : !hasID(state.stashdb) || !hasID(state.tpdb) || !hasPhash(scene) ? "Incomplete" : "Done" : "In progress",
+      stashdb, tpdb, completion: review ? "Needs review" : hasID(state.stashdb) && hasID(state.tpdb) && hasPhash(scene) ? "Done" : result || ["cleanup", "done"].includes(state.phase) ? "Incomplete" : "In progress",
     };
   }
 
@@ -215,12 +234,12 @@
     }
   }
 
-  async function run(gql, state, save, status, pause = sleep) {
+  async function run(gql, state, save, status, pause = sleep, wait = waitJob) {
     if (!state || ["new", "retry"].includes(state.phase)) {
       const { configuration } = await gql("query{configuration{general{stashBoxes{name endpoint}} defaults{scan{scanGenerateCovers scanGeneratePreviews scanGenerateSprites scanGeneratePhashes scanGenerateImagePreviews scanGenerateImagePhashes scanGenerateThumbnails scanGenerateClipPreviews}}}}");
       const boxes = configuration.general.stashBoxes;
-      const stashdb = boxes.find((b) => new URL(b.endpoint).hostname === "stashdb.org");
-      const tpdb = boxes.find((b) => new URL(b.endpoint).hostname === "theporndb.net");
+      const stashdb = boxes.find((b) => /^https?:\/\/stashdb\.org(?:[:/]|$)/i.test(b.endpoint));
+      const tpdb = boxes.find((b) => /^https?:\/\/theporndb\.net(?:[:/]|$)/i.test(b.endpoint));
       if (!stashdb || !tpdb) throw new Error("Configure StashDB and ThePornDB under Metadata Providers first.");
       if (state?.adoptIDs?.length) await trackScenes(gql, state.adoptIDs);
       if (state?.phase === "retry") {
@@ -248,9 +267,8 @@
     if (state.phase === "scan") {
       if (!state.job) throw new Error("Scan submission was interrupted. Check Stash tasks, then discard this pending run and start again.");
       status("Waiting for scan and generation");
-      await waitJob(gql, state.job, (message) => status(`Scan and generation: ${message}`), pause, async (job) => {
+      await wait(gql, state.job, (message) => status(`Scan and generation: ${message}`), pause, async (job) => {
         await refreshRows(gql, state, save);
-        // shortcut: discovery queueing needs this tab; use a server hook for unattended scans.
         const queued = new Set(state.queuedIDs || []);
         const discovered = (state.rows || []).map((row) => row.id).filter((id) => !queued.has(id));
         if (discovered.length) {
@@ -283,7 +301,7 @@
         state.job = metadataGenerate;
         save(state);
       }
-      await waitJob(gql, state.job, (message) => status(`Missing pHashes: ${message}`), pause, async (job) => {
+      await wait(gql, state.job, (message) => status(`Missing pHashes: ${message}`), pause, async (job) => {
         await refreshRows(gql, state, save);
         if (job.status === "RUNNING") await matchReadyScenes(gql, state, save, status, pause);
       });
@@ -311,13 +329,13 @@
         state.identifySubmitted = true;
         save(state);
         const { metadataIdentify } = await gql("mutation($input:IdentifyMetadataInput!){metadataIdentify(input:$input)}", {
-          input: { sceneIDs: ids, sources: [{ source: { stash_box_endpoint: endpoint } }], options: { fieldOptions, setCoverImage: true, setOrganized: false, skipMultipleMatches: true, skipSingleNamePerformers: true } },
+          input: { sceneIDs: ids, sources: [{ source: { stash_box_endpoint: endpoint } }], options: { fieldOptions, setCoverImage: true, setOrganized: false, performerGenders, skipMultipleMatches: true, skipSingleNamePerformers: true } },
         });
         state.job = metadataIdentify;
         save(state);
       }
       if (state.job) {
-        await waitJob(gql, state.job, (message) => status(`${phase === "identify" ? "StashDB" : "ThePornDB metadata"}: ${message}`), pause, () => refreshRows(gql, state, save));
+        await wait(gql, state.job, (message) => status(`${phase === "identify" ? "StashDB" : "ThePornDB metadata"}: ${message}`), pause, () => refreshRows(gql, state, save));
         {
           const source = phase === "identify" ? "stashdb" : "tpdb";
           state.ambiguousIDs = state.ambiguousIDs || [];
@@ -419,43 +437,50 @@
     return state;
   }
 
-  function createController(storage, gql, pause = sleep) {
-    const state = JSON.parse(storage.getItem(key) || "null");
-    let view = { state, message: state?.message || "", error: state?.error || "", running: false };
+  function createController(storage, gql) {
+    const legacy = JSON.parse(storage.getItem(key) || "null");
+    let view = { state: legacy, message: legacy?.message || "", error: "", running: false, loading: true };
     const listeners = new Set();
-    let task;
+    let request;
     function publish(next) {
       view = { ...view, ...next };
-      if (view.state) storage.setItem(key, JSON.stringify({ ...view.state, message: view.message, error: view.error }));
-      else storage.removeItem(key);
       for (const listener of listeners) listener(view);
+    }
+    async function operation(args) {
+      const { runPluginOperation: result } = await gql('mutation($args:Map){runPluginOperation(plugin_id:"scene-import",args:$args)}', { args });
+      const next = result?.output || result;
+      if (!next || typeof next.running !== "boolean") throw new Error("Background import returned no progress");
+      publish({ ...next, ...(args.mode === "status" && !next.state && storage.getItem(key) ? { state: legacy, message: legacy?.message || "" } : {}), loading: false });
+      return next;
     }
     return {
       snapshot: () => view,
       subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
-      discard() { if (!view.running) publish({ state: null, message: "", error: "" }); },
       refresh() {
-        if (!view.running && view.state) {
-          const current = view.state;
-          return refreshRows(gql, JSON.parse(JSON.stringify(current)), (next) => {
-            if (!view.running && view.state === current) publish({ state: JSON.parse(JSON.stringify(next)) });
-          });
-        }
+        if (request) return request;
+        request = operation({ mode: "status" }).catch((error) => publish({ error: error.message, loading: false }))
+          .finally(() => { request = null; });
+        return request;
+      },
+      discard() {
+        if (request || view.running) return request;
+        request = operation({ mode: "discard" }).then(() => storage.removeItem(key))
+          .catch((error) => publish({ error: error.message }))
+          .finally(() => { request = null; });
+        return request;
       },
       start(mode = "scan") {
-        if (view.running) return task;
-        let pending = view.state && view.state.phase !== "done" ? JSON.parse(JSON.stringify(view.state)) : null;
-        if (mode === "retry" && pending) {
+        if (request || view.running) return request;
+        if (mode === "retry" && view.state && view.state.phase !== "done") {
           publish({ error: "Finish or resume the pending import before starting a retry." });
           return Promise.resolve();
         }
-        if (!pending) pending = { phase: mode === "retry" ? "retry" : "new", adoptIDs: view.state?.tracked ? [] : view.state?.ids || [], results: [], rows: [] };
-        const resuming = !["new", "retry"].includes(pending.phase);
-        publish({ state: pending, running: true, error: "", message: resuming ? "Resuming import…" : mode === "retry" ? "Starting tracked retry…" : "Starting import…" });
-        task = run(gql, pending, (next) => publish({ state: JSON.parse(JSON.stringify(next)) }), (message) => publish({ message }), pause)
-          .catch((error) => publish({ error: error.message }))
-          .finally(() => publish({ running: false }));
-        return task;
+        publish({ loading: true, error: "" });
+        request = operation({ mode, legacy: JSON.parse(storage.getItem(key) || "null") })
+          .then(() => storage.removeItem(key))
+          .catch((error) => publish({ error: error.message, loading: false }))
+          .finally(() => { request = null; });
+        return request;
       },
     };
   }
@@ -485,18 +510,20 @@
       const unsubscribe = controller.subscribe(setView);
       setView(controller.snapshot());
       controller.refresh();
-      return unsubscribe;
+      const timer = setInterval(() => controller.refresh(), 3000);
+      return () => { clearInterval(timer); unsubscribe(); };
     }, []);
-    const { state, running: busy, message, error } = view;
+    const { state, message, error } = view;
+    const busy = view.running || view.loading;
     const pending = state && state.phase !== "done";
     const rows = state?.rows || [];
     const badge = (text) => h(Badge, { variant: ["Matched", "Ready", "Done"].includes(text) ? "success" : ["Match found"].includes(text) ? "info" : ["Ambiguous", "Needs review", "Incomplete", "Not available", "No saved match", "No match"].includes(text) ? "warning" : text.startsWith("error:") || text.startsWith("Error:") ? "danger" : "secondary" }, text);
     return h("div", { className: "container my-4" },
       h("h2", null, "Scene Import"),
       h("p", null, "Scan your configured library folders, wait for generation, identify newly added scenes with StashDB, then use ThePornDB for metadata where StashDB did not match. Existing scenes are excluded."),
-      h("p", null, "Both metadata passes create missing studios, performers and tags. For StashDB matches, ThePornDB adds only its Stash-ID. Multiple matches and conflicting IDs are left for review."),
-      h("p", null, "Provider lookups start as soon as each pHash is ready, while generation continues. Match found means a candidate is ready; Matched means its metadata or ID has been saved."),
-      h("p", null, "You can browse other Stash pages and return here while this tab keeps importing. After a refresh or closing the tab, return and click Resume import. Use one tab for imports."),
+      h("p", null, "Both metadata passes create missing studios, performers and tags, skipping male performers. For StashDB matches, ThePornDB adds only its Stash-ID. Multiple matches and conflicting IDs are left for review."),
+      h("p", null, "Provider matching starts after scan and generation finish. Match found means a candidate is ready; Matched means its metadata or ID has been saved."),
+      h("p", null, "Imports run on the Stash server. You can close the browser and return here to view progress. If Stash restarts or a task fails, click Resume import."),
       h(Button, { onClick: () => controller.start(), disabled: busy }, busy ? "Import running…" : pending ? "Resume import" : "Scan & identify new scenes"),
       h(Button, { className: "ml-2", variant: "secondary", disabled: busy || !!pending, onClick: () => controller.start("retry") }, "Retry incomplete imports"),
       h("p", { className: "mt-2" }, "Unfinished imports keep [Scene Import Incomplete]. Retry checks only that queue, generates missing pHashes, and fetches missing provider matches. The tag is removed once the pHash and both IDs are saved successfully."),
