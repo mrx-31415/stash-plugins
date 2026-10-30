@@ -9,13 +9,19 @@ module.exports = async function () {
   const weak = { remote_site_id: "weak", fingerprints: [{ algorithm: "phash", hash: "local-ph", duration: 2180 }] };
   const strong = { remote_site_id: "strong", title: "Correct title", fingerprints: [{ algorithm: "OSHASH", hash: "LOCAL-OS", duration: 2180 }] };
   assert.deepEqual(selectMatches(files, [weak, strong]), { matches: [strong], reason: "Exact OShash + duration" });
-  assert.equal(selectMatches(files, [weak, { ...strong, fingerprints: [{ algorithm: "oshash", hash: "local-os", duration: 2310 }] }]).matches.length, 2, "An OShash match needs matching duration");
+  assert.deepEqual(selectMatches(files, [weak, { ...strong, fingerprints: [{ algorithm: "oshash", hash: "local-os", duration: 2310 }] }]), { matches: [weak], reason: "pHash + duration" }, "An OShash match needs matching duration");
   assert.equal(selectMatches(files, [strong, { ...strong, remote_site_id: "same-evidence" }]).matches.length, 2, "Equal exact evidence remains ambiguous");
   const md5 = { remote_site_id: "md5", fingerprints: [{ algorithm: "MD5", hash: "FULL-CHECKSUM", duration: 2310 }] };
   const md5Files = [{ ...files[0], fingerprints: [...files[0].fingerprints, { type: "md5", value: "full-checksum" }] }];
   assert.deepEqual(selectMatches(md5Files, [strong, md5]), { matches: [md5], reason: "Exact MD5" });
   assert.equal(selectMatches(md5Files, [md5, { ...md5, remote_site_id: "md5-tie" }]).matches.length, 2);
   assert.equal(selectMatches(files, [weak, { ...weak, remote_site_id: "more-votes", fingerprints: Array(19).fill(weak.fingerprints[0]) }]).matches.length, 2, "Submission counts alone must not resolve competing pHash results");
+  const hexFiles = [{ duration: 2014.07, fingerprints: [{ type: "oshash", value: "unsubmitted" }, { type: "phash", value: "a82d0d837f7984dc" }] }];
+  const phashAgrees = { remote_site_id: "phash-agrees", fingerprints: [{ algorithm: "PHASH", hash: "A82D0D837F7984DC", duration: 2014 }, { algorithm: "PHASH", hash: "a82d0d837f7984de", duration: 2015 }] };
+  const durationOff = { remote_site_id: "duration-off", fingerprints: [{ algorithm: "PHASH", hash: "a82d0d837f7984dc", duration: 2230 }] };
+  assert.deepEqual(selectMatches(hexFiles, [durationOff, phashAgrees]), { matches: [phashAgrees], reason: "pHash + duration" }, "A pHash match with matching duration beats one whose duration is far off");
+  assert.equal(selectMatches(hexFiles, [phashAgrees, { remote_site_id: "far-phash", fingerprints: [{ algorithm: "PHASH", hash: "57d2f27c80867b23", duration: 2014 }] }]).matches.length, 1, "Distant pHashes are not evidence");
+  assert.equal(selectMatches(hexFiles, [phashAgrees, { ...durationOff, fingerprints: [{ ...durationOff.fingerprints[0], duration: 2012 }] }]).matches.length, 2, "Two pHash + duration matches remain ambiguous");
   assert.deepEqual(selectMatches(files, [strong, { remote_site_id: "strong", fingerprints: [] }, weak]).matches.map((match) => match.remote_site_id), ["strong"], "Duplicate entries retain their evidence");
 
   const metadata = { ...strong, date: "2020-01-02", code: "chosen-code", details: "Chosen details", director: "Chosen director", urls: ["https://example.test/chosen"], image: "https://example.test/cover", studio: { stored_id: "known-studio" }, performers: [

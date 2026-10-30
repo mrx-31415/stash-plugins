@@ -21,16 +21,33 @@
     return scene.files?.some((file) => file.fingerprints?.some((fp) => fp.type.toUpperCase() === "PHASH" && fp.value));
   }
 
+  // Same thresholds as Stash's tagger: pHash within 8 bits, duration within 5 seconds.
+  function phashDistance(a, b) {
+    const hex = /^[0-9a-f]{1,16}$/i;
+    if (!hex.test(a) || !hex.test(b)) return a.toLowerCase() === b.toLowerCase() ? 0 : Infinity;
+    a = a.padStart(16, "0");
+    b = b.padStart(16, "0");
+    let bits = 0;
+    for (let i = 0; i < 16; i++) for (let x = parseInt(a[i], 16) ^ parseInt(b[i], 16); x; x >>= 1) bits += x & 1;
+    return bits;
+  }
+
   function matchStrength(files, candidate) {
     let strength = 0;
     for (const file of files || []) {
       for (const local of file.fingerprints || []) {
         const algorithm = local.type.toLowerCase();
-        if (!["md5", "oshash"].includes(algorithm) || !local.value) continue;
+        if (!["md5", "oshash", "phash"].includes(algorithm) || !local.value) continue;
         for (const remote of candidate.fingerprints || []) {
-          if (remote.algorithm.toLowerCase() !== algorithm || !remote.hash || remote.hash.toLowerCase() !== local.value.toLowerCase()) continue;
-          if (algorithm === "md5") strength = 2;
-          else if (file.duration > 0 && remote.duration > 0 && Math.abs(file.duration - remote.duration) <= 1) strength = Math.max(strength, 1);
+          if (remote.algorithm.toLowerCase() !== algorithm || !remote.hash) continue;
+          const durationDiff = file.duration > 0 && remote.duration > 0 ? Math.abs(file.duration - remote.duration) : Infinity;
+          if (algorithm === "phash") {
+            if (durationDiff <= 5 && phashDistance(local.value, remote.hash) <= 8) strength = Math.max(strength, 1);
+            continue;
+          }
+          if (remote.hash.toLowerCase() !== local.value.toLowerCase()) continue;
+          if (algorithm === "md5") strength = 3;
+          else if (durationDiff <= 1) strength = Math.max(strength, 2);
         }
       }
     }
@@ -46,7 +63,7 @@
     }
     const matches = [...distinct.values()];
     const strongest = Math.max(0, ...matches.map((match) => matchStrength(files, match)));
-    return { matches: strongest ? matches.filter((match) => matchStrength(files, match) === strongest) : matches, reason: strongest === 2 ? "Exact MD5" : strongest === 1 ? "Exact OShash + duration" : "Fingerprint lookup" };
+    return { matches: strongest ? matches.filter((match) => matchStrength(files, match) === strongest) : matches, reason: strongest === 3 ? "Exact MD5" : strongest === 2 ? "Exact OShash + duration" : strongest === 1 ? "pHash + duration" : "Fingerprint lookup" };
   }
 
   async function saveSelectedMetadata(gql, id, selected, endpoint) {

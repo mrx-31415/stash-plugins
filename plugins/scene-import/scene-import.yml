@@ -1,6 +1,6 @@
 name: Scene Import
 description: Import scenes in the background and retry incomplete imports with StashDB and ThePornDB.
-version: 0.6.2
+version: 0.6.3
 exec:
   - scene-import-server.js
 interface: js

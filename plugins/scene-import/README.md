@@ -44,9 +44,11 @@ markers. Ambiguous StashDB rows show the number of distinct provider entries.
 
 Multiple candidates are compared using their actual returned fingerprints.
 A unique exact MD5 match wins first; otherwise a unique exact OShash match with
-file duration within one second wins. Multiple equally strong entries remain
-ambiguous. pHash and submission counts alone do not break a tie. Progress rows
-show the selected evidence, such as `Exact OShash + duration`.
+file duration within one second wins; otherwise a unique entry with a pHash
+within 8 bits and duration within five seconds of the same fingerprint wins
+(Stash's tagger thresholds). Multiple equally strong entries remain ambiguous.
+Submission counts alone do not break a tie. Progress rows show the selected
+evidence, such as `Exact OShash + duration` or `pHash + duration`.
 
 Native Identify handles single results. When it skips multiple results and one
 has stronger exact evidence, the plugin applies that chosen entry's metadata
