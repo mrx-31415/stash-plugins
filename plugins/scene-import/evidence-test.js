@@ -22,6 +22,9 @@ module.exports = async function () {
   assert.deepEqual(selectMatches(hexFiles, [durationOff, phashAgrees]), { matches: [phashAgrees], reason: "pHash + duration" }, "A pHash match with matching duration beats one whose duration is far off");
   assert.equal(selectMatches(hexFiles, [phashAgrees, { remote_site_id: "far-phash", fingerprints: [{ algorithm: "PHASH", hash: "57d2f27c80867b23", duration: 2014 }] }]).matches.length, 1, "Distant pHashes are not evidence");
   assert.equal(selectMatches(hexFiles, [phashAgrees, { ...durationOff, fingerprints: [{ ...durationOff.fingerprints[0], duration: 2012 }] }]).matches.length, 2, "Two pHash + duration matches remain ambiguous");
+  const strayPhash = { remote_site_id: "stray-phash", duration: 1696, fingerprints: [{ algorithm: "PHASH", hash: "a82d0d837f7984de", duration: 2014 }, { algorithm: "PHASH", hash: "57d2f27c80867b23", duration: 1696 }] };
+  assert.deepEqual(selectMatches(hexFiles, [strayPhash, { ...phashAgrees, duration: 2014 }]).matches.map((match) => match.remote_site_id), ["phash-agrees"], "A stray pHash on an entry whose own duration disagrees is not evidence");
+  assert.equal(selectMatches(hexFiles, [{ ...strayPhash, duration: null }, phashAgrees]).matches.length, 2, "Entries without a duration are judged on fingerprints alone");
   assert.deepEqual(selectMatches(files, [strong, { remote_site_id: "strong", fingerprints: [] }, weak]).matches.map((match) => match.remote_site_id), ["strong"], "Duplicate entries retain their evidence");
 
   const metadata = { ...strong, date: "2020-01-02", code: "chosen-code", details: "Chosen details", director: "Chosen director", urls: ["https://example.test/chosen"], image: "https://example.test/cover", studio: { stored_id: "known-studio" }, performers: [
