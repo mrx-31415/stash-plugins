@@ -36,6 +36,8 @@ const core = (function (root) {
   function matchStrength(files, candidate) {
     let strength = 0;
     for (const file of files || []) {
+      // A stray pHash submitted to the wrong entry is not evidence when the entry's own duration disagrees.
+      const entryDurationOff = file.duration > 0 && candidate.duration > 0 && Math.abs(file.duration - candidate.duration) > 5;
       for (const local of file.fingerprints || []) {
         const algorithm = local.type.toLowerCase();
         if (!["md5", "oshash", "phash"].includes(algorithm) || !local.value) continue;
@@ -43,7 +45,7 @@ const core = (function (root) {
           if (remote.algorithm.toLowerCase() !== algorithm || !remote.hash) continue;
           const durationDiff = file.duration > 0 && remote.duration > 0 ? Math.abs(file.duration - remote.duration) : Infinity;
           if (algorithm === "phash") {
-            if (durationDiff <= 5 && phashDistance(local.value, remote.hash) <= 8) strength = Math.max(strength, 1);
+            if (durationDiff <= 5 && !entryDurationOff && phashDistance(local.value, remote.hash) <= 8) strength = Math.max(strength, 1);
             continue;
           }
           if (remote.hash.toLowerCase() !== local.value.toLowerCase()) continue;

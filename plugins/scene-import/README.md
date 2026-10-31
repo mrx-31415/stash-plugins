@@ -46,7 +46,8 @@ Multiple candidates are compared using their actual returned fingerprints.
 A unique exact MD5 match wins first; otherwise a unique exact OShash match with
 file duration within one second wins; otherwise a unique entry with a pHash
 within 8 bits and duration within five seconds of the same fingerprint wins
-(Stash's tagger thresholds). Multiple equally strong entries remain ambiguous.
+(Stash's tagger thresholds), unless the entry's own duration is more than five
+seconds off. Multiple equally strong entries remain ambiguous.
 Submission counts alone do not break a tie. Progress rows show the selected
 evidence, such as `Exact OShash + duration` or `pHash + duration`.
 
