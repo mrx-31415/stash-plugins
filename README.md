@@ -19,9 +19,11 @@ own repositories. Development builds of the same plugins are at
 
 ### Stash Curator, Auto Seek and Incognito
 
-Developed in [stash-curator](https://github.com/mrx-31415/stash-curator) and
-mirrored here from its releases. Installs from that repository's own source
-keep receiving updates there.
+Developed in their own repositories,
+[stash-curator](https://github.com/mrx-31415/stash-curator),
+[stash-auto-seek](https://github.com/mrx-31415/stash-auto-seek) and
+[stash-incognito](https://github.com/mrx-31415/stash-incognito), and mirrored here
+from their releases. Installs from Curator's own source keep receiving updates there.
 
 ### Cover Story
 
