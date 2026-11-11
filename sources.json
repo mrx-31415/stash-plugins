@@ -3,13 +3,29 @@
     "main": [
       {
         "index": "https://mrx-31415.github.io/stash-curator/index.yml",
-        "packages": ["stash-curator", "auto-seek", "incognito"]
+        "packages": ["stash-curator"]
+      },
+      {
+        "index": "https://github.com/mrx-31415/stash-auto-seek/releases/latest/download/auto-seek-index.yml",
+        "packages": ["auto-seek"]
+      },
+      {
+        "index": "https://github.com/mrx-31415/stash-incognito/releases/latest/download/incognito-index.yml",
+        "packages": ["incognito"]
       }
     ],
     "dev": [
       {
         "index": "https://mrx-31415.github.io/stash-curator/dev/index.yml",
-        "packages": ["stash-curator", "auto-seek", "incognito"]
+        "packages": ["stash-curator"]
+      },
+      {
+        "index": "https://mrx-31415.github.io/stash-auto-seek/dev/index.yml",
+        "packages": ["auto-seek"]
+      },
+      {
+        "index": "https://mrx-31415.github.io/stash-incognito/dev/index.yml",
+        "packages": ["incognito"]
       }
     ]
   }
