@@ -15,6 +15,7 @@ on:
       - 'build_site.sh'
       - 'build_hub.py'
       - 'build_hub_test.py'
+      - 'check_site.py'
       - '.github/workflows/deploy.yml'
   schedule:
     - cron: '17 * * * *'
@@ -55,6 +56,7 @@ jobs:
     - name: Mirror plugins from other repositories
       id: hub
       run: python build_hub.py _site --live https://mrx-31415.github.io/stash-plugins --changed-output "$GITHUB_OUTPUT"
+    - run: python check_site.py _site
     - uses: actions/upload-pages-artifact@v5
 
   deploy:
