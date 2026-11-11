@@ -1,0 +1,16 @@
+{
+  "channels": {
+    "main": [
+      {
+        "index": "https://mrx-31415.github.io/stash-curator/index.yml",
+        "packages": ["stash-curator", "auto-seek", "incognito"]
+      }
+    ],
+    "dev": [
+      {
+        "index": "https://mrx-31415.github.io/stash-curator/dev/index.yml",
+        "packages": ["stash-curator", "auto-seek", "incognito"]
+      }
+    ]
+  }
+}

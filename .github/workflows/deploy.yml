@@ -1,11 +1,25 @@
 name: Deploy repository to Github Pages
 
+# One package source for every plugin: the plugins in this repository plus
+# those mirrored from other repositories' package indexes (sources.json).
+# The hourly run picks up their releases and deploys only when an index
+# changed. A plugin repository can also trigger a run right after a release
+# with a repository_dispatch of type plugin-released.
 on:
   push:
     branches:
       - main
     paths:
       - 'plugins/**'
+      - 'sources.json'
+      - 'build_site.sh'
+      - 'build_hub.py'
+      - 'build_hub_test.py'
+      - '.github/workflows/deploy.yml'
+  schedule:
+    - cron: '17 * * * *'
+  repository_dispatch:
+    types: [plugin-released]
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
@@ -15,20 +29,38 @@ permissions:
   pages: write
   id-token: write
 
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.hub.outputs.changed }}
     steps:
     - name: Checkout
       uses: actions/checkout@v6
       with:
         fetch-depth: '0'
+        ref: main
+    - uses: actions/setup-python@v6
+      with:
+        python-version: '3.12'
+    - run: python -m pip install --quiet pyyaml==6.0.3
+    - run: python build_hub_test.py
     - run: |
         chmod +x build_site.sh
-        ./build_site.sh _site/${{ github.ref_name }}
+        ./build_site.sh _site/main
+    - name: Mirror plugins from other repositories
+      id: hub
+      run: python build_hub.py _site --live https://mrx-31415.github.io/stash-plugins --changed-output "$GITHUB_OUTPUT"
     - uses: actions/upload-pages-artifact@v5
 
   deploy:
+    # Scheduled and dispatched runs deploy only a changed source; pushes and
+    # manual runs always deploy.
+    if: needs.build.outputs.changed == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}main/index.yml
