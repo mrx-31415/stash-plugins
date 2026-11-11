@@ -6,6 +6,7 @@ import tempfile
 from pathlib import Path
 
 import build_hub
+import check_site
 
 
 def sha(data: bytes) -> str:
@@ -161,6 +162,26 @@ def test_unchanged_local_plugin_keeps_the_live_archive():
         index.write_text(index.read_text("utf-8").replace("1.0.0-abc", "1.0.0-def"), encoding="utf-8")
         written = build_hub.build(site2, {"channels": {"main": []}}, (tmp / "live").as_uri())
         assert build_hub.load_index(written["main"])[0]["sha256"] == sha(b"local")
+
+
+def test_check_site_finds_missing_and_tampered_archives():
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        url = write_source(tmp / "src", [("alpha", "1.0.0", b"A")])
+        site = tmp / "site"
+        local_site(site)
+        config = {"channels": {"main": [{"index": url}], "dev": [{"index": url, "packages": ["alpha"]}]}}
+        build_hub.build(site, config, None)
+        assert check_site.check(site, config, {"local"}) == []
+        assert check_site.check(site, config, {"local", "gone"}) == [
+            "main: missing gone", "dev: missing gone"
+        ]
+        (site / "dev" / "alpha" / "1.0.0" / "alpha.zip").write_bytes(b"tampered")
+        (site / "main" / "local.zip").unlink()
+        assert check_site.check(site, config, {"local"}) == [
+            "main/local: archive local.zip is not in the site",
+            "dev/alpha: alpha/1.0.0/alpha.zip does not match its sha256",
+        ]
 
 
 if __name__ == "__main__":

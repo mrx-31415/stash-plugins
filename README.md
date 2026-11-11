@@ -55,6 +55,11 @@ index changed; a plugin repository can trigger it immediately with a
 `repository_dispatch` of type `plugin-released`. Run `python3
 build_hub_test.py` to check the mirroring locally (needs PyYAML).
 
+Pull requests to `main` must pass the **Check** workflow: it builds the whole
+source against the live indexes and runs `check_site.py`, which confirms every
+channel lists its packages and every archive matches its sha256. Deploys run
+the same check before publishing.
+
 ## License
 
 This repository is licensed under [AGPL-3.0](LICENCE).
