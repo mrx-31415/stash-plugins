@@ -76,6 +76,20 @@
     if (!matchStrength(scene.files, selected)) throw new Error("Selected fingerprint evidence changed; retry the scene");
     if (linkedIDs(scene.stash_ids, [selected], endpoint).reason === "conflicting ID") throw new Error("Selected match conflicts with an existing provider ID");
     const entityIDs = new Map();
+    // Stash rejects a new tag or studio whose name or alias is already another one's name or alias.
+    const owners = new Map();
+    const fold = (name) => name.trim().toLowerCase();
+    async function owner(kind, name) {
+      const ownerKey = `${kind}:${fold(name)}`;
+      if (!owners.has(ownerKey)) {
+        const type = kind[0].toUpperCase() + kind.slice(1);
+        const criterion = { value: name.trim(), modifier: "EQUALS" };
+        const result = await gql(`query($filter:${type}FilterType){find${type}s(${kind}_filter:$filter,filter:{per_page:-1}){${kind}s{id name aliases}}}`, { filter: { name: criterion, OR: { aliases: criterion } } });
+        const same = (other) => fold(other) === fold(name);
+        owners.set(ownerKey, result[`find${type}s`][`${kind}s`].find((found) => same(found.name) || found.aliases?.some(same))?.id || null);
+      }
+      return owners.get(ownerKey);
+    }
     async function resolve(kind, entity) {
       if (!entity) return null;
       const gender = entity.gender?.trim().toUpperCase().replace(/[\s-]+/g, "_");
@@ -85,10 +99,20 @@
       if (kind === "performer" && !entity.disambiguation && entity.name.trim().split(/\s+/).length === 1) return null;
       const key = `${kind}:${entity.remote_site_id || entity.name}`;
       if (entityIDs.has(key)) return entityIDs.get(key);
+      const unique = kind !== "performer";
+      // An existing tag or studio that already uses this name, even as an alias, is the same entity.
+      const existing = unique && await owner(kind, entity.name);
+      if (existing) { entityIDs.set(key, existing); return existing; }
       const fields = kind === "performer" ? ["name", "disambiguation", "urls", "birthdate", "ethnicity", "country", "eye_color", "measurements", "fake_tits", "career_start", "career_end", "tattoos", "piercings", "details", "death_date", "hair_color"] : kind === "studio" ? ["name", "urls", "image", "details"] : ["name", "description"];
       const input = Object.fromEntries(fields.filter((field) => entity[field] != null && entity[field] !== "").map((field) => [field, entity[field]]));
       if (entity.remote_site_id) input.stash_ids = [{ endpoint, stash_id: entity.remote_site_id }];
-      const aliases = entity.alias_list || entity.aliases?.split(",").map((name) => name.trim()).filter(Boolean);
+      let aliases = entity.alias_list || entity.aliases?.split(",").map((name) => name.trim()).filter(Boolean);
+      if (unique && aliases?.length) {
+        // Leave aliases another tag or studio already owns with that entity instead of failing the create.
+        const kept = [];
+        for (const alias of aliases) if (!kept.some((other) => fold(other) === fold(alias)) && fold(alias) !== fold(entity.name) && !(await owner(kind, alias))) kept.push(alias);
+        aliases = kept;
+      }
       if (aliases?.length) input[kind === "performer" ? "alias_list" : "aliases"] = aliases;
       if (kind === "studio" && entity.parent) input.parent_id = await resolve("studio", entity.parent);
       if (kind === "performer") {
@@ -103,8 +127,10 @@
       }
       const type = kind[0].toUpperCase() + kind.slice(1);
       const result = await gql(`mutation($input:${type}CreateInput!){${kind}Create(input:$input){id}}`, { input });
-      entityIDs.set(key, result[`${kind}Create`].id);
-      return result[`${kind}Create`].id;
+      const created = result[`${kind}Create`].id;
+      entityIDs.set(key, created);
+      if (unique) for (const name of [entity.name, ...(aliases || [])]) owners.set(`${kind}:${fold(name)}`, created);
+      return created;
     }
     const studio = await resolve("studio", selected.studio);
     const performers = [];
