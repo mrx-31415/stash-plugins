@@ -29,6 +29,7 @@ import json
 import re
 import shutil
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -44,8 +45,17 @@ class HubError(Exception):
     pass
 
 
+def fresh(url: str) -> str:
+    """GitHub Pages' CDN keeps a file for up to 10 minutes after a deploy; a
+    query string it hasn't seen goes to the origin. Indexes change in place,
+    so they are fetched that way; archives have versioned paths."""
+    if ".github.io/" in url and url.endswith(".yml"):
+        return f"{url}?hub={time.time_ns()}"
+    return url
+
+
 def fetch(url: str) -> bytes:
-    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    request = urllib.request.Request(fresh(url), headers={"User-Agent": USER_AGENT})
     try:
         with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
             return response.read()
