@@ -46,6 +46,7 @@ module.exports = async function () {
       return { findScene: reads > 1 ? { ...scene, tags: [...scene.tags, { id: "concurrent-tag" }], stash_ids: [...scene.stash_ids, { endpoint: "https://example.test/graphql", stash_id: "concurrent-id" }] } : scene };
     }
     if (query.includes("performerCreate(")) { created.push({ kind: "performer", input: vars.input }); return { performerCreate: { id: "new-performer" } }; }
+    if (query.includes("findTags(")) return { findTags: { tags: [] } };
     if (query.includes("tagCreate(")) { created.push({ kind: "tag", input: vars.input }); return { tagCreate: { id: "new-tag" } }; }
     if (query.includes("sceneUpdate(")) { input = vars.input; return { sceneUpdate: { ...scene, title: vars.input.title, stash_ids: vars.input.stash_ids } }; }
     throw new Error(`Unexpected selected-metadata request: ${query}`);
@@ -81,11 +82,34 @@ module.exports = async function () {
   let newStudio;
   await saveSelectedMetadata(async (query, vars) => {
     if (query.includes("findScene(")) return { findScene: scene };
+    if (query.includes("findStudios(")) return { findStudios: { studios: [] } };
     if (query.includes("studioCreate(")) { newStudio = vars.input; return { studioCreate: { id: "new-studio" } }; }
     if (query.includes("sceneUpdate(")) { assert.equal(vars.input.studio_id, "new-studio"); return { sceneUpdate: scene }; }
     throw new Error(`Unexpected studio creation request: ${query}`);
   }, "chosen", { ...strong, studio: { name: "Child Studio", remote_site_id: "child-studio", aliases: "Child alias", parent: { stored_id: "parent-studio" } } }, db);
   assert.deepEqual(newStudio, { name: "Child Studio", stash_ids: [{ endpoint: db, stash_id: "child-studio" }], aliases: ["Child alias"], parent_id: "parent-studio" });
+
+  // Stash rejects a tag whose name or alias is already another tag's alias; reuse that tag or drop the alias.
+  const localTags = [{ id: "pile-driving", name: "Pile Driving", aliases: ["Pile Driver - POV"] }];
+  const tagCreates = [];
+  let aliasWrite;
+  await saveSelectedMetadata(async (query, vars) => {
+    if (query.includes("findScene(")) return { findScene: scene };
+    if (query.includes("findTags(")) {
+      assert.equal(vars.filter.name.modifier, "EQUALS");
+      const same = (name) => name.toLowerCase() === vars.filter.name.value.toLowerCase();
+      return { findTags: { tags: localTags.filter((tag) => same(tag.name) || tag.aliases.some(same)) } };
+    }
+    if (query.includes("tagCreate(")) { tagCreates.push(vars.input); return { tagCreate: { id: `created-${tagCreates.length}` } }; }
+    if (query.includes("sceneUpdate(")) { aliasWrite = vars.input; return { sceneUpdate: scene }; }
+    throw new Error(`Unexpected alias request: ${query}`);
+  }, "chosen", { ...strong, tags: [
+    { name: "pile driver - pov", remote_site_id: "alias-named" },
+    { name: "Pile Driver", remote_site_id: "alias-owner", alias_list: ["Pile Driver - POV", "Piledriver", "piledriver"] },
+    { name: "Folded", remote_site_id: "second-owner", alias_list: ["Piledriver", "Folded up"] },
+  ] }, db);
+  assert.deepEqual(tagCreates.map((tag) => [tag.name, tag.aliases]), [["Pile Driver", ["Piledriver"]], ["Folded", ["Folded up"]]]);
+  assert.deepEqual(aliasWrite.tag_ids, ["queue-tag", "pile-driving", "created-1", "created-2"]);
 
   let live = { id: "chosen", files, organized: false, title: "Filename", urls: [], performers: [], tags: [{ id: "queue-tag", name: "[Scene Import Incomplete]" }], stash_ids: [{ endpoint: tp, stash_id: "keep-tp" }] };
   let chosenWrite;
