@@ -184,6 +184,18 @@ def test_check_site_finds_missing_and_tampered_archives():
         ]
 
 
+def test_pages_indexes_skip_the_cdn_cache_but_archives_do_not():
+    page = "https://example.github.io/repo/dev/index.yml"
+    assert build_hub.fresh(page).startswith(page + "?hub=")
+    assert build_hub.fresh(page) != build_hub.fresh(page)
+    for url in (
+        "https://example.github.io/repo/dev/plugin.zip",
+        "https://github.com/o/r/releases/latest/download/x-index.yml",
+        "file:///tmp/index.yml",
+    ):
+        assert build_hub.fresh(url) == url
+
+
 if __name__ == "__main__":
     for name, test in list(globals().items()):
         if name.startswith("test_"):
