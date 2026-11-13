@@ -18,7 +18,9 @@ function server(core, gql, args, log, pause) {
       running = state.phase !== "done" && !!findJob && ["READY", "RUNNING"].includes(findJob.status);
       if (!running && state.phase !== "done" && !state.error) state.error = findJob?.error || "Import stopped. Resume to continue saved progress.";
     }
-    return { state, running, message: state?.message || "", error: state?.error || "" };
+    // Older versions could save a Go error as {}; never hand the page a non-string to render.
+    const error = !state?.error ? "" : typeof state.error === "string" ? state.error : "Import paused. Resume to continue saved progress.";
+    return { state, running, message: state?.message || "", error };
   }
   function queue() {
     const { runPluginTask } = gql('mutation($args:Map){runPluginTask(plugin_id:"scene-import",description:"Scene Import",args_map:$args)}', { args: { mode: "continue", token: state.token } });
@@ -64,7 +66,8 @@ function server(core, gql, args, log, pause) {
       save();
     } catch (error) {
       if (error === pending) queue();
-      else { state.error = error.message; save(); log(`Import paused: ${error.message}`); }
+      // Stash throws `new Error(goError)`; goja keeps that Go object as `message`, which saves as {}.
+      else { state.error = String(error?.message ?? error); save(); log(`Import paused: ${state.error}`); }
     }
     return view();
   }
