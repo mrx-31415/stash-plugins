@@ -14,6 +14,7 @@ const db = "https://stashdb.org/graphql";
 const tp = "https://theporndb.net/graphql";
 let scanned = false;
 let progressOffline = false;
+let scanFails = null;
 const scene = { id: "2", title: "New scene", files: [{ basename: "new.mp4", fingerprints: [{ type: "phash", value: "abc" }] }], stash_ids: [], tags: [] };
 function enqueue(kind, args) {
   const id = String(++number);
@@ -30,6 +31,7 @@ function gql(query, vars) {
   }
   if (query.includes("runPluginTask")) return { runPluginTask: enqueue("worker", vars.args) };
   if (query.includes("findJob")) return { findJob: jobs.get(vars.id) || null };
+  if (query.includes("metadataScan") && scanFails) throw scanFails();
   if (query.includes("metadataScan")) return { metadataScan: enqueue("scan") };
   if (query.includes("metadataIdentify")) {
     assert.deepEqual(Array.from(vars.input.options.performerGenders), ["FEMALE", "TRANSGENDER_FEMALE", "INTERSEX", "NON_BINARY"]);
@@ -130,4 +132,15 @@ assert.equal(offline.state.rows[0].title, "Last saved row");
 assert.match(offline.state.progressError, /Scene reads unavailable/);
 progressOffline = false;
 assert.equal(execute({ mode: "status" }).state.progressError, undefined);
+// Stash throws `new Error(goError)`; goja keeps the Go value as `message`, which JSON saves as {}.
+class GoError { toString() { return "graphql error: scan refused"; } }
+config.state = null;
+scanFails = () => Object.assign(new Error(), { message: new GoError() });
+execute({ mode: "scan" });
+execute(jobs.get(queue.shift()).args);
+scanFails = null;
+assert.equal(config.state.error, "graphql error: scan refused");
+assert.equal(execute({ mode: "status" }).error, "graphql error: scan refused");
+config.state = { ...config.state, error: {} };
+assert.equal(typeof execute({ mode: "status" }).error, "string", "A previously saved {} error still renders as text");
 console.log("Scene Import background checks passed");
